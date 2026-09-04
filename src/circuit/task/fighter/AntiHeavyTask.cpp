@@ -312,15 +312,31 @@ bool CAntiHeavyTask::FindTarget()
 			continue;
 		}
 
+		const float elevation = map->GetElevationAt(ePos.x, ePos.z);
 		CCircuitDef* edef = enemy->GetCircuitDef();
 		if ((edef == nullptr) || !edef->IsEnemyRoleAny(CCircuitDef::RoleMask::HEAVY | CCircuitDef::RoleMask::COMM)
 			|| ((edef->GetCategory() & canTargetCat) == 0)
 			|| (edef->IsAbleToFly() && notAA)
 			|| (isAntiStatic && edef->IsMobile())
 			|| circuit->GetCircuitDef(edef->GetId())->IsIgnore()
-			|| (ePos.y - map->GetElevationAt(ePos.x, ePos.z) > weaponRange))
+			|| (ePos.y - elevation > weaponRange))
 		{
 			continue;
+		}
+
+		// Surface/water reachability, mirroring CAttackTask::FindTarget.
+		// Without this an anti-heavy group treats a submerged HEAVY/COMM as a valid
+		// target even when it has no weapon that reaches under water, and then sits
+		// on the shore shooting at something it can never hit.
+		const bool isInWater = cdef->IsPredictInWater(elevation);
+		if (edef->IsInWater(elevation, ePos.y)) {
+			if (!(isInWater ? cdef->HasSubToWater() : cdef->HasSurfToWater())) {  // notAW
+				continue;
+			}
+		} else {
+			if (!(isInWater ? cdef->HasSubToLand() : cdef->HasSurfToLand())) {  // notAL
+				continue;
+			}
 		}
 
 		const float sqDist = pos.SqDistance2D(ePos);
