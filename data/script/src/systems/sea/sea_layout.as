@@ -309,10 +309,10 @@ namespace SeaLayout {
         b.slot=-1; b.exitZone=0; Save(b);
         GenericHelpers::LogUtil("[SEA][Layout] replan unused berth "+b.key,1);
     }
-    IUnitTask@ Factory(CCircuitUnit@ u, const string &in name, int oldUnit=-1, const AIFloat3 &in anchor=AIFloat3(-1,0,-1)) {
+    IUnitTask@ Factory(CCircuitUnit@ u, const string &in name, int oldUnit=-1, const AIFloat3 &in anchor=AIFloat3(-1,0,-1), bool capacityExpansion=false) {
         CCircuitDef@ d=ai.GetCircuitDef(name);
         if (d is null || !d.IsAvailable(ai.frame) || !u.circuitDef.CanBuild(d)) return null;
-        if (!SeaFactories::FactoryAllowed(d)) return null;
+        if (!SeaFactories::FactoryAllowed(d,capacityExpansion)) return null;
         // A first yard is a single usable footprint, not a requirement to fit
         // a future multi-yard berth. Both SEA builder modes share the native
         // enemy-facing-first preference; actual yard/exit adoption follows in
@@ -358,7 +358,7 @@ namespace SeaLayout {
         if (!Search(b)) { Blocked(b,"site"); return null; }
         if (!aiTerrainMgr.CanReachAt(u,b.centre,u.circuitDef.GetBuildDistance())) { Blocked(b,"builder-reach"); return null; }
         const bool opening=Opening(b);
-        if (SeaEconomy::Yard(d) && !SeaMath::HarborAdmission(opening,ForwardSite(d,b.centre,b.facing),
+        if ((SeaEconomy::Yard(d) || capacityExpansion) && !SeaMath::HarborAdmission(opening,ForwardSite(d,b.centre,b.facing),
             opening || VisibleBuffer(d,b.centre,b.facing))) {
             Blocked(b,"forward-or-visibility");
             // Preserve a preplan briefly for the scouts; if vision does not
@@ -420,15 +420,29 @@ namespace SeaLayout {
         const float gap=fusion ? 16.0f : 0.0f;
         const float width=float(d.GetFootprintX())*16.0f+gap, depth=float(d.GetFootprintZ())*16.0f+gap;
         array<AIFloat3> extensions;
-        if (gap==0 && count<=6 && assist.x<0) {
+        if (gap==0 && (tidal || count<=6) && assist.x<0) {
             // Grow economical strips sideways, flush with the preceding patch.
             // Two rows remain serviceable from the outside even as the strip
             // length grows. Bounded candidates preserve the existing search cap.
             for (int i=int(patches.length())-1; i>=0 && extensions.length()<4; --i) {
                 Patch@ prior=patches[uint(i)];
-                if (prior.name!=key || int(prior.slots.length())!=count || prior.facing!=facing) continue;
+                if (prior.name!=key || prior.slots.length()==0 || (!tidal && int(prior.slots.length())!=count) || prior.facing!=facing) continue;
+                const int priorRows=(int(prior.slots.length())+cols-1)/cols;
+                const float joinedDepth=float(priorRows+rows)*depth*.5f;
+                // Grow the shorter axis first: two fallback rows make a
+                // compact rectangle, while full blocks expand sideways.
+                if (tidal && priorRows<cols) {
+                    extensions.insertLast(LayoutHelpers::Offset(prior.centre,facing,0,joinedDepth));
+                    extensions.insertLast(LayoutHelpers::Offset(prior.centre,facing,0,-joinedDepth));
+                }
                 extensions.insertLast(LayoutHelpers::Offset(prior.centre,facing,float(cols)*width,0));
                 extensions.insertLast(LayoutHelpers::Offset(prior.centre,facing,-float(cols)*width,0));
+                if (tidal && priorRows>=cols) {
+                    // Tidals need no service aisle. Join both rows and whole
+                    // blocks on either axis before opening another spiral site.
+                    extensions.insertLast(LayoutHelpers::Offset(prior.centre,facing,0,joinedDepth));
+                    extensions.insertLast(LayoutHelpers::Offset(prior.centre,facing,0,-joinedDepth));
+                }
             }
         }
         for (int k=0; k<8; ++k) {
@@ -443,11 +457,21 @@ namespace SeaLayout {
                 const AIFloat3 site=LayoutHelpers::Offset(p,facing,(float(j%cols)-float(cols-1)*.5f)*width,
                     (float(j/cols)-float(rows-1)*.5f)*depth);
                 if (assist.x>=0 && MapHelpers::SqDist(site,assist)>d.GetBuildDistance()*d.GetBuildDistance()) { ok=false; break; }
-                const int slot=aiTerrainMgr.ReservePersistentBuilding(d,site,facing);
+                // Tidals deliberately share the low-energy spacing mask.
+                // Exact slots still protect footprints, resource sites and exits.
+                const int slot=tidal ? aiTerrainMgr.ReservePackedBuilding(d,site,facing)
+                    : aiTerrainMgr.ReservePersistentBuilding(d,site,facing);
                 if (slot<0) { ok=false; break; }
                 plan.slots.insertLast(slot);
             }
             if (ok) ok=LayoutHelpers::CheckGrid(plan.slots,0,cols,facing,width,depth);
+            if (ok && tidal) {
+                // The engine snaps each footprint to its build grid. Extend
+                // from the actual grid centre, not the unsnapped search seed;
+                // otherwise adjacent patches can overlap by half a grid cell.
+                plan.centre=(aiTerrainMgr.GetReservationPos(plan.slots[0])
+                    +aiTerrainMgr.GetReservationPos(plan.slots[plan.slots.length()-1]))*.5f;
+            }
             if (ok && gap>0) {
                 plan.zone=aiTerrainMgr.ReserveZone(p,facing,width*float(cols)*.5f,depth*float(rows)*.5f,false);
                 ok=plan.zone>0;

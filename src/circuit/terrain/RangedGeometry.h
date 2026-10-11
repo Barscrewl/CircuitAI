@@ -10,6 +10,90 @@
 #include <vector>
 
 namespace circuit::ranged {
+// Rounded per-hull offsets are not necessarily exactly collinear in float.
+// Reduce inside a fixed corridor, never by pairwise angle accumulation: every
+// removed point AND the final endpoint stay within halfError of the original
+// run axis, bounding displacement from the emitted segment by 2*halfError.
+// O(points + original-leg validation), O(1) scratch. Reversals, rejected legs,
+// joining points and endpoints fence runs. This is opt-in SEA MOVE geometry;
+// the exact reducers used by other controllers below remain unchanged.
+template<class Position, class ClearLeg>
+void CompactValidatedCorridorRoute(std::vector<Position>& route, ClearLeg clearLeg, double halfError) {
+    if (route.size()<3 || !std::isfinite(halfError) || halfError<0) return;
+    // A wholly bent path cannot save any orders. Avoid terrain callbacks in
+    // that common coastal case, using the same criterion as the reducer.
+    bool reducible=false;
+    for (size_t index=2;index<route.size();++index) {
+        const auto& anchor=route[index-2]; const auto& previous=route[index-1]; const auto& point=route[index];
+        const double directionX=double(previous.x)-anchor.x, directionZ=double(previous.z)-anchor.z;
+        const double offsetX=double(point.x)-anchor.x, offsetZ=double(point.z)-anchor.z;
+        const double lengthSquared=directionX*directionX+directionZ*directionZ;
+        const double cross=offsetX*directionZ-offsetZ*directionX;
+        if (lengthSquared>0 && offsetX*directionX+offsetZ*directionZ>=lengthSquared
+            && cross*cross<=halfError*halfError*lengthSquared) { reducible=true; break; }
+    }
+    if (!reducible) return;
+    size_t output=1;
+    Position previous=route.front(), anchor=previous;
+    double directionX=0, directionZ=0, lengthSquared=0, previousProjection=0;
+    bool active=false;
+    for (size_t index=1;index<route.size();++index) {
+        const Position point=route[index];
+        const bool clear=clearLeg(previous,point);
+        if (!clear) { active=false; }
+        if (active && clear) {
+            const double offsetX=double(point.x)-anchor.x, offsetZ=double(point.z)-anchor.z;
+            const double cross=offsetX*directionZ-offsetZ*directionX;
+            const double projection=offsetX*directionX+offsetZ*directionZ;
+            if (projection>=previousProjection && cross*cross<=halfError*halfError*lengthSquared) {
+                route[output-1]=point; previous=point; previousProjection=projection;
+                continue;
+            }
+        }
+        anchor=previous;
+        directionX=double(point.x)-anchor.x; directionZ=double(point.z)-anchor.z;
+        lengthSquared=directionX*directionX+directionZ*directionZ;
+        previousProjection=lengthSquared;
+        active=clear && lengthSquared>0;
+        route[output++]=point; previous=point;
+    }
+    route.resize(output);
+}
+
+// Validate each original leg once. A rejected leg fences only its adjacent
+// run, not every other straight run in the route. O(N + validation work),
+// O(1) scratch; preserve the first point, each bend/reversal and both ends
+// of rejected legs. Validation sees original points before in-place writes.
+// Regression: route_command_test.cpp, isolated unsafe leg between clear runs.
+template<class Position, class ClearLeg>
+void CompactValidatedStraightRoute(std::vector<Position>& route, ClearLeg clearLeg) {
+    if (route.size() < 3) return;
+    // Avoid expensive terrain sampling when exact geometry cannot remove a
+    // point at all. This preflight is linear, callback-free and allocation-free.
+    bool reducible = false;
+    for (size_t i = 2; i < route.size(); ++i) {
+        const auto& a=route[i-2]; const auto& b=route[i-1]; const auto& c=route[i];
+        const double ux=b.x-a.x, uz=b.z-a.z, vx=c.x-b.x, vz=c.z-b.z;
+        if (ux*vz == uz*vx && ux*vx+uz*vz >= 0) { reducible=true; break; }
+    }
+    if (!reducible) return;
+    size_t out = 1, runStart = 0;
+    Position previous = route.front();
+    for (size_t i = 1; i < route.size(); ++i) {
+        const Position point = route[i];
+        if (!clearLeg(previous, point)) runStart = out;
+        previous = point;
+        while (out >= runStart + 2) {
+            const auto& a = route[out - 2]; const auto& b = route[out - 1];
+            const double ux=b.x-a.x, uz=b.z-a.z, vx=point.x-b.x, vz=point.z-b.z;
+            if (ux*vz != uz*vx || ux*vx+uz*vz < 0) break;
+            --out;
+        }
+        route[out++] = point;
+    }
+    route.resize(out);
+}
+
 // Remove only redundant straight-line points, preserving every turn, reversal
 // and both endpoints. In-place O(N), O(1) scratch; the exact XZ polyline is
 // unchanged, so terrain/threat validation is not replaced by a shortcut. Grid
@@ -180,6 +264,16 @@ private:
 class SpatialIndex {
 public:
     explicit SpatialIndex(float cell=512.f): cell(cell) {}
+    // Callers with a legacy linear fallback can preserve its floating-point
+    // semantics for invalid or extreme inputs without an undefined float/int
+    // conversion. Double arithmetic also avoids overflow while testing bounds.
+    bool CanQuery(Point point,float radius) const {
+        const double limit=double(std::numeric_limits<int>::max())-1.0;
+        return cell>0.f && std::isfinite(cell) && std::isfinite(radius) && radius>=0.f
+            && std::isfinite(point.x) && std::isfinite(point.z)
+            && (std::abs(double(point.x))+double(radius))/cell<limit
+            && (std::abs(double(point.z))+double(radius))/cell<limit;
+    }
     void Configure(float width,float height) { cells.Configure(Coord(width)+1,Coord(height)+1); }
     void Clear() { cells.Clear(); }
     void Add(Point p, int id) { cells.Get(Coord(p.x),Coord(p.z)).push_back(id); }

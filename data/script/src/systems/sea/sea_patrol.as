@@ -4,11 +4,22 @@
 // built once; O(P) patrol selection occurs on assignment/expiry, never per frame.
 // Naval danger costs O(K*E) for distinct candidate cells K, sea contacts E;
 // at most 49 candidates/boat, with cached overlapping formation candidates.
+#include "sea_scout_raids.as"
+#include "sea_shorelines.as"
 namespace SeaPatrol {
-    class Sector { AIFloat3 pos; int body=-1, owner=-1, visited=-100000; bool shore=false; }
+    // Test-only event counts; disabled policy adds no per-event strings or logs.
+    array<int> diagnosticCounts(7,0);
+    void Count(int reason) { if (Global::RoleSettings::Sea::ScoutDiagnostics) ++diagnosticCounts[reason]; }
+    void Report() {
+        if (!Global::RoleSettings::Sea::ScoutDiagnostics || ai.frame%(60*SECOND)!=0) return;
+        GenericHelpers::LogUtil("[SEA][ScoutOrders] new="+diagnosticCounts[0]+" arrival="+diagnosticCounts[1]+" expiry="+diagnosticCounts[2]+" recovery="+diagnosticCounts[3]+" escape="+diagnosticCounts[4]+" raid="+diagnosticCounts[5]+" route_points="+diagnosticCounts[6],1);
+        for (uint i=0;i<diagnosticCounts.length();++i) diagnosticCounts[i]=0;
+    }
+    class Sector { AIFloat3 pos; int body=-1, owner=-1, visited=-100000, priority=0; bool shore=false; float enemyDistance=0; }
     class Boat {
         int id=-1, body=-1, sector=-1, until=0, seen=0, slot=-1, retry=0;
         int mode=-1, target=-1;
+        int failedSector=-1, failedUntil=0;
         AIFloat3 goal;
         CRouteTask@ route;
     }
@@ -64,11 +75,12 @@ namespace SeaPatrol {
     void Leave() {
         for (uint i=0;i<boats.length();++i) Release(boats[i]);
         boats.resize(0); boatIndex.deleteAll(); raids.resize(0);
+        SeaScoutRaids::groups.resize(0);
     }
     void Grid() {
         if (gridReady) return;
         gridReady=true;
-        // At most 64*64 cells, built once; four height probes classify shores.
+        // At most 64*64 cells, built once; eight height probes classify shores.
         // Terrain is public, enemy buildings are not. Visits require arrival,
         // never just an assigned destination. Live threat checks stay at admission.
         cell=AiMax(Global::RoleSettings::Sea::ShoreSurveyCell,float(AiMax(AiTerrainWidth(),AiTerrainHeight()))/64.0f);
@@ -76,11 +88,12 @@ namespace SeaPatrol {
             AIFloat3 p(x,0,z); const int body=aiBattle.WaterBody(p,false);
             if (body<0 || aiBattle.Height(p)>-20) continue;
             Sector@ s=Sector(); s.pos=p; s.body=body;
-            for (int j=0;j<4;++j) {
-                const float a=float(j)*1.570796f;
+            for (int j=0;j<8;++j) {
+                const float a=float(j)*.785398f;
                 AIFloat3 edge=Spam::_Clamp(AIFloat3(x+cos(a)*cell,0,z+sin(a)*cell));
                 if (aiBattle.Height(edge)>=-8) { s.shore=true; break; }
             }
+            s.priority=s.shore ? 1 : 0;
             sectors.insertLast(s);
         }
     }
@@ -88,9 +101,12 @@ namespace SeaPatrol {
         for (uint i=0;i<raids.length();++i) if (raids[i].body==body) return raids[i];
         Raid@ r=Raid(); r.body=body; raids.insertLast(r); return r;
     }
+    bool ThreatSafe(const AIFloat3 &in p) {
+        return aiBattle.SurfThreat(p)<=Global::RoleSettings::Sea::ScoutMaximumThreat
+            && aiBattle.AmphThreat(p)<=Global::RoleSettings::Sea::ScoutMaximumThreat;
+    }
     bool Safe(CCircuitUnit@ u,const AIFloat3 &in p,int body) {
-        return aiBattle.WaterBody(p,false)==body && aiTerrainMgr.CanMoveTo(u,p)
-            && aiBattle.SurfThreat(p)<=.1f && aiBattle.AmphThreat(p)<=.1f;
+        return aiBattle.WaterBody(p,false)==body && aiTerrainMgr.CanMoveTo(u,p) && ThreatSafe(p);
     }
     bool InterceptionSite(CCircuitUnit@ u,const AIFloat3 &in p,int body,const string &in cellKey) {
         if (aiBattle.WaterBody(p,false)!=body || !aiTerrainMgr.CanMoveTo(u,p)) return false;
@@ -171,10 +187,87 @@ namespace SeaPatrol {
             if (b.route is null) return false;
             b.route.SetSeaControl(true); b.route.SetHoldPosition(true);
         }
+        if (Scout(u.circuitDef)) b.route.SetMoveCompaction(Global::RoleSettings::Sea::CompactMoveRoutes);
+        if (Global::RoleSettings::Sea::ScoutDiagnostics) diagnosticCounts[6]+=int(points.length());
         b.route.SetTraversal(true,48,false); b.route.SetPatrol(patrol); b.route.SetRoute(points);
         if (u.task !is b.route && !aiMilitaryMgr.TransferUnit(u,b.route)) {
             Invariants::Violation("INV-146",""+u.id,"SEA scout/AA route handover failed"); return false;
         }
+        return true;
+    }
+    // One terrain search per new scout destination, never per census while a
+    // valid route is retained. Native route buffers are publication-versioned.
+    // Keep bends around islands/corners; compaction validates ship offsets.
+    bool SurveyOrder(Boat@ b,CCircuitUnit@ u,const AIFloat3 &in goal) {
+        const AIFloat3 origin=u.GetPos(ai.frame);
+        const float distance=sqrt(MapHelpers::SqDist(origin,goal));
+        // Most coverage steps are straight. Validate the segment
+        // first: avoids graph searches and lets a shallow-draft scout leave a
+        // legal position whose coarse naval grid cell is blocked. Curved trips
+        // use the graph, particularly around Sulphur's turning coast. Sampling
+        // has a map-size bound; the engine still uses the actual ship MoveDef.
+        {
+            const int samples=AiMax(1,int(distance/AiMax(16.0f,Global::RoleSettings::Sea::ScoutRouteSampleSpacing))+1); bool clear=true;
+            for (int i=1;i<=samples;++i) {
+                AIFloat3 point=origin+(goal-origin)*(float(i)/float(samples));
+                if (!Safe(u,point,b.body) || aiBattle.Height(point)>-Global::RoleSettings::Sea::ScoutRouteMinimumDepth) { clear=false; break; }
+            }
+            if (clear) { array<AIFloat3> direct={goal}; return Order(b,u,direct,false); }
+        }
+        array<AIFloat3>@ points=aiBattle.GetTerrainRoute(u.GetPos(ai.frame),goal,5,10,1,
+            Global::RoleSettings::Sea::ScoutRouteThreatWeight,Global::RoleSettings::Sea::ScoutMaximumThreat);
+        if (points.length()==0) {
+            if (Global::RoleSettings::Sea::ScoutDiagnostics && ai.frame%(10*SECOND)==0)
+                GenericHelpers::LogUtil("[SEA][ScoutRoute] empty id="+b.id+" from="+int(origin.x)+","+int(origin.z)+" goal="+int(goal.x)+","+int(goal.z),1);
+            return false;
+        }
+        uint kept=0;
+        for (uint i=0;i<points.length();++i) {
+            // The native graph includes its origin. Do not issue a MOVE back
+            // to the start cell before following the forward route.
+            if (i==0 && MapHelpers::SqDist(origin,points[i])<cell*cell) continue;
+            if (i>0 && (aiBattle.SurfThreat(points[i])>Global::RoleSettings::Sea::ScoutMaximumThreat
+                || aiBattle.AmphThreat(points[i])>Global::RoleSettings::Sea::ScoutMaximumThreat)) return false;
+            // Lane cells describe a coarse water graph, not this hull's engine
+            // movement area. Never order an unreachable intermediate cell.
+            // Preserve reachable bends; the engine joins them with its actual
+            // MoveDef. Reject threats above rather than filtering them away.
+            if (aiBattle.WaterBody(points[i],false)==b.body && aiTerrainMgr.CanMoveTo(u,points[i]))
+                points[kept++]=points[i];
+        }
+        points.resize(kept);
+        points.insertLast(goal);
+        if (!Order(b,u,points,false)) return false;
+        b.route.SetMoveCompaction(Global::RoleSettings::Sea::CompactMoveRoutes);
+        return true;
+    }
+    bool Evade(Boat@ boat,CCircuitUnit@ unit) {
+        const AIFloat3 here=unit.GetPos(ai.frame);
+        // A ship can traverse a legal engine cell that the coarser planning
+        // grid rejects as a destination. That is not enemy fire. Only actual
+        // threat starts an escape; still validate geometry at its destination.
+        if (ThreatSafe(here)) return false;
+        if (boat.mode==4 && boat.route !is null && !boat.route.IsDead() && unit.task is boat.route
+            && Safe(unit,boat.goal,boat.body)) return true;
+        // A newly exposed scout must be allowed to leave a threatened origin;
+        // a zero-threat graph route may not exist until outside weapon range.
+        // Choose the nearest legal safe sector, then let engine movement escape.
+        // Scan only on exposure/new escape intent, not during a retained escape.
+        int best=-1; float distance=1e30f;
+        for (uint i=0;i<sectors.length();++i) {
+            if (sectors[i].body!=boat.body) continue;
+            const float candidate=MapHelpers::SqDist(here,sectors[i].pos);
+            if (candidate>=distance || !Safe(unit,sectors[i].pos,boat.body)) continue;
+            best=int(i); distance=candidate;
+        }
+        if (best<0) return false;
+        array<AIFloat3> points={sectors[best].pos};
+        if (!Order(boat,unit,points,false)) return false;
+        if (boat.sector>=0 && sectors[boat.sector].owner==boat.id) sectors[boat.sector].owner=-1;
+        Count(4);
+        boat.sector=-1; boat.mode=4; boat.goal=sectors[best].pos; boat.target=-1;
+        boat.route.SetSeaTarget(-1);
+        GenericHelpers::LogUtil("[SEA][ScoutEvade] id="+boat.id+" goal="+int(boat.goal.x)+","+int(boat.goal.z),1);
         return true;
     }
     void Patrol(Boat@ b,CCircuitUnit@ u) {
@@ -182,25 +275,36 @@ namespace SeaPatrol {
         const AIFloat3 here=u.GetPos(ai.frame);
         const bool scout=Scout(u.circuitDef);
         const float sight=u.circuitDef.GetLosRadius()*.5f;
-        const bool arrived=MapHelpers::SqDist(here,b.goal)<sight*sight;
+        const float visibleDistanceSquared=sight*sight*4.0f;
+        // Sight is evidence of coverage, not movement completion. Retain the
+        // useful route to its destination instead of turning at half LOS.
+        const float arrivalRadius=Global::RoleSettings::Sea::ScoutArrivalRadius;
+        const bool arrived=MapHelpers::SqDist(here,b.goal)<arrivalRadius*arrivalRadius;
         if (b.mode==0 && b.sector>=0 && arrived) sectors[b.sector].visited=ai.frame;
-        if ((b.mode==0 || b.mode==2) && b.route !is null && !b.route.IsDead() && u.task is b.route
-            && ai.frame<b.until && Safe(u,b.goal,b.body) && (b.mode==2 || !scout || !arrived)) return;
+        if ((b.mode==0 || b.mode==2) && SeaMath::RetainScoutTravel(
+            b.route !is null && !b.route.IsDead() && u.task is b.route,
+            ai.frame<b.until, ThreatSafe(here), Safe(u,b.goal,b.body),
+            b.mode!=2 && scout && arrived)) return;
+        Count(b.mode<0 ? 0 : (b.route is null || b.route.IsDead() || u.task !is b.route) ? 3 : arrived ? 1 : 2);
         if (b.sector>=0 && sectors[b.sector].owner==b.id) sectors[b.sector].owner=-1;
         b.sector=-1;
         if (scout) for (uint i=0;i<SeaLayout::berths.length();++i) {
             SeaLayout::Berth@ berth=SeaLayout::berths[i];
-            if (berth.slot<0 || berth.active || berth.retired || !UnitHelpers::IsT2Shipyard(berth.name)
+            if (berth.slot<0 || berth.active || berth.retired
                 || aiTerrainMgr.GetReservationState(berth.slot)!=0) continue;
             CCircuitDef@ d=ai.GetCircuitDef(berth.name);
-            if (!SeaEconomy::TechReady(d,true) || SeaLayout::VisibleBuffer(d,berth.centre,berth.facing)) continue;
+            // Reuse the existing bounded berth pass and scout leases. A full
+            // bank can need a surveyed platform/amphibious overflow site too;
+            // production must never relax the forward fog buffer to spend it.
+            const bool overflow=SeaEconomy::capacityPressure && SeaFactories::FactoryAllowed(d,true);
+            const bool technology=UnitHelpers::IsT2Shipyard(berth.name) && SeaEconomy::TechReady(d,true);
+            if ((!overflow && !technology) || SeaLayout::VisibleBuffer(d,berth.centre,berth.facing)) continue;
             const AIFloat3 goal=SeaLayout::SurveyPoint(d,berth.centre,berth.facing);
             bool leased=false;
             for (uint j=0;j<boats.length();++j) if (boats[j] !is b && boats[j].mode==2
                 && ai.frame<boats[j].until && MapHelpers::SqDist(boats[j].goal,goal)<cell*cell) { leased=true; break; }
             if (leased || !Safe(u,goal,b.body)) continue;
-            array<AIFloat3> points={goal};
-            if (Order(b,u,points,false)) {
+            if (SurveyOrder(b,u,goal)) {
                 b.mode=2; b.goal=goal; b.until=ai.frame+Global::RoleSettings::Sea::HarborSurveySeconds*SECOND;
                 b.route.SetSeaTarget(-1);
                 GenericHelpers::LogUtil("[SEA][HarborScout] id="+b.id+" berth="+berth.key,1); return;
@@ -212,13 +316,27 @@ namespace SeaPatrol {
         for (uint i=0;i<sectors.length();++i) {
             Sector@ s=sectors[i];
             if (s.body!=b.body || (s.owner>=0 && s.owner!=b.id)) continue;
+            if (int(i)==b.failedSector && ai.frame<b.failedUntil) continue;
+            // Credit actual nearby LOS, not every tiny grid destination. This
+            // shares discoveries and skips already-visible neighboring cells,
+            // reducing MOVE churn without delaying a newly observed threat.
+            // The distance prefilter bounds LOS callbacks to the local disc;
+            // this runs inside the existing renewal scan, never per frame.
+            if (scout && MapHelpers::SqDist(here,s.pos)<visibleDistanceSquared
+                && aiTerrainMgr.IsAreaVisible(s.pos,cell*.4f)) s.visited=ai.frame;
             // Dedicated AA covers the friendly coast; expendable T1 scouts
             // alone explore the whole connected sea.
             if (!Scout(u.circuitDef) && MapHelpers::SqDist(s.pos,Global::Map::StartPos)>2400*2400) continue;
             // Newly surveyed coasts cool down so the nearest shore does not
             // win forever. Unvisited enemy shores precede open-sea coverage.
-            if (scout && s.visited>=0 && ai.frame-s.visited<Global::RoleSettings::Sea::ScoutPatrolSeconds*SECOND) continue;
-            const float rank=SeaMath::ScoutScore(scout && s.shore,s.visited<0,ai.frame-s.visited,sqrt(MapHelpers::SqDist(here,s.pos)));
+            const int interval=Global::RoleSettings::Sea::CoordinatedFleet ? SeaShorelines::Interval(s) : Global::RoleSettings::Sea::ScoutPatrolSeconds*SECOND;
+            if (scout && s.visited>=0 && ai.frame-s.visited<interval) continue;
+            const float travel=sqrt(MapHelpers::SqDist(here,s.pos));
+            const float rank=Global::RoleSettings::Sea::CoordinatedFleet && scout
+                ? SeaMath::SurveyPriority(s.priority,s.visited<0,s.visited<0 ? 0 : ai.frame-s.visited,interval,
+                    travel+s.enemyDistance*Global::RoleSettings::Sea::ShoreEnemyDistanceWeight,
+                    Global::RoleSettings::Sea::ShoreTravelScoreScale)
+                : SeaMath::ScoutScore(scout && s.shore,s.visited<0,ai.frame-s.visited,travel);
             if (rank<=score || !Safe(u,s.pos,b.body)) continue;
             score=rank; best=int(i);
         }
@@ -249,15 +367,22 @@ namespace SeaPatrol {
             if (Safe(u,p,b.body)) points.insertLast(p);
         }
         if (points.length()==0) points.insertLast(b.goal);
-        if (Order(b,u,points,!scout)) {
+        if (scout ? SurveyOrder(b,u,b.goal) : Order(b,u,points,true)) {
             b.route.SetSeaTarget(-1); b.mode=0; b.target=-1;
             b.until=ai.frame+(scout ? AiMax(Global::RoleSettings::Sea::ShoreSurveySeconds,int(sqrt(MapHelpers::SqDist(here,b.goal))/AiMax(1.0f,u.circuitDef.speed))+15) : Global::RoleSettings::Sea::ScoutPatrolSeconds)*SECOND;
             GenericHelpers::LogUtil("[SEA][Patrol] id="+b.id+" sector="+best+" shore="+s.shore+" goal="+int(b.goal.x)+","+int(b.goal.z),1);
+        } else if (scout) {
+            // A safe endpoint does not prove a safe route around a peninsula.
+            // Reject only this boat's candidate; another hull may reach it.
+            b.failedSector=best; b.failedUntil=ai.frame+Global::RoleSettings::Sea::ScoutFailedSectorSeconds*SECOND;
+            s.owner=-1; b.sector=-1; b.until=0;
         }
     }
     void Tick() {
         if (!Global::RoleSettings::Sea::FleetOperations) { Leave(); return; }
+        Report();
         Grid(); Contacts(); navalSafety.deleteAll(); seaContacts=aiBattle.GetSeaForceCount();
+        if (Global::RoleSettings::Sea::CoordinatedFleet) SeaShorelines::Tick();
         // Build occupancy once; monotonically scan free slots per basin.
         // Birth bursts are O(U), not one full boat scan per new hull.
         dictionary usedSlots;
@@ -294,6 +419,7 @@ namespace SeaPatrol {
         }
         boats.resize(live); boatIndex.deleteAll();
         for (uint i=0;i<boats.length();++i) boatIndex.set(""+boats[i].id,int(i));
+        SeaScoutRaids::Update();
         for (uint i=0;i<raids.length();++i) {
             Raid@ r=raids[i]; if (!r.present) continue;
             // Use the nearest screen member, not the commander's start. A
@@ -314,7 +440,11 @@ namespace SeaPatrol {
             Raid@ r=Basin(b.body);
             const bool alarm=Global::RoleSettings::Sea::HybridScoutAirResponse && AA(u.circuitDef)
                 && ai.frame-r.seen<Global::RoleSettings::Sea::NavalAAContactMemorySeconds*SECOND;
-            if (!alarm) { Patrol(b,u); continue; }
+            if (!alarm) {
+                if (Scout(u.circuitDef) && Evade(b,u)) continue;
+                if (!SeaScoutRaids::Control(b,u)) Patrol(b,u);
+                continue;
+            }
             const float spacing=AiMax(96.0f,SeaMath::AASpacing(Global::RoleSettings::Sea::NavalAAFormationSpacing,r.range));
             const float dx=r.direction.x,dz=r.direction.z;
             const int columns=Global::RoleSettings::Sea::NavalAAColumns;

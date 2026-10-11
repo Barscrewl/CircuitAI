@@ -4,6 +4,7 @@ No economy gifts or unit orders. Explicit nuke override applies to TECH only.
 The pin probe creates and cancels two unassigned tasks in the same callback.
 Actual lost-command recovery is separately identified from native diagnostics.
 """
+from script_settings import role_settings_path
 import argparse
 import json
 from pathlib import Path
@@ -48,7 +49,7 @@ def main():
     start_script.write_text(start_script.read_text().replace('[GAME]\n{','[GAME]\n{\n FixedRNGSeed='+str(a.seed)+';',1))
     staged=d/'AI/Skirmish/BARbTest/test';pool_symbols(staged)
     if a.experimental_sea:
-        f=staged/'script/src/global.as';s=f.read_text();pos=s.index('namespace Sea {');before=s[:pos];after=s[pos:]
+        f=role_settings_path(staged/'script/src', 'Sea');s=f.read_text();pos=s.index('namespace Sea {');before=s[:pos];after=s[pos:]
         after=after.replace('bool ExperimentalBuild = false','bool ExperimentalBuild = true',1)
         f.write_text(before+after)
     if a.probe or a.trace_builders:

@@ -12,6 +12,11 @@ function widget:Update()
  if endedAt and Spring.DiffTimers(Spring.GetTimer(),endedAt)>3 then Spring.SendCommands("quitforce") end
 end
 function widget:GameFrame(frame)
+ if not endedAt and cfg.horizon_frame and frame>=cfg.horizon_frame then
+  Spring.Echo("[FullMatchHorizon] frame="..frame)
+  endedAt=Spring.GetTimer()
+  Spring.SendCommands("screenshot png")
+ end
  if frame==300 or frame%1800==0 then
   local active=0
   for team=0,(cfg.teams or 16)-1 do

@@ -101,7 +101,8 @@ void CRangedWorld::Refresh()
     performance::Scope measured(circuit,performance::RANGED_SNAPSHOT);
     frame=now; contacts.clear(); friends.clear(); objectives.clear();
     clusterValues.Clear();
-    enemies.Clear(); staticHazards.Clear(); allies.Clear(); formations.Clear();
+    enemies.Clear(); staticHazards.Clear(); formations.Clear();
+    alliesDirty = true;
     largestRange=largestStaticRange=0.f; nonnegativeHazardCosts=finiteStaticHazards=true;
     largestCohortHazard=0.f;
     largestSpacing=0.f; largestFriendRadius=0.f;
@@ -200,21 +201,39 @@ void CRangedWorld::Refresh()
     const int friendCount=api->GetFriendlyUnitIds(friendlyIds);
     friendlyOrder.Sort(friendlyIds,friendCount);
     auto* authority=circuit->GetAllyTeam()->GetAuthority();
+    const size_t definitionCount=authority->GetDefCount()+1;
+    if(friendlyDefinitions.size()!=definitionCount) {
+        friendlyDefinitions.resize(definitionCount);
+        friendlyDefinitionFrames.assign(definitionCount,-1);
+    }
     for (int i=0;i<friendCount;++i) {
         const int id=friendlyIds[i];
-        auto* d=authority->GetCircuitDef(circuit->GetCallback()->Unit_GetDefId(id));
-        if (!d || d->IsAbleToFly()) continue;
-        const auto& meta=MetadataFor(d);
+        const int definitionId=circuit->GetCallback()->Unit_GetDefId(id);
+        if(definitionId<=0 || size_t(definitionId)>=definitionCount) continue;
+        auto& prototype=friendlyDefinitions[definitionId];
+        if(friendlyDefinitionFrames[definitionId]!=now) {
+            friendlyDefinitionFrames[definitionId]=now;
+            auto* definition=authority->GetCircuitDef(definitionId);
+            prototype.def=definition->IsAbleToFly() ? nullptr : definition;
+            if(prototype.def) {
+                const auto& metadata=MetadataFor(definition);
+                prototype.radius=definition->GetRadius();
+                prototype.screen=definition->IsAttacker() && (!definition->IsAttrRanged() || definition->GetRangedPolicy().coordinated);
+                prototype.radar=metadata.radar; prototype.jammer=metadata.jammer; prototype.los=metadata.los;
+            }
+        }
+        if(!prototype.def) continue;
         float raw[3]; api->GetPosition(id,raw);
         AIFloat3 position(raw[0],raw[1],raw[2]); terrain::CTerrainData::CorrectPosition(position);
         // Coordinated frontline bots retain their old screening role for
         // precision artillery. Opting Thugs into ranged movement must not
         // make allied Starlights/Sharpshooters stop recognizing their screen.
-        const bool screen=d->IsAttacker() && (!d->IsAttrRanged() || d->GetRangedPolicy().coordinated);
-        Friend f{id,position,d->GetRadius(),screen,meta.radar,meta.jammer,meta.los};
-        f.def=d;
+        // O(N) live identity/position reads, O(D) definition interpretation for
+        // D represented types. No stale static-position assumptions or shared
+        // cross-AI authority. INV-148 compares every resulting field in tests.
+        Friend f=prototype; f.id=id; f.pos=position;
         largestFriendRadius=std::max(largestFriendRadius,f.radius);
-        allies.Add(P(f.pos),int(friends.size())); friends.push_back(f);
+        friends.push_back(f);
     }
     static const bool verify=std::getenv("CIRCUIT_VERIFY_RANGED_SNAPSHOT")!=nullptr;
     if(verify) {
@@ -274,14 +293,45 @@ void CRangedWorld::Join(CCircuitUnit* unit)
     SetSlot(unit->GetId(),unit->GetPos(circuit->GetLastFrame()),d->GetRangedPolicy().spacing,d->GetCostM());
     if(d->GetRangedPolicy().coordinated) JoinCohort(unit);
 }
+void CRangedWorld::InvalidateCohortPlans(CohortPlan& group)
+{
+    group.frame=group.formationFrame=-1;
+    // Membership can change between callbacks in one frame. Invalidate both
+    // ends so the paired plan is reusable for every shooter without repeating
+    // partner discovery/validation until the next observation or mutation.
+    auto partner=cohorts.find(group.formationPartner);
+    if(partner!=cohorts.end()) partner->second.frame=partner->second.formationFrame=-1;
+}
+
+void CRangedWorld::EnsureAllies() const
+{
+    if (!alliesDirty) return;
+    // Capture still occurs at Refresh's original observation instant, including
+    // fresh IDs, definitions and positions. Only derived indexing is lazy:
+    // enemy-only safety/withdrawal queries need no friendly buckets. Building
+    // once on first use preserves z/x/ascending-ID query order exactly. O(F+C)
+    // on demand, O(1) thereafter; no stale cross-frame/shared-AI observations.
+    performance::Scope measured(circuit,performance::RANGED_FRIENDS);
+    allies.Clear();
+    for (size_t index=0; index<friends.size(); ++index) allies.Add(P(friends[index].pos),int(index));
+    alliesDirty = false;
+}
 void CRangedWorld::Leave(int id) {
     slots.erase(id); ReleaseShot(id);
     auto member=membership.find(id);
     if(member!=membership.end()) {
         auto group=cohorts.find(member->second);
         if(group!=cohorts.end()) {
-            std::erase(group->second.members,id); group->second.frame=-1;
-            if(group->second.members.empty()) cohorts.erase(group);
+            std::erase(group->second.members,id);
+            InvalidateCohortPlans(group->second);
+            if(group->second.members.empty()) {
+                auto partner=cohorts.find(group->second.formationPartner);
+                if(partner!=cohorts.end() && partner->second.formationPartner==group->first) {
+                    partner->second.formationPartner=-1;
+                    partner->second.formationRear=false;
+                }
+                cohorts.erase(group);
+            }
         }
         membership.erase(member);
     }
@@ -385,6 +435,7 @@ int CRangedWorld::DangerSign(const AIFloat3& pos,float margin) const
 bool CRangedWorld::FriendlySplash(int id,const AIFloat3& target,float radius) const
 {
     if(radius<=16.f) return false;
+    EnsureAllies();
     return allies.Any(P(target),radius+largestFriendRadius,[&](int i) {
         const auto& f=friends[i];
         return f.id!=id && target.SqDistance2D(f.pos)<std::pow(radius+f.radius,2.f);
@@ -392,6 +443,7 @@ bool CRangedWorld::FriendlySplash(int id,const AIFloat3& target,float radius) co
 }
 bool CRangedWorld::HasScreen(int id,const AIFloat3& from,const AIFloat3& target) const
 {
+    EnsureAllies();
     const float distance=from.SqDistance2D(target);
     return allies.Any(P(from),700.f,[&](int i) {
         const auto& f=friends[i];
@@ -408,6 +460,7 @@ bool CRangedWorld::FriendlyLine(const Weapon& w,int id,const AIFloat3& from,cons
     const AIFloat3 delta=target-from;
     const float length=delta.SqLength2D();
     if(length<1.f) return false;
+    EnsureAllies();
     // Guided rockets curve in height and may descend after losing a target.
     // A straight-line height exemption let Medusa hit a radar on a hillside
     // after its target died. Require a clear 2-D corridor for guided weapons,
@@ -504,6 +557,7 @@ bool CRangedWorld::Escort(CCircuitUnit* sensor,AIFloat3& position)
     const bool report=trace && frame%150==3;
     if(report) circuit->LOG("RANGED: escort sensor=%d radar=%.0f jammer=%.0f land=%d anchors=%u",sensor->GetId(),radar,jammer,int(d->IsLander()),unsigned(slots.size()));
     if((radar<=0.f && jammer<=0.f) || d->IsAbleToFly() || !d->IsLander()) return false;
+    EnsureAllies();
     const bool isJammer=jammer>0.f;
     const auto pos=sensor->GetPos(frame);
     float best=-1.f; int anchor=-1;

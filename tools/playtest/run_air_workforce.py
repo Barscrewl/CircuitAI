@@ -1,4 +1,5 @@
 """Stage and run reproducible supplied AIR workforce fixtures, without live installs."""
+from script_settings import role_script_path
 import argparse
 import json
 from pathlib import Path
@@ -53,8 +54,9 @@ def main():
     probe+='const bool AirWorkforceFixtureLifecycle = '+str(a.scenario=='lifecycle').lower()+';\n'
     probe+=(playtest.HERE/'air_workforce_probe.as').read_text()
     (scripts/'manager/air_workforce_probe.as').write_text(probe)
-    build=scripts/'roles/air_build.as';text=build.read_text();needle='        ReturnEconomyWorkers();';assert text.count(needle)==1
-    build.write_text('#include "../manager/air_workforce_probe.as"\n'+text.replace(needle,needle+'\n        AirWorkforceProbe::Tick();'))
+    build=role_script_path(scripts, 'air_build');text=build.read_text();needle='        ReturnEconomyWorkers();';assert text.count(needle)==1
+    probe_include = '../../manager/air_workforce_probe.as' if build.parent.name == 'air' else '../manager/air_workforce_probe.as'
+    build.write_text('#include "'+probe_include+'"\n'+text.replace(needle,needle+'\n        AirWorkforceProbe::Tick();'))
     config=root/'LuaUI/Config';config.mkdir(exist_ok=True)
     (config/'air_workforce.lua').write_text(f'return {{scenario="{a.scenario}",side="{a.side}",stop={a.stop}}}\n')
     storage.write_json(root/'workforce-fixture.json',{'scenario':a.scenario,'side':a.side,'profile':a.profile,

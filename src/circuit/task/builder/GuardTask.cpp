@@ -175,6 +175,12 @@ bool CBGuardTask::Reevaluate(CCircuitUnit* unit)
 	if (!isInterrupt) {
 		return true;
 	}
+	struct EvaluationScope {
+		int& worker;
+		int previous;
+		~EvaluationScope() { worker = previous; }
+	} scope{reevaluatingWorker, reevaluatingWorker};
+	reevaluatingWorker = unit->GetId();
 	return IBuilderTask::Reevaluate(unit);
 }
 

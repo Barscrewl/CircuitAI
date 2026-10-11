@@ -18,6 +18,7 @@ Run:   python tools/knowledge/check_role_docs.py            (exit 1 on findings)
 The staging hook in .githooks/pre-commit runs this; see projects/circuitai/roles/README.md,
 "Keeping these documents current".
 """
+from pathlib import Path
 import io
 import os
 from documentation_store import document
@@ -78,13 +79,15 @@ def main(update=False):
     if matrix is None:
         findings.append("README.md: handler coverage matrix not found")
 
-    for f in sorted(os.listdir(ROLES)):
-        if not f.endswith(".as"):
-            continue
-        role = f[:-3]
-        script = os.path.join(ROLES, f)
+    scripts = sorted(Path(ROLES).rglob("*.as"))
+    names = [path.stem for path in scripts]
+    if len(names) != len(set(names)):
+        findings.append("Role module basenames must be unique for documentation ownership")
+    for path in scripts:
+        role = path.stem
+        script = str(path)
         doc = os.path.join(DOCS, role + ".md")
-        rel_script = "data/script/src/roles/" + f
+        rel_script = path.relative_to(ROOT).as_posix()
         if not os.path.exists(doc):
             findings.append("%s: no document projects/circuitai/roles/%s.md" % (rel_script, role))
             continue

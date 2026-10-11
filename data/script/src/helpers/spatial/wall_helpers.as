@@ -58,15 +58,9 @@ namespace WallHelpers {
         if (!Active() || !IsWall(d)) return true;
         // A square envelope also covers rotated, non-square wall variants.
         const float halfSize = float(AiMax(d.GetFootprintX(), d.GetFootprintZ())) * SQUARE_SIZE * 0.5f;
-        return p.x >= 0.0f && p.z >= 0.0f && !InBase(p, halfSize, halfSize);
+        return p.x >= 0.0f && p.z >= 0.0f && !InBase(p, halfSize, halfSize)
+            && (Global::AISettings::Role != AiRole::TECH
+                || TechWeapons::NearFront(p,Global::RoleSettings::Tech::WeaponWallFrontRadius));
     }
 
-    bool AdmitQueued(IUnitTask@ task)
-    {
-        IBuilderTask@ t = cast<IBuilderTask>(task);
-        if (t is null || t.GetBuildType() >= int(Task::BuildType::REPAIR) || Allowed(t.buildDef, t.GetBuildPos())) return true;
-        // Called after FindQueuedTask returns, never inside Enqueue's callback.
-        if (t.target is null) aiBuilderMgr.AbortTask(task);
-        return false;
-    }
 }

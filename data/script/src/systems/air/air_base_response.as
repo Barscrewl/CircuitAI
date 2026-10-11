@@ -39,7 +39,9 @@ namespace AirBaseResponse {
         return wave is null || wave.IsDead(); // offensive commitments are never recalled
     }
     int Kind(const CCircuitDef@ d) {
-        if (AirScreen::IsFighter(d)) return 2;
+        // Pure fighters cannot damage a ground incursion. Leave them on the
+        // interceptor wall and available for bomber-wave ownership (D-277).
+        if (AirScreen::IsFighter(d)) return -1;
         if (!d.HasSurfToLand()) return -1;
         if (d.GetTargetMinCost() > 0) return 3; // JSON-opted fortress, separate from cheap gunships
         return AirWaves::IsWaveBomber(d) ? 1 : 0;
@@ -161,6 +163,8 @@ namespace AirBaseResponse {
         AirHome::Refresh(); AirOperations::InitHeavyRoster();
         array<int> selected(3, -1);
         array<float> scores(3, -1.0f);
+        bool selectedGunshipPriority = false;
+        bool sawGunshipPriority = false;
         const int contacts = aiBattle.GetGroundContactCount();
         for (int i = 0; i < contacts; ++i) {
             const AIFloat3 p = aiBattle.GetGroundContactPos(i);
@@ -168,6 +172,14 @@ namespace AirBaseResponse {
             const CCircuitDef@ d = ai.GetCircuitDef(aiBattle.GetGroundContactDefId(i));
             if (d is null) continue;
             const int id = aiBattle.GetGroundContactId(i);
+            // Reuse the existing shared contact pass, not a per-aircraft enemy
+            // query. No persistent cache: current observed definitions are read
+            // once per response tick. O(C) selection, unchanged one-second cadence.
+            const bool gunshipPriority = AirMath::DefensiveGunshipPriority(
+                Global::RoleSettings::Air::BaseResponsePrioritizeAntiAir,
+                d.HasSurfToAir(), d.IsRoleAny(Unit::Role::AA.mask), d.IsMobile(), d.costM,
+                Global::RoleSettings::Air::BaseResponseLightStaticAntiAirMaximumMetal);
+            sawGunshipPriority = sawGunshipPriority || gunshipPriority;
             const float score = (d.HasSurfToLand() || d.HasSurfToAir() ? 100000.0f : 0.0f)
                 + (d.GetBuildSpeed() > 0 ? 50000.0f : 0.0f) + d.costM;
             for (int k = 0; k < 3; ++k) {
@@ -180,9 +192,17 @@ namespace AirBaseResponse {
                     ? d.costM * (d.IsRoleAny(Unit::Role::AA.mask | Unit::Role::COMM.mask) ? 2.0f : 1.0f)
                         * (targets[3] == id ? 1.15f : 1.0f)
                     : score + (targets[k] == id ? 25000.0f : 0.0f);
-                if (rank > scores[k]) { scores[k] = rank; selected[k] = i; }
+                const bool prefer = k == 0
+                    ? AirMath::PreferDefensiveGunshipTarget(gunshipPriority, rank, selectedGunshipPriority, scores[k])
+                    : rank > scores[k];
+                if (prefer) {
+                    scores[k] = rank; selected[k] = i;
+                    if (k == 0) selectedGunshipPriority = gunshipPriority;
+                }
             }
         }
+        if (sawGunshipPriority && !selectedGunshipPriority)
+            Invariants::Violation("INV-192", "gunship-defense", "observed priority AA lost to a lower target tier");
         const bool previous = contact;
         contact = selected[0] >= 0;
         if (contact) lastSeen = ai.frame;
@@ -220,7 +240,7 @@ namespace AirBaseResponse {
             }
         }
         for (int k = 0; k < 4; ++k) {
-            if (k == 2 && AirScreen::IntrusionCost() > 0) { ClearGroup(k); continue; }
+            if (k == 2) { ClearGroup(k); continue; } // legacy ground-escort slot
             const int index = selected[k == 2 ? 0 : (k == 3 ? 2 : k)];
             const int next = index < 0 ? -1 : aiBattle.GetGroundContactId(index);
             if (index >= 0) aims[k] = aiBattle.GetGroundContactPos(index);

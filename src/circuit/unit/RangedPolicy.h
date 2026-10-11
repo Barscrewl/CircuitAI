@@ -1,11 +1,20 @@
 #ifndef CIRCUIT_RANGED_POLICY_H
 #define CIRCUIT_RANGED_POLICY_H
 
+#include <string>
+
 namespace circuit {
 // JSON owns policy. The RANGED attribute is the only admission switch; these
 // values do not change legacy siege, squad, naval, air or specialist owners.
 struct RangedPolicy {
     enum class Mode { PRECISION, SKIRMISH, BOMBARDMENT, CARRIER };
+    // Empty family preserves every existing controller. Formation roles are
+    // policy, not unit names: same-family homogeneous cohorts may pair.
+    enum class FormationPosition { NONE, FRONT, REAR };
+    std::string formationFamily;
+    FormationPosition formationPosition = FormationPosition::NONE;
+    float formationSeparationMinimum = 64.f, formationSeparationMaximum = 96.f;
+    float withdrawalLeadSeconds = 0.f;
     Mode mode = Mode::SKIRMISH;
     float rangeFraction = .95f;
     float spacing = 96.f;

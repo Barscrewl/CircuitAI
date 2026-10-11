@@ -1,4 +1,5 @@
 """Rendered early/mid/late AIR combat capability checks; supplied units, not economy."""
+from script_settings import role_settings_path
 import argparse
 import json
 import re
@@ -41,7 +42,7 @@ source, count = re.subn(r'(\[GAME\]\s*\{)', lambda m: m[1] + '\n FixedRNGSeed=' 
 assert count == 1
 start_script.write_text(source)
 if a.assembly_radius is not None:
-    settings = scripts / 'global.as'
+    settings = role_settings_path(scripts, 'Air')
     source, count = re.subn(r'float StrikeAssemblyRadius = [\d.]+f;',
         'float StrikeAssemblyRadius = ' + str(a.assembly_radius) + 'f;', settings.read_text())
     assert count == 1

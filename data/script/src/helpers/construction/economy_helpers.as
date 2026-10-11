@@ -127,22 +127,6 @@ namespace EconomyHelpers {
         return (allowedByMetal < allowedByEnergy) ? allowedByMetal : allowedByEnergy;
     }
 
-    // Compute allowed T1 aircraft plants from incomes and per-plant income requirements.
-    // Returns min(floor(mi / metalIncomePerPlant), floor(ei / energyIncomePerPlant)), clamped to >= 0.
-    int AllowedT1AircraftPlantCountFromIncome(
-        float mi,
-        float ei,
-        float metalIncomePerPlant,
-        float energyIncomePerPlant
-    ) {
-        if (metalIncomePerPlant <= 0.0f || energyIncomePerPlant <= 0.0f) return 0; // defensive
-        int allowedByMetal = int(mi / metalIncomePerPlant);
-        int allowedByEnergy = int(ei / energyIncomePerPlant);
-        if (allowedByMetal < 0) allowedByMetal = 0;
-        if (allowedByEnergy < 0) allowedByEnergy = 0;
-        return (allowedByMetal < allowedByEnergy) ? allowedByMetal : allowedByEnergy;
-    }
-
     // Compute allowed T2 aircraft plants from incomes and per-plant income requirements.
     // Returns min(floor(mi / metalIncomePerPlant), floor(ei / energyIncomePerPlant)), clamped to >= 0.
     int AllowedT2AircraftPlantCountFromIncome(
@@ -207,47 +191,6 @@ namespace EconomyHelpers {
         return currentGantryCount < allowed;
     }
 
-    // Should the AI request factory assist? (parameterized to avoid globals inside helper)
-    bool ShouldAssistFactory(
-        bool hasT2Lab,
-        float energyIncome,
-        int t2ConstructionBotCount,
-        bool hasT1Lab,
-        int t1ConstructionBotCount,
-        float metalCurrent,
-        float metalIncome,
-        float t2EnergyIncomeRequired,
-        int t1CtorMin,
-        float t1MetalCurrentReq,
-        float t1MetalIncomeReq
-    ) {
-        bool result = (
-            (hasT2Lab && energyIncome > t2EnergyIncomeRequired && t2ConstructionBotCount < 1)
-            ||
-            (hasT1Lab && t1ConstructionBotCount < t1CtorMin && metalCurrent > t1MetalCurrentReq && metalIncome > t1MetalIncomeReq)
-        );
-        GenericHelpers::LogUtil("[Econ] ShouldAssistFactory result=" + (result ? "true" : "false"), 2);
-        return result;
-    }
-
-    // Should the freelance T2 constructor assist a nearby mex upgrade? Parameterized for reuse.
-    bool ShouldAssignFreelanceMexAssist(
-        const AIFloat3& in anchor,
-        float energyIncome,
-        float minEnergyIncome,
-        float metalIncome,
-        float maxMetalIncome,
-        int nearRadius,
-        CCircuitUnit@ freelanceT2BotConstructor
-    ) {
-        return (
-            Economy::MexTracker::AnyUpgradeInProgressNear(anchor, nearRadius)
-            && energyIncome > minEnergyIncome
-            && metalIncome < maxMetalIncome
-            && @freelanceT2BotConstructor !is null
-        );
-    }
-
     /******************** BUILDER CAP HELPERS (PURE) ********************/
     // Calculate T1 builder cap from metal income using the existing policy:
     // cap = 3 + 3 * floor(metalIncome / 15), clamped to [minCap, maxCap]
@@ -269,19 +212,6 @@ namespace EconomyHelpers {
         if (cap > maxCap) cap = maxCap;
         GenericHelpers::LogUtil("[Econ] CalculateT2BuilderCap: mi=" + metalIncome + " => " + cap + " (min=" + minCap + ", max=" + maxCap + ")", 4);
         return cap;
-    }
-
-    /******************** ASSIST POLICY HELPERS ********************/
-    // Should a secondary T2 constructor assist the primary?
-    // Decides purely from inputs to avoid global reads in callers.
-    bool ShouldSecondaryT2AssistPrimary(
-        float metalIncome,
-        float maxIncomeThreshold,
-        bool hasPrimaryT2BotConstructor
-    ) {
-        bool result = (metalIncome < maxIncomeThreshold && hasPrimaryT2BotConstructor);
-        GenericHelpers::LogUtil("[Econ] ShouldSecondaryT2AssistPrimary mi=" + metalIncome + "/" + maxIncomeThreshold + " hasPrimary=" + (hasPrimaryT2BotConstructor ? "true" : "false") + " => " + (result ? "true" : "false"), 3);
-        return result;
     }
 
     // Should a secondary T1 constructor assist the primary?
@@ -525,29 +455,6 @@ namespace EconomyHelpers {
             3
         );
         return econOk && countOk;
-    }
-
-    // New income-scaled T2 bot lab decision (preserve old ShouldBuildT2BotLab above for reference).
-    // Policy: compute allowed count from incomes using per-lab income requirements, enforce a minimum of 'minAllowed'
-    // and build if current count is below allowed. This mirrors the gantry logic style.
-    bool ShouldBuildT2BotLabFromIncome(
-        float mi,
-        float ei,
-        int currentT2BotLabCount,
-        float metalIncomePerLab,
-        float energyIncomePerLab,
-        int minAllowed
-    ) {
-        if (minAllowed < 1) minAllowed = 1; // ensure at least one T2 lab is always permitted by policy
-        int allowed = AllowedT2BotLabCountFromIncome(mi, ei, metalIncomePerLab, energyIncomePerLab);
-        if (allowed < minAllowed) allowed = minAllowed;
-        GenericHelpers::LogUtil(
-            "[Econ] ShouldBuildT2BotLabFromIncome: mi=" + mi + " ei=" + ei +
-            " metalPerLab=" + metalIncomePerLab + " energyPerLab=" + energyIncomePerLab +
-            " allowed=" + allowed + " current=" + currentT2BotLabCount,
-            3
-        );
-        return currentT2BotLabCount < allowed;
     }
 
     // Decide if we should build a T1 resurrection submarine now.

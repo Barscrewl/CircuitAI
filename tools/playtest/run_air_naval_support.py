@@ -1,4 +1,5 @@
 """Isolated radar patrol and torpedo fleet-relief acceptance games (D194)."""
+from script_settings import role_settings_path
 import argparse, hashlib, json, shutil, subprocess, sys
 from pathlib import Path
 import playtest, storage
@@ -83,7 +84,7 @@ namespace AirNavalProbe {
     for profile in ('experimental_hard','experimental_balanced','experimental_terrible'):
         f=src/profile/'main.as';s=f.read_text();f.write_text(s.replace('ArtilleryPolicy::Check();','ArtilleryPolicy::Check(); AirNavalProbe::Tick();')+'\n'+probe)
     if a.case in ('patrol','zero'):
-        f=src/'src/global.as';s=f.read_text().replace('int RadarMaxWaitSeconds = 90;','int RadarMaxWaitSeconds = 180;');f.write_text(s)
+        f=role_settings_path(src/'src', 'Air');s=f.read_text().replace('int RadarMaxWaitSeconds = 90;','int RadarMaxWaitSeconds = 180;');f.write_text(s)
     cfg={'case':a.case,'side':a.side,'speed':10,'recon':recon,'headless':a.headless,'map':a.map}
     (d/'LuaUI/Config').mkdir(parents=True,exist_ok=True);(d/'LuaUI/Config/air_naval_support.lua').write_text('return '+lua(cfg)+'\n')
     expects=[('fixture',r'AirNavalWatch.*loaded')]

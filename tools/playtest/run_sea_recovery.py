@@ -1,4 +1,5 @@
 """SEA recovery fixture or 8v8 natural production benchmark, with immutable pins."""
+from script_settings import role_settings_path
 import argparse
 import hashlib
 import json
@@ -54,7 +55,7 @@ def main():
         assert n == 1
         m.write_text(s)
     if a.fixture:
-        g=staged/'src/global.as';g.write_text(g.read_text().replace('bool FleetOperations = true;', 'bool FleetOperations = false;'))
+        g=role_settings_path(staged/'src', 'Sea');g.write_text(g.read_text().replace('bool FleetOperations = true;', 'bool FleetOperations = false;'))
         for name, manager, wait in [('builder','aiBuilderMgr','TaskB::Wait(60*SECOND)'),
                                      ('factory','aiFactoryMgr','TaskS::Wait(false,SECOND)'),
                                      ('military','aiMilitaryMgr','TaskF::Wait(60*SECOND)')]:

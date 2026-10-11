@@ -78,6 +78,14 @@ inline bool KeepMove(ranged::Point from, ranged::Point live, ranged::Point wante
 inline bool Admit(ranged::Point recruit,ranged::Point anchor,float radius) {
     return ranged::DistanceSq(recruit,anchor)<=radius*radius;
 }
+// Same final-waypoint tolerance as the controller's route walker, and the
+// existing two-slot neighborhood for a static staging reservation. The caller
+// must prove completion, unchanged objective/mode, safety and free spacing.
+inline bool CompletedStage(ranged::Point current,ranged::Point completed,
+                           ranged::Point desired,float spacing) {
+    return ranged::DistanceSq(current,completed)<4096.f
+        && ranged::DistanceSq(completed,desired)<4.f*spacing*spacing;
+}
 // Cost is only a conservative local force proxy. A price advantage never
 // substitutes for catchability or surviving the approach. No engine state here.
 inline bool CanRush(float ownRange, float enemyRange, float speed, float enemySpeed,

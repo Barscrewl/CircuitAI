@@ -1,7 +1,7 @@
 function widget:GetInfo() return {name="SEA recovery and production observer",layer=126,enabled=true} end
 local cfg=VFS.Include("LuaUI/Config/sea_recovery.lua")
 local born, yards, subs, empty, last, passed={}, {}, {}, {}, {}, {}
-local flag, ordinary, wreck
+local flag, ordinary, wreck, expensiveWreck
 local claimed = {}
 local roster={
  armada={"armsy","armasy","armplat","armuwfus","armuwmmm","armnanotcplat","armepoch"},
@@ -70,6 +70,7 @@ function widget:UnitFinished(id,def,team)
   if d.name=="armepoch" then flag=id end
   if d.name=="armcrus" and not ordinary then ordinary=id end
   if d.name=="armroy" then wreck=id end
+  if d.name=="corblackhy" then expensiveWreck=id end
  end
 end
 function widget:UnitDestroyed(id)
@@ -92,7 +93,7 @@ function widget:GameFrame(f)
  end
  if cfg.fixture then
   if f==300 then
-   give("armrecl",6200,10700);give("armepoch",6450,10700);give("armcrus",6000,10550)
+   for i=0,3 do give("armrecl",6200+i*64,10700) end;give("armepoch",6450,10700);give("armcrus",6000,10550)
    give("armroy",6150,10900)
   end
   if f==450 then
@@ -101,13 +102,16 @@ function widget:GameFrame(f)
    if wreck then Spring.SendLuaRulesMsg("$dev$:wreckunits "..wreck) end
    log("fixture low-metal reclaim with damaged flagship and ordinary ship")
   end
-  if f==1800 then
+  if f==3600 then
    for i=0,11 do give("armuwmmm",8000+(i%4)*150,11000+math.floor(i/4)*150) end
    for i=0,5 do give("armuwfus",7700+i*200,11600) end
   end
-  if f==2400 then give("armroy",6300,10900) end
+  if f==4200 then give("armroy",6300,10900);give("corblackhy",6600,10900) end
   if f==5400 and ordinary then Spring.SendLuaRulesMsg("$dev$:sethealth "..ordinary..":10") end
-  if f==2460 and wreck then Spring.SendLuaRulesMsg("$dev$:wreckunits "..wreck) end
+  if f==4260 and wreck then
+   Spring.SendLuaRulesMsg("$dev$:wreckunits "..wreck)
+   if expensiveWreck then Spring.SendLuaRulesMsg("$dev$:wreckunits "..expensiveWreck) end
+  end
   if f==7200 then
    give("armsy",5800,10700);give("armasy",6800,11100);give("armplat",7150,10600)
    give("armcs",6500,11000);give("armcs",6500,11150);give("armacsub",6850,11400);give("armacsub",7000,11400)
@@ -116,8 +120,25 @@ function widget:GameFrame(f)
   end
  end
  if f%30~=0 then return end
+ local resurrectionGroups={}
  for id,team in pairs(subs) do
   local cmd,_,_,target=Spring.GetUnitCurrentCommand(id)
+  if cfg.fixture and cmd==CMD.RESURRECT then
+   local orders=Spring.GetUnitCommands(id,1) or {}
+   local parameters=orders[1] and orders[1].params or {}
+   local key=table.concat(parameters,",")
+   resurrectionGroups[key]=(resurrectionGroups[key] or 0)+1
+   if resurrectionGroups[key]>=3 then pass("grouped-resurrection") end
+   if #parameters>=1 and parameters[1]>=Game.maxUnits then
+    local name=Spring.GetFeatureResurrect(parameters[1]-Game.maxUnits)
+    local feature=parameters[1]-Game.maxUnits
+    local x,_,z=Spring.GetFeaturePosition(feature)
+    if not passed["high-value-resurrection"] then log("rez-target params="..key.." feature="..feature.." name="..tostring(name).." x="..tostring(x).." z="..tostring(z)) end
+    if name=="corblackhy" or (x and math.abs(x-6600)<32 and math.abs(z-10900)<32) then pass("high-value-resurrection") end
+   elseif #parameters>=3 and math.abs(parameters[1]-6600)<32 and math.abs(parameters[3]-10900)<32 then
+    pass("high-value-resurrection")
+   end
+  end
   local sig=tostring(cmd)..":"..tostring(target)
   if last[id]~=sig then
    last[id]=sig
@@ -127,6 +148,7 @@ function widget:GameFrame(f)
    if cfg.fixture then
     if cmd==CMD.RECLAIM then pass("reclaim") end
     if cmd==CMD.REPAIR and target==flag then pass("flagship-repair") end
+    if cmd==CMD.REPAIR and f<1800 and m<ms*.2 then pass("repair-before-reclaim") end
     if cmd==CMD.RESURRECT then pass("resurrect") end
     if cmd==CMD.REPAIR and target==ordinary then pass("ordinary-repair") end
    end

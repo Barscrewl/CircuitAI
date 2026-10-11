@@ -75,7 +75,65 @@ static void Differential() {
     ws.search.Begin(n+1);Check(!ws.search.Seen(n),"workspace resize");
     std::cout<<"5600 differential route cases (two executions each) passed\n";
 }
+static void ExactResultCache() {
+    Terrain terrain; terrain.gw=20; terrain.gh=12;
+    terrain.height.assign(240,-20); terrain.surfaceSlope.assign(240,0);
+    terrain.body8.assign(240,0); for(auto& pass:terrain.pass) pass.assign(240,1);
+    Grid threat(240,0); PointWorkspace workspace; Solver solver(terrain);
+    const Point origin(96,0,96), goal(1120,0,672);
+    auto query=[&](int movement, std::uint64_t publication, const std::vector<char>* obstacles=nullptr) {
+        return solver.PointRoute(origin,goal,movement,threat,1,1,1,10,obstacles,&workspace,publication);
+    };
+    const auto expected=query(L_AMPH,1); const auto searches=solver.Searches();
+    Check(!expected.empty(),"cache fixture route exists");
+    Check(query(L_AMPH,1)==expected && solver.Searches()==searches,"exact hit must avoid Dijkstra");
+    query(L_LAND,1); Check(solver.Searches()==searches+1,"movement class belongs to key");
+    query(L_AMPH,2); Check(solver.Searches()==searches+2,"new threat publication must search");
+    const auto beforeUnversioned=solver.Searches(); query(L_AMPH,0); query(L_AMPH,0);
+    Check(solver.Searches()==beforeUnversioned+2,"unversioned input cannot cache results");
+    std::vector<char> obstacles(240,0); query(L_AMPH,3,&obstacles);
+    const auto beforeOverlay=solver.Searches(); obstacles[expected[expected.size()/2]]=1;
+    const auto diverted=query(L_AMPH,3,&obstacles);
+    Check(solver.Searches()==beforeOverlay+1 && diverted!=expected,"live obstacles bypass cache");
+    const auto beforeCosts=solver.Searches(); query(L_AMPH,4);
+    solver.PointRoute(origin,goal,L_AMPH,threat,1,2,1,10,nullptr,&workspace,4);
+    Check(solver.Searches()==beforeCosts+2,"changed costs invalidate results");
+    // A different immutable terrain instance must not inherit an equal-sized cache.
+    Terrain replacement=terrain; Solver next(replacement);
+    next.PointRoute(origin,goal,L_AMPH,threat,1,2,1,10,nullptr,&workspace,4);
+    Check(next.Searches()==1,"terrain ownership invalidates results");
+    // Disconnected but individually passable endpoints cache negative answers.
+    for(int z=0;z<12;++z) replacement.pass[L_AMPH][z*20+10]=0;
+    PointWorkspace disconnected; Solver blocked(replacement);
+    Check(blocked.PointRoute(origin,goal,L_AMPH,threat,1,1,1,10,nullptr,&disconnected,5).empty(),"disconnected route");
+    blocked.PointRoute(origin,goal,L_AMPH,threat,1,1,1,10,nullptr,&disconnected,5);
+    Check(blocked.Searches()==1,"exact negative answer reused");
+    PointWorkspace bounded;
+    for(int cell=0;cell<90;++cell) {
+        const Point endpoint((cell%20+.5f)*64,0,(cell/20+.5f)*64);
+        solver.PointRoute(origin,endpoint,L_AMPH,threat,1,1,1,10,nullptr,&bounded,6);
+    }
+    Check(bounded.routes.size()==PointWorkspace::maximumCachedRoutes,"cache memory bounded");
+    auto beforeEviction=solver.Searches();
+    solver.PointRoute(origin,{32,0,32},L_AMPH,threat,1,1,1,10,nullptr,&bounded,6);
+    Check(solver.Searches()==beforeEviction+1,"FIFO eviction recomputes valid result");
+    // Paired exact-input component cost, preserving existing scratch/cost reuse
+    // in both arms. Only completed-result reuse differs, not Dijkstra's oracle.
+    auto measure=[&](bool reuse) {
+        PointWorkspace retained; std::size_t cells=0;
+        const auto start=std::chrono::steady_clock::now();
+        for(int repeat=0;repeat<2000;++repeat) {
+            if(!reuse) {retained.routes.clear();retained.routeOrder.clear();retained.nextRoute=0;}
+            cells+=solver.PointRoute(origin,goal,L_AMPH,threat,1,1,1,10,nullptr,&retained,7).size();
+        }
+        Check(cells==expected.size()*2000,"cached benchmark path parity");
+        return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+    };
+    const double uncached=measure(false), cached=measure(true);
+    std::cout<<"Exact route cache 2000 queries: uncached_ms="<<uncached<<" cached_ms="<<cached<<"\n";
+}
 int main() {
+    ExactResultCache();
     Differential();
     Terrain t; t.gw=20; t.gh=12;
     t.height.assign(240,-100); t.surfaceSlope.assign(240,0); t.body8.assign(240,0);

@@ -1,0 +1,13 @@
+// Defaults only: no reset or application side effects. Keep this explicit order.
+#include "shared/defense.as"
+#include "shared/ferry.as"
+#include "shared/constructor_assistance.as"
+#include "shared/military.as"
+#include "shared/spam.as"
+#include "shared/construction.as"
+#include "roles/tech.as"
+#include "roles/air.as"
+#include "roles/front.as"
+#include "roles/support.as"
+#include "roles/sea.as"
+#include "roles/tactical.as"

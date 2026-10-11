@@ -53,7 +53,7 @@ class NukeBenchmarkTests(unittest.TestCase):
             directory = Path(tmp)
             script = directory / 'script.txt'
             script.write_text('[GAME]\n{\n [AI0] { [OPTIONS] { random_seed=22901; } }\n}', encoding='utf-8')
-            chain = directory / 'AI/Skirmish/BARbTest/test/script/src/roles/tech_chain.as'
+            chain = directory / 'AI/Skirmish/BARbTest/test/script/src/roles/tech/tech_chain.as'
             chain.parent.mkdir(parents=True)
             chain.write_text('objective = Global::RoleSettings::Tech::RushObjective;', encoding='utf-8')
             prepare_trial(directory, 22901, 'auto')

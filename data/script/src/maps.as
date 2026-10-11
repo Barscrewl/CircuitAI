@@ -21,6 +21,7 @@
 #include "maps/sinkhole_network.as"
 #include "maps/ancient_bastion_remake.as"
 #include "maps/mediterraneum.as"
+#include "maps/pinewood_derby.as"
 
 // Additional configs generated from the BAR map-list export: the popular16p pool
 // and every other map with a player count of 12 or more.
@@ -90,6 +91,7 @@ namespace Maps {
 		SupremeIsthmus::registerObjectives();
 
 		mapManager.RegisterMapConfig(SupremeIsthmus::config);
+		mapManager.RegisterMapConfig(PinewoodDerby::config);
 		mapManager.RegisterMapConfig(AllThatGlitters::config);
         mapManager.RegisterMapConfig(EightHorses::config);
         mapManager.RegisterMapConfig(FlatsAndForests::config);

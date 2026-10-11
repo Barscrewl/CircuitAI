@@ -27,6 +27,7 @@
 #include "AISCommands.h"
 #include "Sim/Units/CommandAI/Command.h"
 #include "Command.h"
+#include "UnitDef.h"
 #include "Log.h"
 #include "spring/SpringMap.h"
 
@@ -55,6 +56,7 @@ using namespace springai;
 #define FERRY_LIFT_HEIGHT		(SQUARE_SIZE / 2)
 #define FERRY_GROUND_TOLERANCE	1.f
 #define FERRY_LANDED_TICKS		2
+constexpr int FERRY_MISSING_UNLOAD_TICKS = 2;
 #define FERRY_RISE				(SQUARE_SIZE * 2)  // D-112: aboard = risen this much above where the cargo stood
 #define FERRY_RISE_GRACE		(FRAMES_PER_SEC * 4)  // D-112: time after the load for the cargo to rise
 #define FERRY_UNLOAD_RADIUS		(SQUARE_SIZE * 32)  // D-110: the area unload's radius: the engine refuses an unload with no standing room for the cargo inside it (played: 96 at a teammate's start never found any)
@@ -178,6 +180,7 @@ void CFerryTask::Enter(EState next)
 {
 	state_ = next;
 	stateFrame = manager->GetCircuit()->GetLastFrame();
+	missingUnloadTicks = 0;
 }
 
 bool CFerryTask::IsExpired(int frame) const
@@ -238,6 +241,14 @@ void CFerryTask::HoldCargo(CCircuitUnit* cargo)
 {
 	CCircuitAI* circuit = manager->GetCircuit();
 	CBuilderManager* builderMgr = circuit->GetBuilderManager();
+	if (cargo != nullptr && cargo->GetManager() == circuit->GetMilitaryManager()) {
+        auto* transport = GetTransport();
+        if (transport == nullptr) return;
+        auto* military = circuit->GetMilitaryManager();
+        military->AssignTask(cargo, military->EnqueueCargoHold(transport->GetId()));
+        TRY_UNIT(circuit, cargo, cargo->CmdStop();)
+        return;
+    }
 	if ((cargo == nullptr) || (cargo->GetManager() != builderMgr)) {
 		return;
 	}
@@ -303,13 +314,32 @@ void CFerryTask::SetHoldPos(const AIFloat3& pos)
 	}
 }
 
+bool CFerryTask::CanCarry(int id) const
+{
+    auto* cargo = manager->GetCircuit()->GetTeamUnit(id);
+    auto* transport = GetTransport();
+    if (cargo == nullptr || transport == nullptr || cargo == transport || cargo->GetUnit()->IsBeingBuilt()) return false;
+    auto* task = cargo->GetTask();
+    if (task != nullptr && (task->GetType() == IUnitTask::Type::PLAYER || task->IsExternalControlled())) return false;
+    auto* load = cargo->GetCircuitDef()->GetDef();
+    auto* carrier = transport->GetCircuitDef()->GetDef();
+    // Definition-level preflight, once per dispatch. Recoil uses footprint
+    // scale 2 for transport size. Lua restrictions and dynamic mass can still
+    // refuse loading; the existing load deadline is the authoritative fallback.
+    return !load->IsNotTransportable() && carrier->GetTransportCapacity() > 0
+        && load->GetXSize() <= carrier->GetTransportSize() * 2
+        && load->GetXSize() >= carrier->GetMinTransportSize() * 2
+        && load->GetMass() >= carrier->GetMinTransportMass()
+        && load->GetMass() <= carrier->GetTransportMass();
+}
+
 bool CFerryTask::SetCargo(int id, const AIFloat3& pos, float surfaceThreat, float airThreat)
 {
 	if ((state_ != EState::IDLE) && (state_ != EState::DONE) && (state_ != EState::FAILED)) {
 		return false;  // a run is already in flight
 	}
 	CCircuitUnit* cargo = manager->GetCircuit()->GetTeamUnit(id);
-	if ((cargo == nullptr) || !geom::is_valid(pos)) {
+	if ((cargo == nullptr) || !geom::is_valid(pos) || !CanCarry(id)) {
 		return false;
 	}
 	cargoId = id;
@@ -545,6 +575,11 @@ void CFerryTask::Update()
 			const bool notAboard = !IsAboard(cargo, transport, frame);
 			const bool landed = onGround || (!IsLifted(cargo, frame) && notAboard) || (unloadOver && notAboard);
 			landedTicks = landed ? (landedTicks + 1) : 0;
+			// Supreme reproduction: the engine rejected the area order immediately,
+			// leaving cargo airborne and an empty queue for the entire 45 s timeout.
+			// Reconcile two observations before retrying a different legal spot;
+			// an active descent or detached cargo never takes this recovery branch.
+			missingUnloadTicks = (unloadOver && !landed) ? missingUnloadTicks + 1 : 0;
 			if (landedTicks >= FERRY_LANDED_TICKS) {
 				circuit->LOG("FERRY: delivered cargo %i at (%.0f, %.0f)", cargoId, landPos.x, landPos.z);
 				Enter(EState::DONE);
@@ -553,7 +588,7 @@ void CFerryTask::Update()
 				if (geom::is_valid(holdPos)) {
 					GoTo(transport, holdPos);
 				}
-			} else if (IsExpired(frame)) {
+			} else if (IsExpired(frame) || missingUnloadTicks >= FERRY_MISSING_UNLOAD_TICKS) {
 				if (++unloadRetries > FERRY_UNLOAD_RETRIES) {
 					Fail("unload did not take");
 				} else {

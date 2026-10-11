@@ -34,9 +34,11 @@ ITaskModule::ITaskModule(CCircuitAI* circuit, IScript* script)
 
 ITaskModule::~ITaskModule()
 {
-	delete nilTask;
-	delete idleTask;
-	delete playerTask;
+	// Units and script handles can outlive manager membership. Release the
+	// owner's reference, never bypass the shared task lifetime with delete.
+	nilTask->ClearRelease();
+	idleTask->ClearRelease();
+	playerTask->ClearRelease();
 
 	for (IUnitTask* task : updateTasks) {
 		task->ClearRelease();

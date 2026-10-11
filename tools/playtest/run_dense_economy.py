@@ -1,4 +1,5 @@
 """Physical dense economy / naval support acceptance, in isolated staged data."""
+from script_settings import role_settings_path, role_script_path
 import argparse, hashlib, json, re, shutil, subprocess, sys
 from pathlib import Path
 import playtest, storage
@@ -10,6 +11,8 @@ def main():
     p.add_argument('--dll',type=Path,required=True)
     p.add_argument('--data',type=Path,default=playtest.REPO/'data')
     p.add_argument('--minutes',type=int,default=8)
+    p.add_argument('--game',default='Beyond All Reason test-31536-188afa8')
+    p.add_argument('--profile',default='experimental_balanced')
     a=p.parse_args(); role='AIR' if a.case=='air' else 'SEA'
     d=storage.allocate(role.lower(),'layout','dense-'+a.case,'glacial','supplied',seed=1901)
     print('DENSE_DIRECTORY='+str(d),flush=True)
@@ -18,14 +21,14 @@ def main():
     starts.write_text(f'StartSpot(AIFloat3({start[0]},0,{start[1]}), AiRole::{role}, false),\nStartSpot(AIFloat3(7000,0,6500), AiRole::{role}, false),\n')
     call=[sys.executable,str(playtest.HERE/'playtest.py')]
     subprocess.run(call+['stage','--dir',str(d),'--dll',str(a.dll),'--data',str(a.data),'--map','Glacial Gap v1.1','--map-file',str(starts),
-        '--game','Beyond All Reason test-31479-433a460','--engine','recoil_2026.07.04','--role',role,'--roles','all','--ally-spots','1',
-        '--side','armada','--bonus','0','--ai-option','profile=experimental_hard','--ai-option','random_seed=1901',
+        '--game',a.game,'--engine','recoil_2026.07.04','--role',role,'--roles','all','--ally-spots','1',
+        '--side','armada','--bonus','0','--ai-option','profile='+a.profile,'--ai-option','random_seed=1901',
         '--speed','15','--minutes',str(a.minutes),'--shots','2,5,7','--width','1280','--height','720','--lean-render',
         '--modoption','deathmode=neverend','--modoption','startmetal=100000','--modoption','startmetalstorage=100000',
         '--modoption','startenergy=1000000','--modoption','startenergystorage=1000000',
         '--extra-widget',str(playtest.HERE/'widgets/dense_economy_watch.lua')],check=True)
     staged=d/'AI/Skirmish/BARbTest/test/script'; src=staged/'src'
-    g=src/'global.as';before,sea=g.read_text().split('namespace Sea {',1)
+    g=role_settings_path(src, 'Sea');before,sea=g.read_text().split('namespace Sea {',1)
     sea=re.sub(r'bool ExperimentalBuild = (?:true|false);','bool ExperimentalBuild = true;',sea,count=1)
     g.write_text(before+'namespace Sea {'+sea)
     probe=(playtest.HERE/'dense_economy_probe.as').read_text().replace('bool supportCase=false;',f'bool supportCase={str(a.case=="support").lower()};')
@@ -33,7 +36,7 @@ def main():
     for name,method in [('builder','MakeTask'),('factory','Produce')]:
         f=src/'manager'/f'{name}.as';s=f.read_text();b=s.index('{',s.index('IUnitTask@ AiMakeTask(CCircuitUnit@ u)'))
         f.write_text('#include "../roles/dense_economy_probe.as"\n'+s[:b+1]+f'\n if (ai.frame>=0) return DenseProbe::{method}(u);\n'+s[b+1:])
-    f=src/'roles'/('air_build.as' if role=='AIR' else 'sea_build.as');s=f.read_text();b=s.index('{',s.index('void Tick()'))
+    f=role_script_path(src, role.lower()+'_build');s=f.read_text();b=s.index('{',s.index('void Tick()'))
     f.write_text(s[:b+1]+'\n DenseProbe::Tick();\n'+s[b+1:])
     f=src/'setup.as';s=f.read_text();f.write_text(s.replace('Global::AISettings::Role = derivedRole;',f'derivedRole=AiRole::{role};\nGlobal::AISettings::Role = derivedRole;'))
     case_path=playtest.HERE/'cases'/('air/layout/dense-converters.json' if a.case=='air' else 'sea/layout/dense-economy.json' if a.case=='sea' else 'sea/layout/dense-support.json')

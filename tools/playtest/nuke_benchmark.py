@@ -3,6 +3,7 @@
 Definitions live here; unique raw games and compact reports live in the sibling
 benchmark checkout. A missed deadline is retained, never overwritten by a retry.
 """
+from script_settings import role_script_path
 import argparse
 import hashlib
 import json
@@ -66,7 +67,7 @@ def prepare_trial(directory, seed, opponent_objective):
     if count != 1:
         raise ValueError("Missing game block")
     script.write_text(source, encoding="utf-8")
-    chain = directory / "AI/Skirmish/BARbTest/test/script/src/roles/tech_chain.as"
+    chain = role_script_path(directory / 'AI/Skirmish/BARbTest/test/script/src', 'tech_chain')
     source = chain.read_text(encoding="utf-8")
     marker = "objective = Global::RoleSettings::Tech::RushObjective;"
     if source.count(marker) != 1:

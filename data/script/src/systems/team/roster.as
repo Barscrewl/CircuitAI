@@ -49,12 +49,36 @@ namespace Roster {
         bool landLocked = false;
         int spotIndex = -1;        // index into Global::Map::Config.StartSpots, -1 when none
         bool isLeader = false;
+        int advancedConstructors = 0; // explicit allied acknowledgement, never allied task inspection
+        int commanderId = -1; // publish identity on change, query live position only when needed
         int receivedFrame = -1;
     }
 
     dictionary entries;            // team id string -> Entry@
     int firstBroadcastFrame = -1;
     int lastBroadcastFrame = -1;
+    int lastAdvancedConstructors = -1;
+    int lastCommanderId = -1;
+
+    int CommanderId() { return Builder::commander is null ? -1 : Builder::commander.id; }
+    AIFloat3 DeliveryAnchor(Entry@ entry) {
+        if (entry is null) return AIFloat3(-1.0f, 0.0f, -1.0f);
+        if (entry.commanderId >= 0) {
+            const AIFloat3 commander = ai.GetFriendlyUnitPosition(entry.commanderId, entry.teamId);
+            if (commander.x >= 0.0f) return commander;
+        }
+        return entry.firstMex;
+    }
+
+    int AdvancedConstructors() {
+        int completed = 0;
+        array<string> definitions = UnitHelpers::GetAllT2BotConstructors();
+        for (uint index = 0; index < definitions.length(); ++index) {
+            CCircuitDef@ definition = ai.GetCircuitDef(definitions[index]);
+            if (definition !is null) completed += definition.count - aiBuilderMgr.GetUnfinishedCount(definition);
+        }
+        return completed;
+    }
 
     AIFloat3 firstMex(-1.0f, 0.0f, -1.0f);
     void ObserveMex()
@@ -133,7 +157,8 @@ namespace Roster {
             + "|" + (Global::Map::LandLocked ? 1 : 0)
             + "|" + OwnSpotIndex()
             + "|" + ((ai.teamId == ai.GetLeadTeamId()) ? 1 : 0)
-            + "|" + int(firstMex.x) + "|" + int(firstMex.z);
+            + "|" + int(firstMex.x) + "|" + int(firstMex.z)
+            + "|" + AdvancedConstructors() + "|" + CommanderId();
     }
 
     // Returns null when the message is not a roster line of a supported version.
@@ -158,6 +183,8 @@ namespace Roster {
                 e.firstMex = AIFloat3(float(x), 0.0f, float(z));
         }
         e.receivedFrame = ai.frame;
+        if (parts.length() >= 15) e.advancedConstructors = int(parseInt(parts[14]));
+        if (parts.length() >= 16) e.commanderId = int(parseInt(parts[15]));
         return e;
     }
 
@@ -187,6 +214,15 @@ namespace Roster {
     {
         if (!IsReady()) return;
         ObserveMex();
+        // A bounded definition count query, only broadcast on a state change.
+        // Recipients can decline duplicate SUPPORT gifts after TECH supplied them.
+        const int advanced = AdvancedConstructors();
+        const int commander = CommanderId();
+        if (advanced != lastAdvancedConstructors || commander != lastCommanderId) {
+            lastAdvancedConstructors = advanced;
+            lastCommanderId = commander;
+            Reannounce();
+        }
         if (AllyTeamIds().length() == 0) return;              // no allied BARb to talk to
         if (lastBroadcastFrame >= 0 && IsComplete()) return;  // everyone answered
         if (firstBroadcastFrame >= 0 && (ai.frame - firstBroadcastFrame) >= GiveUpFrames) return;
@@ -283,19 +319,6 @@ namespace Roster {
             if (all[i].isLeader) return all[i];
         }
         return null;
-    }
-
-    // Allied start closest to a position (e.g. our own start for "who is next to us").
-    Entry@ Nearest(const AIFloat3 &in pos)
-    {
-        Entry@ best = null;
-        float bestDist = 1e30f;
-        array<Entry@>@ all = All();
-        for (uint i = 0; i < all.length(); ++i) {
-            const float d = MapHelpers::SqDist(pos, all[i].startPos);
-            if (d < bestDist) { bestDist = d; @best = all[i]; }
-        }
-        return best;
     }
 
     int Count() { return int(entries.getSize()); }

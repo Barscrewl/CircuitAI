@@ -58,6 +58,10 @@ int main(int argc, char** argv) {
             if (failures == 0) ++failures;
         }
         ctx->Release(); ++executed;
+        // Long differential fixtures allocate script-class graphs. Reclaim
+        // unreachable graphs between test cases, as the game does between
+        // callbacks; do not include this cleanup in measured benchmark cases.
+        if (!benchmark) engine->GarbageCollect(asGC_FULL_CYCLE);
         if (benchmark) {
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             unsigned current = 0, destroyed = 0;

@@ -33,6 +33,16 @@ int main() {
 	cb.Unit_CurrentCommand_getTimeOut=Timeout;
 	cb.Unit_CurrentCommand_getParams=Params;
 	circuit::CUnitAPI api(&cb,7);
+	queue.clear(); reads=0;
+	assert(!api.HasQueuedCommand(12,CMD_WAIT) && reads==1);
+	queue={{CMD_MOVE,{10,0,20}},{CMD_WAIT,{}}};
+	assert(api.HasQueuedCommand(12,CMD_WAIT)); // later WAIT must be removed too
+	queue={{CMD_WAIT,{}},{CMD_MOVE,{10,0,20}}};
+	assert(api.HasQueuedCommand(12,CMD_WAIT));
+	queue={{-123,{}},{-456,{}}}; // factory build queue, no WAIT
+	assert(!api.HasQueuedCommand(12,CMD_WAIT));
+	queue.push_back({CMD_WAIT,{}}); // same-frame queue mutation, no memo
+	assert(api.HasQueuedCommand(12,CMD_WAIT));
 	int checks=0;
 	auto test=[&](std::vector<Entry> q,bool expected,int target=42,int frame=100) {
 		queue=std::move(q);

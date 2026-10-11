@@ -12,6 +12,7 @@
 #include "terrain/TerrainData.h"
 #include "unit/CircuitUnit.h"
 #include "util/DefinitionCounts.h"
+#include "spring/ResurrectionClaim.h"
 
 #include <map>
 #include <set>
@@ -244,6 +245,22 @@ namespace TaskB {
 
 class CBuilderManager final: public ITaskModule {
 public:
+    void ClearBuildRadii() { buildRadii.clear(); }
+    // Optional script-owned placement limits, independent of role names.
+    // Empty for legacy callers. Definition lookup is logarithmic in the small
+    // configured set; final sites are checked as well as requested anchors.
+    void SetBuildRadius(const CCircuitDef* definition, const springai::AIFloat3& center, float radius) {
+        if (!definition) return;
+        if (radius < 0.f) buildRadii.erase(definition->GetId());
+        else buildRadii[definition->GetId()] = {center, radius * radius};
+    }
+    bool IsBuildPositionAllowed(const CCircuitDef* definition, const springai::AIFloat3& position) const {
+        const auto found = buildRadii.find(definition->GetId());
+        return found == buildRadii.end() || position.SqDistance2D(found->second.first) <= found->second.second;
+    }
+private:
+    std::map<int, std::pair<springai::AIFloat3, float>> buildRadii;
+public:
 	friend class CBuilderScript;
 
 	CBuilderManager(CCircuitAI* circuit);
@@ -299,11 +316,14 @@ public:
 	IUnitTask* FindQueuedTask(CCircuitUnit* builder, IBuilderTask::BuildType type);
 	// mode 0: metal features, 1: completed naval repair (optional def filter),
 	// 2: naval wreck resurrection. Script orders the independent queries.
-	IBuilderTask* FindRecoveryTask(CCircuitUnit* unit, int mode, float radius, const CCircuitDef* preferred);
+	IBuilderTask* FindRecoveryTask(CCircuitUnit* unit, int mode, float radius, const CCircuitDef* preferred, int groupLimit = 1, bool highestValue = false, float combatClearance = 0.f);
     float GetRecoveryMetal(CCircuitUnit* worker, float radius);
+    bool ReceiveResurrectionClaim(const char* message);
 private:
+    struct SRelayedResurrection { ResurrectionClaim claim; int team; int expires; };
+    std::map<int, SRelayedResurrection> relayedResurrections;
     void RefreshRecoveryFeatures();
-	struct SRecoveryFeature { int id; springai::AIFloat3 pos; float metal; bool resurrect; };
+	struct SRecoveryFeature { int id; springai::AIFloat3 pos; float metal; bool resurrect; float vesselMetal; };
 	std::vector<SRecoveryFeature> recoveryFeatures;
 	int recoveryFrame = -100000;
 public:
@@ -329,7 +349,7 @@ public:
 	// apply, each is taken off its task and put on one shared reclaim of the
 	// target now. Returns how many were off it (before applying); -1 if the
 	// target is gone.
-	int TurretsOnReclaim(int targetId, float margin, bool apply);
+	int TurretsOnReclaim(int targetId, float margin, bool apply, bool preserveReclaimPriority = false);
 	int GetQueuedBuildCount(IBuilderTask::BuildType type, const CCircuitDef* buildDef) const;
 	bool CanEnqueueTask(const unsigned mod = 8) const { return buildTasksCount < workers.size() * mod; }
 	const std::set<IBuilderTask*>& GetTasks(IBuilderTask::BuildType type) const;
@@ -339,6 +359,7 @@ public:
 	IBuilderTask* EnqueueLayout(const TaskB::SBuildTask& ti, const std::string& groupName, CCircuitUnit* builder);
 	IBuilderTask* EnqueueFactoryNano(const TaskB::SBuildTask& ti, CCircuitUnit* builder);
 	IUnitTask* Enqueue(const TaskB::SServBTask& ti);
+	IUnitTask* FindMatchingGuard(CCircuitUnit* unit, const TaskB::SServBTask& ti);
 	virtual CRetreatTask* EnqueueRetreat() override;
 	inline IBuilderTask* EnqueueB(const TaskB::SServBTask& ti) {
 		assert((ti.type == IBuilderTask::BuildType::PATROL) || (ti.type == IBuilderTask::BuildType::GUARD));

@@ -1,4 +1,5 @@
 """Pin, run and archive an isolated SEA migration comparison (ordinary resources)."""
+from script_settings import role_settings_path, role_script_path
 import argparse
 import hashlib
 import json
@@ -26,6 +27,7 @@ def main():
     p.add_argument('--side',choices=('armada','cortex','legion'),default='armada')
     p.add_argument('--profile',default='experimental_hard')
     p.add_argument('--game',default='Beyond All Reason test-31479-433a460')
+    p.add_argument('--assessment-observer',action='store_true',help='Read-only per-UnitDef naval combat coverage')
     p.add_argument('--economy-observer',action='store_true',help='Record all teams conversion capacity and advanced naval economy')
     p.add_argument('--roles',default='SEA')
     p.add_argument('--headless',action='store_true')
@@ -56,6 +58,8 @@ def main():
         '--ai-option','profile='+a.profile,'--ai-option','random_seed='+str(a.seed),
         '--extra-widget',str(playtest.HERE/'widgets/sea_watch.lua')]
     if a.headless: cmd.append('--headless')
+    if a.assessment_observer:
+        cmd += ['--extra-widget',str(playtest.HERE/'widgets/sea_assessment_watch.lua')]
     if a.economy_observer:
         cmd += ['--extra-widget',str(playtest.HERE/'widgets/sea_conversion_watch.lua')]
     if a.map=='shore':
@@ -81,11 +85,11 @@ def main():
         (d/'LuaUI/Config/sea_base.lua').write_text('return '+lua({'supplied':False,'teams':json.loads((d/'teams.json').read_text())['teams']})+'\n')
     script=d/'script.txt'
     script.write_text(script.read_text().replace('[GAME]\n{','[GAME]\n{\n FixedRNGSeed='+str(a.seed)+';',1))
-    globals_file=d/'AI/Skirmish/BARbTest/test/script/src/global.as'
+    scripts=d/'AI/Skirmish/BARbTest/test/script/src'
+    globals_file=role_settings_path(scripts, 'Sea')
     if a.capacity_observer:
-        scripts=globals_file.parent
-        (scripts/'roles/sea_capacity_probe.as').write_text((playtest.HERE/'sea_capacity_probe.as').read_text())
-        build=scripts/'roles/sea_build.as'; text=build.read_text()
+        (role_script_path(scripts, 'sea_build').parent/'sea_capacity_probe.as').write_text((playtest.HERE/'sea_capacity_probe.as').read_text())
+        build=role_script_path(scripts, 'sea_build'); text=build.read_text()
         needle='LayoutHelpers::CheckAlliedPlacements();'
         assert text.count(needle)==1
         build.write_text('#include "sea_capacity_probe.as"\n'+text.replace(needle,needle+'\n        SeaCapacityProbe::Tick();'))
@@ -99,14 +103,12 @@ def main():
     elif not a.legacy:
         raise ValueError('SEA migration flag missing from pinned data')
     if a.fixture=='harbor':
-        scripts=globals_file.parent
-        (scripts/'roles/sea_harbor_probe.as').write_text((playtest.HERE/'sea_harbor_probe.as').read_text())
-        build=scripts/'roles/sea_build.as'; text=build.read_text()
+        (role_script_path(scripts, 'sea_build').parent/'sea_harbor_probe.as').write_text((playtest.HERE/'sea_harbor_probe.as').read_text())
+        build=role_script_path(scripts, 'sea_build'); text=build.read_text()
         needle='LayoutHelpers::CheckAlliedPlacements();'
         assert text.count(needle)==1
         build.write_text('#include "sea_harbor_probe.as"\n'+text.replace(needle,needle+'\n        SeaHarborProbe::Tick();'))
     if a.fixture:
-        scripts=globals_file.parent
         for name,manager,descriptor in [('builder','aiBuilderMgr','TaskB::Wait(60 * SECOND)'),('factory','aiFactoryMgr','TaskS::Wait(false,60 * SECOND)')]:
             path=scripts/'manager'/(name+'.as'); text=path.read_text(); at=text.index('IUnitTask@ AiMakeTask(CCircuitUnit@ u)'); brace=text.index('{',at)
             path.write_text(text[:brace+1]+'\n if (ai.teamId!=0) return '+manager+'.Enqueue('+descriptor+');\n'+text[brace+1:])

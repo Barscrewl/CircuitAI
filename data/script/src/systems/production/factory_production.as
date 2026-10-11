@@ -1,6 +1,4 @@
-// manager/factory_production.as
-// Dynamic factory production system using role-based unit selection and threat-driven weighting.
-// Replaces static factory.json with scriptable logic that adapts to enemy composition and economy.
+
 
 #include "../../helpers/units/unit_helpers.as"
 #include "../../helpers/construction/economy_helpers.as"
@@ -704,24 +702,6 @@ namespace FactoryProduction {
         );
 
         return chosen;
-    }
-
-    // ==================== Public API: Priority Queue ====================
-
-    void QueueUnitByName(const string &in unitName) {
-        CCircuitDef@ def = ai.GetCircuitDef(unitName);
-        if (def !is null) {
-            priorityQueue.insertLast(def);
-            GenericHelpers::LogUtil("[FactoryProduction] Queued priority unit: " + unitName + " (queue size: " + priorityQueue.length() + ")", 2);
-        } else {
-            GenericHelpers::LogUtil("[FactoryProduction] Failed to queue priority unit '" + unitName + "': unit def not found", 3);
-        }
-    }
-
-    void QueueUnitDef(CCircuitDef@ def) {
-        if (def !is null) {
-            priorityQueue.insertLast(def);
-        }
     }
 
     // ==================== Main Production Logic ====================

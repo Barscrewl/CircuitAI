@@ -5,6 +5,7 @@
 #include "unit/enemy/EnemyUnit.h"
 #include "spring/SpringUnit.h"
 #include "terrain/TerrainManager.h"
+#include "terrain/HeightMapGeometry.h"
 #include "module/MilitaryManager.h"
 #include "setup/SetupManager.h"
 #include "util/Utils.h"
@@ -24,7 +25,7 @@ void CRangedWorld::JoinCohort(CCircuitUnit* unit)
     const auto* def=unit->GetCircuitDef(); const auto& policy=def->GetRangedPolicy();
     const auto pos=unit->GetPos(circuit->GetLastFrame());
     int chosen=-1; float nearest=policy.cohortRadius*policy.cohortRadius;
-    formations.Query(P(pos),policy.cohortRadius,[&](int other) {
+    const auto consider=[&](int other) {
         auto m=membership.find(other); if(m==membership.end()) return;
         auto& g=cohorts.at(m->second);
         if(g.members.size()>=size_t(policy.cohortSize)) return;
@@ -37,13 +38,23 @@ void CRangedWorld::JoinCohort(CCircuitUnit* unit)
         }
         const float d=pos.SqDistance2D(ally->GetPos(circuit->GetLastFrame()));
         if(d<nearest || (d==nearest && m->second<chosen)) { nearest=d; chosen=m->second; }
-    });
+    };
+    // Formation membership follows actual nearby bodies, not their reserved
+    // destination slots. A travelling cohort may reserve a point far ahead;
+    // using that index strands newly produced screens in singleton groups.
+    // Keep the legacy lookup for units that have not opted into formations.
+    if(policy.formationPosition!=RangedPolicy::FormationPosition::NONE) {
+        EnsureAllies();
+        allies.Query(P(pos),policy.cohortRadius,[&](int index) { consider(friends[index].id); });
+    } else
+        formations.Query(P(pos),policy.cohortRadius,consider);
     if(chosen<0) chosen=nextCohort++;
-    auto& group=cohorts[chosen]; group.members.push_back(id); group.frame=-1;
+    auto& group=cohorts[chosen]; group.members.push_back(id);
+    InvalidateCohortPlans(group);
     membership[id]=chosen;
 }
 
-const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
+const CRangedWorld::CohortPlan& CRangedWorld::PlanIndependentCohort(CCircuitUnit* unit)
 {
     const int now=circuit->GetLastFrame(), id=unit->GetId();
     const auto* def=unit->GetCircuitDef(); const auto& policy=def->GetRangedPolicy();
@@ -57,7 +68,7 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
     // Do not use the shared plan's last frame as this clock: a follower can
     // refresh it immediately before the leader and starve merging forever.
     // Full cohorts cannot accept a merge, so avoid their local query entirely.
-    if(current.members.front()==id && current.members.size()<size_t(policy.cohortSize) && now>=current.nextMerge) {
+    if(current.formationPartner<0 && current.members.front()==id && current.members.size()<size_t(policy.cohortSize) && now>=current.nextMerge) {
         current.nextMerge=now+60;
         int merge=-1;
         const auto pos=unit->GetPos(now);
@@ -65,7 +76,7 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
             auto m=membership.find(other);
             if(m==membership.end() || m->second>=key) return;
             auto& g=cohorts.at(m->second); auto* ally=circuit->GetTeamUnit(other);
-            if(!ally || ally->GetCircuitDef()!=def || ally->GetArea()!=unit->GetArea()
+            if(g.formationPartner>=0 || !ally || ally->GetCircuitDef()!=def || ally->GetArea()!=unit->GetArea()
                 || current.members.size()+g.members.size()>size_t(policy.cohortSize)
                 || ally->GetPos(now).SqDistance2D(pos)>policy.cohortRadius*policy.cohortRadius) return;
             if(policy.engagementSeconds>0.f) {
@@ -113,6 +124,7 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
     // to admit the battle; an ally being hit is not permission to charge DGuns.
     AIFloat3 alliedFront=g.center; int engagedAllies=0;
     if(policy.supportAllies) {
+        EnsureAllies();
         AIFloat3 sum;
         allies.Query(P(g.center),policy.cohortRadius,[&](int i) {
             const auto& f=friends[i];
@@ -289,7 +301,18 @@ void CRangedWorld::AssessCohort(CCircuitUnit* unit,CohortPlan& g,const Contact& 
     auto* def=unit->GetCircuitDef(); const auto& p=def->GetRangedPolicy();
     const float horizon=p.engagementSeconds, firing=range*p.rangeFraction;
     AIFloat3 firingPoint=enemy.pos+g.back*firing;
-    firingPoint.y=circuit->GetTerrainManager()->GetAreaData()->GetElevationAt(firingPoint.x,firingPoint.z);
+    const auto* area=circuit->GetTerrainManager()->GetAreaData();
+    // KI-571: a valid enemy plus a firing offset can lie beyond any map edge.
+    // Bound the assessment point before the unchecked terrain lookup. Do not
+    // change the shared height sampler's contract or clamp only its index.
+    if (!terrain_geometry::BoundHeightPoint(firingPoint.x,firingPoint.z,
+            area->heightMapXSize,area->heightMap.size(),SQUARE_SIZE)) {
+        g.committed=false; g.supporting=false; g.assault.clear();
+        g.mode=cohort::Mode::HOLD; g.reason=cohort::Reason::UNREACHABLE;
+        g.focus=g.center; g.radius=0.f; g.loss=0.f; g.advantage=0.f;
+        return;
+    }
+    firingPoint.y=area->GetElevationAt(firingPoint.x,firingPoint.z);
     cohort::Force own,hostile;
     g.supporting=false; g.screenDepth=firing;
     float danger=0.f;
@@ -338,6 +361,7 @@ void CRangedWorld::AssessCohort(CCircuitUnit* unit,CohortPlan& g,const Contact& 
     // Lazy combat-health callbacks are memoized in the frame's Friend entry;
     // overlapping cohorts share those observations. Artillery-only games pay
     // none of this cost. Count only physically useful allied fire support.
+    EnsureAllies();
     allies.Query(P(enemy.pos),1400.f,[&](int index) {
         auto& f=friends[index];
         if(!f.def || !f.def->IsAttacker()) return;
@@ -356,7 +380,8 @@ void CRangedWorld::AssessCohort(CCircuitUnit* unit,CohortPlan& g,const Contact& 
         // Another Thug cohort contributes firepower, but is not a fragile
         // support line. Treating newly admitted/merging Thugs as rocket support
         // accidentally enabled screening exposure in ordinary kite duels.
-        const bool supporting=p.supportAllies && !ours && !f.def->GetRangedPolicy().coordinated && f.def->IsMobile()
+        const bool supporting=p.supportAllies && !ours && (!f.def->GetRangedPolicy().coordinated
+                || f.def->GetRangedPolicy().formationPosition == RangedPolicy::FormationPosition::REAR) && f.def->IsMobile()
             && !f.def->IsAbleToFly() && f.pos.SqDistance2D(g.center)<p.cohortRadius*p.cohortRadius;
         if(supporting) {
             g.supporting=true;

@@ -80,6 +80,17 @@ public:
 	void SetTaskFrame(int frame) { taskFrame = frame; }
 	int GetTaskFrame() const { return taskFrame; }
 
+    // Optional script-owned withdrawal waypoint. No engine order is emitted;
+    // RetreatTask validates and consumes it before ordinary repair routing.
+    // IDs avoid retaining a destroyed/transferred screen unit. Default is off.
+    void SetRetreatWaypoint(const springai::AIFloat3& position, int anchor, int until) {
+        retreatWaypoint = position; retreatAnchor = anchor; retreatWaypointUntil = until;
+    }
+    const springai::AIFloat3& GetRetreatWaypoint() const { return retreatWaypoint; }
+    int GetRetreatAnchor() const { return retreatAnchor; }
+    int GetRetreatWaypointUntil() const { return retreatWaypointUntil; }
+    void ClearRetreatWaypoint() { retreatAnchor = -1; retreatWaypointUntil = -1; }
+
 	void SetManager(ITaskModule* mgr) { manager = mgr; }
 	ITaskModule* GetManager() const { return manager; }
 
@@ -95,7 +106,10 @@ public:
 	void SetIsFinished() { isFinished = true; }
 	bool IsFinished() const { return isFinished; }
 	int GetProducerId() const { return producerId; }
-	void SetProducerId(int value) { producerId = value; }
+	int GetProductionFrame() const { return productionFrame; }
+	bool IsProductionEnabled() const { return productionEnabled; }
+	void SetProductionEnabled(bool value) { productionEnabled = value; }
+	void SetProducerId(int value, int frame) { producerId = value; productionFrame = frame; }
 
 	void SetAllowedToJump(bool value) { isAllowedToJump = value; }
 	bool IsAllowedToJump() const { return isAllowedToJump; }
@@ -214,6 +228,8 @@ public:
 
 private:
 	int producerId = -1; // creation event only; persistent policy membership is script-owned
+	int productionFrame = -1; // unknown on adopted units; never infer it from completion
+	bool productionEnabled = true; // script-owned lifecycle admission; O(1) at command boundary
 	// NOTE: taskFrame assigned on task change and OnUnitIdle to workaround idle spam.
 	//       Proper fix: do not issue any commands OnUnitIdle, delay them until next frame?
 	int taskFrame;
@@ -255,6 +271,9 @@ private:
 	CEnemyInfo* target;
 	int targetTile;
 	int priorityTarget = -1; // ID only: never retain a dead enemy wrapper.
+    springai::AIFloat3 retreatWaypoint;
+    int retreatAnchor = -1;
+    int retreatWaypointUntil = -1;
 
 	CCircuitDef::AttrM attr;
 

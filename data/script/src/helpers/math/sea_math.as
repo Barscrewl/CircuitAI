@@ -1,5 +1,60 @@
 // Deterministic SEA admission and handover decisions, independent of engine state.
 namespace SeaMath {
+    bool MatchesFactoryReservation(int taskReservation, int factoryReservation, int gantryReservation) {
+        // An absent ID (-1) is never ownership, even if both owners are absent.
+        return taskReservation>=0 && (taskReservation==factoryReservation || taskReservation==gantryReservation);
+    }
+    // Pure admission helpers; live projects include travelling workers and frames.
+    bool SupportProjectAvailable(int projects, int maximumProjects, bool yardHasProject) {
+        return maximumProjects>0 && projects<maximumProjects && !yardHasProject;
+    }
+    bool AmphibiousIntercept(int flags, float metalCost, float distanceSquared,
+        float minimumMetalCost, float radius) {
+        const int amphibiousContact=256;
+        const int disallowedContact=1|128; // allied or stale: never emergency authority
+        return (flags&amphibiousContact)!=0 && (flags&disallowedContact)==0
+            && metalCost>=minimumMetalCost && radius>0 && distanceSquared<=radius*radius;
+    }
+    bool GuardableLand(int cells, int interiorCells, int minimumCells, int minimumInteriorCells) {
+        return cells>=minimumCells && interiorCells>=minimumInteriorCells;
+    }
+    bool RetainScoutTravel(bool ownsLiveRoute, bool withinDeadline, bool safeOrigin,
+        bool safeDestination, bool movementComplete) {
+        return ownsLiveRoute && withinDeadline && safeOrigin && safeDestination && !movementComplete;
+    }
+    const int ScoutExcludedContactFlags = 1|2|16|128; // allied, submerged, unknown, stale
+    bool ScoutRaidTarget(int contactFlags, bool identified, bool armed,
+        float scoutRange, float enemyRange, float rangeMargin) {
+        return identified && (contactFlags&ScoutExcludedContactFlags)==0
+            && (!armed || scoutRange>enemyRange+rangeMargin);
+    }
+    bool ScoutRaidExpired(int elapsedFrames, int assemblyFrames, int maximumFrames,
+        int members, int ready, int minimum, bool attacking) {
+        return members<minimum || elapsedFrames>maximumFrames
+            || (!attacking && ready<minimum && elapsedFrames>assemblyFrames);
+    }
+    const int SubmarineNoTarget = 0;
+    const int SubmarineStructureTarget = 1;
+    const int SubmarineFactoryTarget = 2;
+    const int SubmarineShipTarget = 3;
+    const int SubmarineAntiSubmarineTarget = 4;
+    const int SubmarineFlagshipTarget = 5;
+    int SubmarineTargetRank(bool flagship, bool stationary, bool unknownContact, bool factory, bool antiSubmarine=false) {
+        if (flagship) return SubmarineFlagshipTarget;
+        if (!stationary && antiSubmarine) return SubmarineAntiSubmarineTarget;
+        if (!stationary || unknownContact) return SubmarineShipTarget;
+        return factory ? SubmarineFactoryTarget : SubmarineStructureTarget;
+    }
+    // Deadline aging prevents perpetual beach revisits from starving the sea
+    // interior. Callers pass frames for both age and interval. Pure O(1).
+    const float UnseenSurveyBonus = 4.0f;
+    float SurveyPriority(int priority, bool unseen, int age, int interval, float distance, float travelScale) {
+        const float overdue=float(age)/float(interval>0 ? interval : 1);
+        return float(priority)+(unseen ? UnseenSurveyBonus : overdue)-distance/(travelScale>0 ? travelScale : 1.0f);
+    }
+    float CompositionDeficit(int completedAndPending, float ratio) {
+        return ratio>0 ? -float(completedAndPending)/ratio : -1e30f;
+    }
     // Named policy/geometry constants preserve the original arithmetic and types.
     // Zero/One are integer identities; ZeroValue/UnitValue are float identities.
     const int FirstAdvancedShipyardMinimumBank = 100;
@@ -200,9 +255,7 @@ namespace SeaMath {
     bool ForwardFootprint(float along, float halfDepth, float frontier, float margin) {
         return halfDepth>=Zero && margin>=Zero && along-halfDepth>=frontier+margin;
     }
-    bool OpeningFactory(bool neverHadFactory, bool tierOne, bool notReplacement, bool firstBerth) {
-        return neverHadFactory && tierOne && notReplacement && firstBerth;
-    }
+
     bool RearFootprint(float along, float halfDepth, float margin) {
         return halfDepth>=Zero && margin>=Zero && along+halfDepth<=-margin;
     }
@@ -245,9 +298,5 @@ namespace SeaMath {
         return replacementComplete && exited && safe && tierPreserved
             && !currentProduct && storageRoom >= reclaimMetal;
     }
-    bool ForwardWorthwhile(float oldDistance, float newDistance, float minimumGain,
-        int stableSeconds, int requiredSeconds) {
-        return minimumGain > Zero && oldDistance - newDistance >= minimumGain
-            && stableSeconds >= requiredSeconds;
-    }
+
 }

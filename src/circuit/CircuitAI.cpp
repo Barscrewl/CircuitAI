@@ -1166,7 +1166,7 @@ int CCircuitAI::Message(int playerId, const char* message)
 
 int CCircuitAI::UnitCreated(CCircuitUnit* unit, CCircuitUnit* builder)
 {
-	unit->SetProducerId(builder != nullptr ? builder->GetId() : -1);
+	unit->SetProducerId(builder != nullptr ? builder->GetId() : -1, GetLastFrame());
 	for (auto& module : modules) {
 		module->UnitCreated(unit, builder);
 	}
@@ -1543,6 +1543,7 @@ int CCircuitAI::Save(std::ostream& os)
 
 int CCircuitAI::LuaMessage(const char* inData)
 {
+    if (builderManager != nullptr && builderManager->ReceiveResurrectionClaim(inData)) return 0;
 	script->LuaMessage(inData);
 	return 0;  // signaling: OK
 }

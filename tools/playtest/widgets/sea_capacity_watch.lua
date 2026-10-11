@@ -11,6 +11,10 @@ function widget:UnitCreated(id,def,team,builder) if team==0 then born[id]=builde
 function widget:UnitDestroyed(id) born[id]=nil end
 function widget:UnitFinished(id,def,team)
  if team==0 and nano(UnitDefs[def]) and born[id] then pass("grown","constructed support turret") end
+ if team==0 and UnitDefs[def].isFactory and born[id] then
+  pass("factory","constructed overflow factory "..UnitDefs[def].name)
+  log("factory_completed "..UnitDefs[def].name.." id="..id.." builder="..born[id])
+ end
 end
 function widget:GameFrame(f)
  if f%150~=0 then return end

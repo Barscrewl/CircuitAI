@@ -54,6 +54,24 @@
       "pattern": "SeaRecoveryTest\\] PASS sub-scaling",
       "by_minute": 8,
       "scope": "any"
+    },
+    {
+      "key": "grouped-resurrection",
+      "pattern": "SeaRecoveryTest\\] PASS grouped-resurrection",
+      "by_minute": 8,
+      "scope": "any"
+    },
+    {
+      "key": "high-value-resurrection",
+      "pattern": "SeaRecoveryTest\\] PASS high-value-resurrection",
+      "by_minute": 8,
+      "scope": "any"
+    },
+    {
+      "key": "repair-before-reclaim",
+      "pattern": "SeaRecoveryTest\\] PASS repair-before-reclaim",
+      "by_minute": 1,
+      "scope": "any"
     }
   ],
   "forbid": [

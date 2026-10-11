@@ -1,4 +1,5 @@
 """Prepare an isolated AIR guard-recovery fixture; never edits deployment data."""
+from script_settings import role_script_path
 import argparse
 from pathlib import Path
 from benchmark_store import RAW_ROOT
@@ -37,7 +38,7 @@ def main():
     for coordinate in ('430, 0, 2300','13890, 0, 2246'):
         content=content.replace(coordinate+'), AiRole::FRONT',coordinate+'), AiRole::AIR')
     map_file.write_text(content)
-    policy=args.output/'script/src/roles/air_build.as'
+    policy=args.role_script_path(output / 'script/src', 'air_build')
     content=policy.read_text();needle='        ReturnEconomyWorkers();'
     assert content.count(needle)==1
     policy.write_text(content.replace(needle,HOOK+needle))

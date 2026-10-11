@@ -332,6 +332,12 @@ int main()
 	Check(BuiltPowerBefore(540, 4, 540, 9), "equal power prefers anchor proximity");
 	Check(!BuiltPowerBefore(540, 4, 540, 4), "exact ties retain candidate order");
 	TestCentroidAndNearest();
+	const std::vector<SupportReach> supports{{{0, 0}, 100.f}, {{250, 0}, 20.f}};
+	Check(WithinSupport({100, 0}, supports), "packed set includes exact support boundary");
+	Check(!WithinSupport({100.1f, 0}, supports), "packed extension stops outside first support");
+	Check(WithinSupport({250, 0}, supports), "another support can serve a later member");
+	Check(!WithinSupport({0, 0}, {}), "no imaginary support for empty group");
+	Check(!WithinSupport({0, 0}, {{{0, 0}, -100.f}}), "invalid reach cannot be squared positive");
 	TestFirstTurretNearestSeed();
 	TestBlockFillsAcrossRows();
 	TestNextConnectedNoneFree();

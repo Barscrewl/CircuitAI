@@ -38,6 +38,7 @@ CRecruitTask::~CRecruitTask()
 
 bool CRecruitTask::CanAssignTo(CCircuitUnit* unit) const
 {
+	if (!unit->IsProductionEnabled()) return false;
 	// D-216: completion temporarily clears target while engine repeat continues.
 	// A nearby idle lab must not adopt that live pump's task in this window:
 	// one target pointer and one script owner cannot represent two factories.
@@ -112,10 +113,24 @@ void CRecruitTask::Update()
 
 void CRecruitTask::Finish()
 {
-	Cancel();
-
 	CCircuitAI* circuit = manager->GetCircuit();
 	const int buildDelay = circuit->GetEconomyManager()->GetBuildDelay();
+	// The engine consumes a naturally completed single build itself. Removing
+	// it here emits a second idle callback while the replacement is in flight,
+	// and can cancel that replacement when it has the same negative UnitDef ID.
+	// Retain only the verified single-product queue; repeats, cancellations,
+	// unexpected queues and difficulty pauses keep their original cleanup.
+	bool naturalCompletion = completionRefill && !repeat && buildDelay <= 0
+		&& target != nullptr && target->IsFinished() && units.size() == 1;
+	if (naturalCompletion) {
+		const int id = (*units.begin())->GetId();
+		auto* api = circuit->GetUnitAPI();
+		const int count = api->GetCMDQueueSize(id);
+		naturalCompletion = count == 0 || (count == 1 && api->GetCMD(id) == -buildDef->GetId());
+	}
+	if (naturalCompletion) SetTarget(nullptr);
+	else Cancel();
+
 	if (buildDelay > 0) {
 		// NOTE: force-stop as there could be bug present that queues more than 1 unit
 		IUnitTask* task = circuit->GetFactoryManager()->Enqueue(TaskS::Wait(true, buildDelay));
@@ -156,6 +171,7 @@ void CRecruitTask::Cancel()
 
 bool CRecruitTask::Execute(CCircuitUnit* unit)
 {
+	if (!unit->IsProductionEnabled()) return false;
 	executors.insert(unit);
 
 	CCircuitAI* circuit = manager->GetCircuit();
@@ -194,6 +210,7 @@ bool CRecruitTask::Execute(CCircuitUnit* unit)
 		TRY_UNIT(circuit, unit,
 			if (repeat) unit->GetUnit()->SetRepeat(true);
 			unit->CmdBuild(buildDef, buildPos, UNIT_NO_FACING, 0, repeat ? INT_MAX : frame + FRAMES_PER_SEC * 10);
+			lastBuildCommandFrame = frame;
 		)
 	} else {
 		manager->AbortTask(this);
@@ -204,6 +221,16 @@ bool CRecruitTask::Execute(CCircuitUnit* unit)
 
 void CRecruitTask::OnUnitIdle(CCircuitUnit* unit)
 {
+	if (completionRefill) {
+		// Recoil can finish the old product and report its factory idle later in
+		// the SAME frame, before our replacement command has crossed the network.
+		// This is an in-flight dispatch, not a rate limit. After this frame an
+		// empty/unstarted task recovers normally. A live target already proves
+		// that the current owner is building; don't append duplicate recruits.
+		if (unit->GetTask() != this || IsDead()) return;
+		if (lastBuildCommandFrame == manager->GetCircuit()->GetLastFrame()
+			|| (target != nullptr && !target->IsDead() && !target->IsFinished())) return;
+	}
 	if (repeat) {
 		// Engine idle callbacks can race a repeat's next build. Repair an empty
 		// queue only; never add another copy of the repeating build command.

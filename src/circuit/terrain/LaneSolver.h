@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <map>
 #include <stdexcept>
 #include <vector>
 
@@ -80,6 +81,14 @@ struct PointWorkspace {
     const Grid* threat = nullptr;
     std::uint64_t version = 0;
     float landCost = 0, waterCost = 0, weight = 0, ceiling = 0;
+    // Exact solved-cell paths, including unreachable results. Bounded FIFO
+    // storage; all entries belong to the cost/terrain publication above.
+    // Never used with a live obstacle overlay or publication version zero.
+    static constexpr std::size_t maximumCachedRoutes = 64;
+    std::map<std::array<int,3>, std::vector<int>> routes;
+    std::vector<std::array<int,3>> routeOrder;
+    std::size_t nextRoute = 0;
+    float surfaceWeight = 0;
 };
 std::uint64_t Fingerprint(const std::vector<Route>& routes);
 class Solver final : private Settings {

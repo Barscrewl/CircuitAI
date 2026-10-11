@@ -10,6 +10,7 @@
 #include "../../manager/builder.as"
 #include "layout.as"
 #include "../../manager/economy.as"
+#include "../../helpers/math/build_power_math.as"
 
 /******************************************************************************
 
@@ -65,9 +66,41 @@ keeping AIR reservations, execution, milestones and aircraft demand separate.
 
 ******************************************************************************/
 namespace EcoPlanner {
+    array<string> techConverterNames;
+    float TechConversionHeadroom() {
+        if (AiPerfEnabled) AiPerfBeginLabel("tech-conversion-capacity");
+        // Fixed roster, initialized once per script instance. Read live counts
+        // on every admission: same-frame enqueues/transfers must be visible.
+        // No owned-unit scan or stale per-frame capacity cache. Native queued
+        // counts exclude frames (already in def.count): O(D * P), D <= 12
+        // definitions and P pending tasks. Called by builder decisions only.
+        if (techConverterNames.length()==0) {
+            const array<string> sides={"armada","cortex","legion"};
+            for (uint index=0;index<sides.length();++index) {
+                techConverterNames.insertLast(UnitHelpers::GetEnergyConverterNameForSide(sides[index]));
+                techConverterNames.insertLast(UnitHelpers::GetAdvEnergyConverterNameForSide(sides[index]));
+                techConverterNames.insertLast(UnitHelpers::GetNavalEnergyConverterNameForSide(sides[index]));
+                techConverterNames.insertLast(UnitHelpers::GetAdvNavalEnergyConverterNameForSide(sides[index]));
+            }
+        }
+        float capacity=0;
+        for (uint index=0;index<techConverterNames.length();++index) {
+            CCircuitDef@ definition=ai.GetCircuitDef(techConverterNames[index]);
+            if (definition is null) continue;
+            capacity+=aiEconomyMgr.GetEnergyUse(definition)*(definition.count
+                +aiBuilderMgr.GetQueuedBuildCount(int(Task::BuildType::CONVERT),definition));
+        }
+        const float headroom = BuildPowerMath::ConversionHeadroom(aiEconomyMgr.energy.income,
+            TeamEconomy::OwnEnergy(TeamEconomy::USAGE),ai.GetTeamRulesParam("mmUse",0.0f),
+            capacity,Global::RoleSettings::Tech::EcoEnergyReserve);
+        if (AiPerfEnabled) AiPerfEndLabel();
+        return headroom;
+    }
 
     class State {
         bool air = false; // default preserves TECH policy and geometry
+        bool allowConverters = true; // caller may reserve surplus metal for production/build power
+        bool allowReactors = true; // role-local home upgrades may precede reactors
         float energyGoal = 0.0f; // optional role objective floor
 
         float windMin;
@@ -255,7 +288,7 @@ namespace EcoPlanner {
             if (t2mex !is null && u.circuitDef.CanBuild(t2mex)) {
                 s.mexUpsQueued = aiBuilderMgr.GetQueuedBuildCount(int(Task::BuildType::MEXUP), t2mex);
                 s.mexUpPos = Economy::MexTracker::GetNearestNonUpgradedMexInRange(u.GetPos(ai.frame), Global::Map::StartPos,
-                    Global::RoleSettings::MexUpgradeRadius);
+                    Global::RoleSettings::MexUpgradeRadius, u, t2mex);
             }
         }
         @s.builderDef = (u is null) ? null : u.circuitDef;
@@ -342,7 +375,7 @@ namespace EcoPlanner {
         if (o !is null && (s.mIncome >= Global::RoleSettings::Tech::EcoAdvSolarMinMetalIncome || s.mCur >= o.cost)) opts.insertLast(o);
         @o = Make("wind", UnitHelpers::GetWindNameForSide(side), s, false);
         if (o !is null && WindEffective(s) >= Global::RoleSettings::Tech::EcoWindMinimum) opts.insertLast(o);
-        if (s.builderIsT2) {
+        if (s.builderIsT2 && s.allowReactors) {
             @o = Make("fusion", UnitHelpers::GetFusionNameForSide(side), s, true);
             if (o !is null && s.mIncome >= Global::RoleSettings::Tech::MinimumMetalIncomeForFUS) opts.insertLast(o);
             @o = Make("afus", UnitHelpers::GetAdvFusionNameForSide(side), s, true);
@@ -415,6 +448,8 @@ namespace EcoPlanner {
         const bool floats = s.air ? s.eStor > 0.0f && s.eCur >= s.eStor * Global::RoleSettings::Tech::EcoConvertEnergyPercent : TechChain::EnergyFloats();
         const int par = floats ? Global::RoleSettings::Tech::ConverterParallel : 1;
         if (floats && surplus < s.eIncome * 0.5f) surplus = s.eIncome * 0.5f;
+        if (Global::AISettings::Role == AiRole::TECH)
+            surplus = AiMin(surplus, TechConversionHeadroom());
         Option@ adv = Make("advconv", UnitHelpers::GetAdvEnergyConverterNameForSide(side), s, true);
         if (s.builderIsT2 && adv !is null && s.advConvsQueued < par
             && surplus >= adv.energyUse
@@ -542,7 +577,7 @@ namespace EcoPlanner {
         // 3. energy floating, or a surplus that carries a converter twice over:
         //    convert it. Energy under construction does not block this - a
         //    converter turns surplus into metal, and the surplus is measured.
-        if ((floatingE || (surplus >= 2.0f * Global::RoleSettings::Tech::EcoConverterUse)) && !aiEconomyMgr.isEnergyStalling) {
+        if (s.allowConverters && (floatingE || (surplus >= 2.0f * Global::RoleSettings::Tech::EcoConverterUse)) && !aiEconomyMgr.isEnergyStalling) {
             key = PickConverter(s, surplus, why);
             if (key.length() > 0) return key;
         }
@@ -643,7 +678,7 @@ namespace EcoPlanner {
             if (MetalEconomy::Active()) return aiEconomyMgr.EnqueueFieldUpgrade(u, Global::Map::StartPos, MetalEconomy::HomeRadius);
             CCircuitDef@ t2mex = ai.GetCircuitDef(UnitHelpers::GetT2MexNameForSide(Global::AISettings::Side));
             AIFloat3 at = Economy::MexTracker::GetNearestNonUpgradedMexInRange(u.GetPos(ai.frame), Global::Map::StartPos,
-                Global::RoleSettings::MexUpgradeRadius);
+                Global::RoleSettings::MexUpgradeRadius, u, t2mex);
             if (t2mex is null || at.x < 0.0f) return null;
             return aiBuilderMgr.Enqueue(TaskB::Spot(Task::BuildType::MEXUP, Task::Priority::NOW, t2mex, at, -1));
         }
@@ -664,6 +699,8 @@ namespace EcoPlanner {
         }
         CCircuitDef@ def = DefOf(key);
         if (def is null || !def.IsAvailable(ai.frame)) return null;
+        if (Global::AISettings::Role==AiRole::TECH && (key=="t1conv" || key=="advconv")
+            && TechConversionHeadroom()<aiEconomyMgr.GetEnergyUse(def)) return null;
         // INV-032 (D-105): no converter is ordered while the metal bank is full
         if ((key == "t1conv" || key == "advconv") && TechBuild::MetalFullLong())
             Invariants::Violation("INV-032", key, "a " + def.GetName() + " ordered with the metal bank full for " + int(Global::RoleSettings::Tech::PowerAheadSeconds) + " s");

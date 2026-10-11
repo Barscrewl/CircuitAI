@@ -84,6 +84,9 @@ public:
     bool Escort(CCircuitUnit* sensor, springai::AIFloat3& position);
     bool HasMembers() const { return !slots.empty(); }
     struct CohortPlan {
+        int formationFrame=-1, formationPartner=-1;
+        bool formationRear=false;
+        float formationScreenOffset=0.f;
         int frame=-1, target=-1, regroupUntil=0, nextRegroup=0, nextMerge=0;
         springai::AIFloat3 center, back, focus;
         float radius=0.f;
@@ -119,10 +122,17 @@ private:
     std::unordered_map<int,Capabilities> capabilities;
     std::vector<Contact> contacts;
     std::vector<Friend> friends;
+    // Per-observation definition prototypes. Unit IDs/positions are never
+    // cached; mutable policy flags are reread on every Refresh publication.
+    std::vector<Friend> friendlyDefinitions;
+    std::vector<int> friendlyDefinitionFrames;
     std::vector<int> friendlyIds;
     ranged::OrderedIds friendlyOrder;
     std::vector<int> objectives;
-    ranged::SpatialIndex enemies, staticHazards, allies, formations;
+    ranged::SpatialIndex enemies, staticHazards, formations;
+    mutable ranged::SpatialIndex allies;
+    mutable bool alliesDirty = true;
+    void EnsureAllies() const;
     ranged::CellStore<float> clusterValues;
     std::map<int,Slot> slots;
     struct Shot { int target, until; float damage; };
@@ -139,6 +149,8 @@ private:
     std::unordered_map<int,int> membership;
     int nextCohort=0;
     void JoinCohort(CCircuitUnit* unit);
+    const CohortPlan& PlanIndependentCohort(CCircuitUnit* unit);
+    void InvalidateCohortPlans(CohortPlan& group);
     float EffectiveDps(CCircuitDef* def,int armor,int category,
                        const springai::AIFloat3& from,const springai::AIFloat3& to,
                        float horizon,bool advancing);

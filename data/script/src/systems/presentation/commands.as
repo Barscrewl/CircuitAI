@@ -569,6 +569,12 @@ namespace Commands {
         if (Global::AISettings::Role == AiRole::AIR) AirBuild::Leave();
         if (Global::AISettings::Role == AiRole::SEA) SeaBuild::Leave();
         if (Global::AISettings::Role == AiRole::TECH) TechChain::LeaveNukeOpening();
+        aiBuilderMgr.ClearBuildRadii();
+        if (Global::AISettings::Role == AiRole::SUPPORT) {
+            TechChain::active = false;
+            TechChain::done = false;
+            TechChain::objective = "eco";
+        }
         Layout::OnRoleLeave();
         TechWeapons::OnRoleLeave();   // D-126
         Lanes::OnRoleLeave();         // D-127

@@ -286,6 +286,11 @@ function widget:UnitFinished(id,def,team)
     event("produced",{id=id,team=team,unit=UnitDefs[def].name})
 end
 function widget:GameFrame(f)
+    for _,shot in ipairs(cfg.screenshots or {}) do
+        if f>=shot.second*30 and f<shot.second*30+60 then
+            photograph("perimeter-"..shot.second,shot.x,shot.z,shot.height)
+        end
+    end
     if f==150 then
         Spring.SendCommands("cheat 1")
         if cfg.visibility=="global" then Spring.SendCommands("globallos") end

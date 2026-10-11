@@ -114,6 +114,7 @@ public:
 
 	IFighterTask* Enqueue(const TaskF::SFightTask& ti);
 	IUnitTask* EnqueueExternalControl(const std::string& ownerRule);
+	IUnitTask* EnqueueCargoHold(int transportId);
 	virtual CRetreatTask* EnqueueRetreat() override;
 
 	/*
@@ -384,6 +385,12 @@ public:
 
 private:
 	std::shared_ptr<CRangedWorld> rangedWorld;
+    IUnitTask* MakeTask(CCircuitUnit* unit) override;
+    void UpdateExternalControl();
+    std::string externalOwnerRule;
+    std::unordered_set<int> externalOwnerDefinitions;
+    std::set<int> externalOwnerCandidates;
+    std::vector<int> externalOwnerSnapshot;
 	virtual IUnitTask* DefaultMakeTask(CCircuitUnit* unit) override;
 
 	void Watchdog();

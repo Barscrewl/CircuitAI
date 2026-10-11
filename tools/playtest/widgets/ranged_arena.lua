@@ -4,6 +4,7 @@ local tracked,queue,pending,seen,orders,lastReload={}, {}, nil, {}, {}, {}
 local priorDamage,damageHook,priorCommand,commandHook
 local camera,photos=nil,{}
 local commandTypes,unitCommands={},{}
+local factorySamples,factoryIds={},{}
 local function log(s) Spring.Echo("[RangedArena] frame="..Spring.GetGameFrame().." "..s) end
 local occupied={}
 local function site(g,x,z)
@@ -40,6 +41,13 @@ local function child(id)
 end
 local function damage(id,def,team,amount,paralyzer,weapon,projectile,attacker,attackerDef,attackerTeam)
     child(id);child(attacker)
+    -- Opt-in supplied siege acceptance: observing fire is insufficient if the
+    -- artillery walked into a scouted turret first. No orders or extra polling.
+    if cfg.no_static_damage and team==0 and UnitDefs[def].name==cfg.unit
+        and attackerTeam==1 and UnitDefs[attackerDef or -1]
+        and (UnitDefs[attackerDef].speed or 0)==0 and amount>0 then
+        log("ERROR artillery_hit_by_static id="..id.." attacker="..UnitDefs[attackerDef].name)
+    end
     if cfg.natural and tracked[attacker] and team~=0 and not tracked[id] then
         local x,_,z=Spring.GetUnitPosition(id)
         tracked[id]={team=team,def=def}
@@ -50,6 +58,17 @@ local function damage(id,def,team,amount,paralyzer,weapon,projectile,attacker,at
     end
 end
 local function command(id,def,team,cmd,params,options,tag,player,fromSynced,fromLua)
+    if cfg.factory_throughput and team==0 and UnitDefs[def].isFactory and cmd<0 then
+        log("factory_order id="..id.." product="..(-cmd).." source="..tostring(fromLua))
+    end
+    if cfg.drone_ownership and team==0 and UnitDefs[def].customParams
+        and tostring(UnitDefs[def].customParams.drone)=="1" then
+        -- Correctness fixture only: distinguish attached gadget ownership from
+        -- independent/released AI control at the actual command instant.
+        local host=Spring.GetUnitRulesParam(id,"carrier_host_unit_id") or -1
+        log("drone_order id="..id.." host="..host.." command="..cmd.." source="
+            ..(fromLua==true and "lua" or fromLua==false and "nonlua" or "unknown"))
+    end
     if not tracked[id] then return end
     local count=orders[team] or {all=0,lua=0,nonlua=0};orders[team]=count
     count.all=count.all+1
@@ -73,6 +92,7 @@ function widget:Initialize()
     log("loaded case="..cfg.name.." variant="..cfg.variant)
 end
 function widget:UnitCreated(id,def,team,builder)
+    if cfg.factory_throughput and team==0 and UnitDefs[def].isFactory then factoryIds[id]=true end
     if cfg.natural and team==0 and UnitDefs[def].name==cfg.unit then
         local x,_,z=Spring.GetUnitPosition(id)
         tracked[id]={team=team,def=def}
@@ -86,6 +106,7 @@ function widget:UnitCreated(id,def,team,builder)
     end
 end
 function widget:UnitDestroyed(id,def,team)
+    factoryIds[id]=nil
     if tracked[id] then log("death id="..id.." team="..team.." unit="..UnitDefs[def].name.." cost="..UnitDefs[def].metalCost);tracked[id]=nil end
 end
 function widget:UnitFinished(id,def,team)
@@ -99,6 +120,35 @@ function widget:GameFrame(f)
         log("ready")
     end
     if f<300 then return end
+    -- Correctness observer only, O(supplied factories) per frame. Distinguish
+    -- an empty engine build queue from physical launch/collision/energy time.
+    -- Never issue orders or infer network/FPS gains from these counters.
+    if cfg.factory_throughput and f>=90*30 then
+        local metal=Spring.GetTeamResources(0,"metal") or 0
+        local energy=Spring.GetTeamResources(0,"energy") or 0
+        for id in pairs(factoryIds) do
+                local s=factorySamples[id] or {samples=0,empty=0,building=0,fundedEmpty=0}
+                factorySamples[id]=s;s.samples=s.samples+1
+                local commands=Spring.GetFactoryCommands(id,-1) or {}
+                local builds=0;for _,c in ipairs(commands) do if c.id<0 then builds=builds+1 end end
+                if builds==0 then s.empty=s.empty+1;if metal>0 and energy>200 then s.fundedEmpty=s.fundedEmpty+1 end end
+                if Spring.GetUnitIsBuilding(id) then s.building=s.building+1 end
+                if f%900==0 then
+                    log("throughput id="..id.." samples="..s.samples.." empty="..s.empty.." fundedEmpty="..s.fundedEmpty.." building="..s.building.." metal="..math.floor(metal).." energy="..math.floor(energy))
+                end
+        end
+    end
+    -- Optional lifecycle fixture: remove an entire screen after pairing. This
+    -- is explicit supplied-force intervention, never enabled in natural games.
+    if cfg.remove_units_after_seconds and not cfg.fixture_units_removed and f>=cfg.remove_units_after_seconds*30 then
+        cfg.fixture_units_removed=true
+        local ids={}
+        for id,u in pairs(tracked) do
+            if u.team==0 and UnitDefs[u.def].name==cfg.remove_unit_name then ids[#ids+1]=id end
+        end
+        Spring.SelectUnitArray(ids,false);Spring.SendCommands("destroy");Spring.SelectUnitArray({},false)
+        log("fixture_units_removed unit="..cfg.remove_unit_name.." count="..#ids)
+    end
     if cfg.drop_energy_after_seconds and not cfg.energy_dropped and f>=cfg.drop_energy_after_seconds*30 then
         cfg.energy_dropped=true
         local ids={}
@@ -154,7 +204,7 @@ function widget:GameFrame(f)
                     end
                     lastReload[key]=reload
                 end
-                if f%150==0 then
+                if f%(cfg.formation_observation and 30 or 150)==0 then
                     local x,_,z=Spring.GetUnitPosition(id)
                     local health=Spring.GetUnitHealth(id)
                     local host=Spring.GetUnitRulesParam(id,"carrier_host_unit_id") or -1

@@ -1,4 +1,5 @@
 """Supreme Isthmus physical economy-block acceptance, using real placement tasks."""
+from script_settings import role_settings_path, role_script_path
 import argparse, hashlib, json, re, shutil, subprocess, sys
 from pathlib import Path
 import playtest, storage
@@ -22,14 +23,14 @@ def main():
         '--extra-widget',str(playtest.HERE/'widgets/dense_economy_watch.lua'),
         '--extra-widget',str(playtest.HERE/'widgets/sea_economy_block_watch.lua')],check=True)
     src=d/'AI/Skirmish/BARbTest/test/script/src'
-    g=src/'global.as';before,sea=g.read_text().split('namespace Sea {',1)
+    g=role_settings_path(src, 'Sea');before,sea=g.read_text().split('namespace Sea {',1)
     sea=re.sub(r'bool ExperimentalBuild = (true|false);','bool ExperimentalBuild = '+str(a.experimental).lower()+';',sea,count=1)
     g.write_text(before+'namespace Sea {'+sea)
     shutil.copy2(playtest.HERE/'sea_economy_block_probe.as',src/'roles/sea_economy_block_probe.as')
     for name,method in [('builder','MakeTask'),('factory','Produce')]:
         f=src/'manager'/f'{name}.as';s=f.read_text();b=s.index('{',s.index('IUnitTask@ AiMakeTask(CCircuitUnit@ u)'))
         f.write_text('#include "../roles/sea_economy_block_probe.as"\n'+s[:b+1]+f'\n if (ai.frame>=0) return SeaBlockProbe::{method}(u);\n'+s[b+1:])
-    f=src/'roles/sea_build.as';s=f.read_text();b=s.index('{',s.index('void Tick()'))
+    f=role_script_path(src, 'sea_build');s=f.read_text();b=s.index('{',s.index('void Tick()'))
     f.write_text(s[:b+1]+'\n SeaBlockProbe::Tick();\n'+s[b+1:])
     (d/'LuaUI/Config').mkdir(parents=True,exist_ok=True)
     case=json.loads((playtest.HERE/'cases/sea/layout/economy-block.json').read_text())

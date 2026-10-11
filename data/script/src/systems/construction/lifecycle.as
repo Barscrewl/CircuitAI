@@ -36,8 +36,13 @@ namespace Lifecycle {
         retiringZ.set(key, double(p.z));
         retiringName.set(key, u.circuitDef.GetName());
         ids.insertLast(key);
+        // Close native admission before engine commands can generate an idle
+        // callback. Previously a pending recruit could restart after STOP.
+        u.SetProductionEnabled(false);
         // production and the queue end now; the unit being built inside a
         // factory is dropped by the engine (native binding, build26)
+        u.CmdRepeat(false);
+        u.CmdClearBuildQueue();
         u.CmdStop();
         GenericHelpers::LogUtil("[LIFECYCLE] " + u.circuitDef.GetName() + " " + u.id + " retiring: " + why, 1);
     }
@@ -52,22 +57,6 @@ namespace Lifecycle {
             string name; retiringName.get(key, name);
             GenericHelpers::LogUtil("[LIFECYCLE] " + name + " " + u.id + " gone", 1);
         }
-    }
-
-    // A retired factory within radius of pos: standing, or gone less than
-    // LifecycleMemorySeconds ago (a unit it had started may finish after it).
-    bool RetiringNear(const AIFloat3 &in pos, float radius)
-    {
-        const float sq = radius * radius;
-        for (uint i = 0; i < ids.length(); ++i) {
-            int64 gone = 0;
-            if (goneAt.get(ids[i], gone) && ai.frame - int(gone) > int(Global::RoleSettings::Tech::LifecycleMemorySeconds) * SECOND) continue;
-            double x = 0, z = 0;
-            if (!retiringX.get(ids[i], x) || !retiringZ.get(ids[i], z)) continue;
-            const AIFloat3 p(float(x), 0.0f, float(z));
-            if (MapHelpers::SqDist(p, pos) <= sq) return true;
-        }
-        return false;
     }
 
     string Describe(CCircuitUnit@ u)

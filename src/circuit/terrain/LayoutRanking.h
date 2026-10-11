@@ -48,6 +48,22 @@ inline float Dist(const Pt& a, const Pt& b)
 	return std::sqrt(Sq(a, b));
 }
 
+struct SupportReach {
+	Pt position;
+	float radius;
+};
+
+// Every member of a packed set needs support, not just the seed. The caller
+// prepares this small group once per packing operation; no engine callbacks
+// or allocations occur per candidate. O(group size), with an existence exit.
+inline bool WithinSupport(const Pt& site, const std::vector<SupportReach>& sources)
+{
+	for (const auto& source : sources) {
+		if (source.radius > 0.f && Sq(site, source.position) <= source.radius * source.radius) return true;
+	}
+	return false;
+}
+
 // D-229: only completed, owned static assistants enter this snapshot. Future
 // reserved turrets deliberately contribute nothing. Speeds may be expressed
 // per frame or per second, provided every source uses the same unit.

@@ -1,4 +1,5 @@
 """Prepare, run and compare replenishing AIR combat arenas; no economic build-up."""
+from script_settings import role_settings_path
 import argparse
 import copy
 import hashlib
@@ -239,11 +240,11 @@ def prepare(args):
                     'bool MassBombers() { if (ai.frame >= 0) return true; // supplied combat arena only')
     # Supplied combat deliberately has no opening crew/turrets or recruitment.
     # Preserve older pinned data, which predates this economy-only admission.
-    if 'bool T1OpeningRaidEnabled = true;' in (staged / 'src/global.as').read_text():
-        checked_replace(staged / 'src/global.as', 'bool T1OpeningRaidEnabled = true;', 'bool T1OpeningRaidEnabled = false;')
+    if 'bool T1OpeningRaidEnabled = true;' in (role_settings_path(staged / 'src', 'Air')).read_text():
+        checked_replace(role_settings_path(staged / 'src', 'Air'), 'bool T1OpeningRaidEnabled = true;', 'bool T1OpeningRaidEnabled = false;')
         overrides.append('T1 opening production gate disabled for supplied combat')
     if case.get('bomber_only', True):
-        checked_replace(staged / 'src/global.as', 'float BomberWaveFighterRatio = 1.0f;', 'float BomberWaveFighterRatio = 0.0f;')
+        checked_replace(role_settings_path(staged / 'src', 'Air'), 'float BomberWaveFighterRatio = 1.0f;', 'float BomberWaveFighterRatio = 0.0f;')
         raid_file = staged / 'src/systems/air/air_raids.as'
         escort_gate = ('AirOperations::AvailableFighters(true)' if 'AirOperations::AvailableFighters(true)' in raid_file.read_text()
                        else 'AirScreen::HomeValue()') + ' < AirEconomy::EnemyAir()'
@@ -260,6 +261,16 @@ def prepare(args):
         if changes != 1:
             raise ValueError('Could not disable fixture autoquit for endless mode')
         camera.write_text(text)
+    (base / 'LuaUI/Config').mkdir(parents=True, exist_ok=True)
+    if case.get('command_detail', False):
+        (base / 'LuaUI/Config/full_match_perf.lua').write_text('return {command_detail=true,unit_command_detail=true}\n')
+    if case.get('perimeter_probe', False):
+        for profile in ('experimental_balanced', 'experimental_hard', 'experimental_terrible'):
+            path=staged/profile/'main.as'
+            checked_replace(path,'AirArenaProbe::Tick();','AirArenaProbe::Tick(); AirPerimeterProbe::Tick();')
+            with path.open('a') as out:
+                out.write('\n'+(HERE/'air_perimeter_probe.as').read_text())
+        overrides.append('read-only fighter ownership/route-version probe and detailed command observer')
     case.update(speed=args.speed, minutes=args.minutes, endless=args.endless)
     (base / 'LuaUI/Config').mkdir(parents=True, exist_ok=True)
     (base / 'LuaUI/Config/air_arena.lua').write_text('return ' + lua(case) + '\n')

@@ -22,6 +22,8 @@
 #include <string>
 #include <deque>
 #include <functional>
+#include <tuple>
+#include <cstdint>
 
 namespace terrain {
 	struct SArea;
@@ -133,6 +135,7 @@ public:
 	int ReserveBuilding(CCircuitDef* cdef, const springai::AIFloat3& pos, int facing, int ttlFrames = 0, int group = 0);
 	// A single reusable slot. Its private zone preserves frame/unit identity after completion.
 	int ReservePersistentBuilding(CCircuitDef* cdef, const springai::AIFloat3& pos, int facing);
+	int ReservePackedBuilding(CCircuitDef* cdef, const springai::AIFloat3& pos, int facing);
 	// Opt-in finite support geometry. Stores slot IDs under key + ".slot.N";
 	// rolls back every new slot if the minimum useful footprint cannot fit.
 	int PlanNavalSupport(const std::string& key, CCircuitDef* nano, CCircuitDef* factory,
@@ -161,6 +164,7 @@ public:
 	bool PlanMexCluster(const std::string& name, CCircuitDef* def, const springai::AIFloat3& origin, int facing, int cols, int rows);
 	// A nano block tight against the back of a factory footprint (built or reserved).
 	int ReserveNanoBlockAt(CCircuitDef* nanoDef, CCircuitDef* facDef, const springai::AIFloat3& facPos, int facing, int cols, int rows, int gap);
+	bool CanReserveNanoBlockAt(CCircuitDef* nanoDef, CCircuitDef* facDef, const springai::AIFloat3& facPos, int facing, int cols, int rows, int gap);
 	// The same behind a standing factory: position and facing read from the unit.
 	int ReserveNanoBlock(CCircuitUnit* factory, CCircuitDef* nanoDef, int cols, int rows, int gap);
 	// Dry run of ReserveBuilding: would it be accepted? No marks, no log.
@@ -453,6 +457,14 @@ private:
 	};
 	std::vector<SPackCandidate> PackCandidates(int zone, CCircuitDef* cdef, int nanoGroup, int facing,
 			const springai::AIFloat3& anchor, float maxReach, float minNanoDist, bool alwaysRing = false) const;  // D-104: alwaysRing scans the ring round the zone too
+	std::vector<SPackCandidate> ComputePackCandidates(int zone, CCircuitDef* cdef, int nanoGroup, int facing,
+			const springai::AIFloat3& anchor, float maxReach, float minNanoDist, bool alwaysRing) const;
+	using EmptyPackKey = std::tuple<int,int,int,int,float,float,bool>;
+	mutable std::set<EmptyPackKey> emptyPackQueries;
+	uint64_t packingRevision = 0;
+	mutable uint64_t emptyPackRevision = 0, emptyPackAllyRevision = 0;
+	mutable unsigned int emptyPackOwnedRevision = 0;
+	mutable int emptyPackFrame = -1;
 	void UnmarkSlot(const int2& c1, const int2& c2);  // served: cells go, except a zone's own marks
 	int FindSlotAt(CCircuitDef* cdef, const springai::AIFloat3& pos) const;
 public:
@@ -461,11 +473,11 @@ public:
 	void MarkSlotRecycled(CCircuitDef* cdef, const springai::AIFloat3& pos);
 	// D-101: a set of up to `count` footprints of cdef, the first flush against a
 	// turret slot of nanoGroup, the rest lined up away from it; the first id, -1
-	int PackSet(int zone, CCircuitDef* cdef, int nanoGroup, int facing, const springai::AIFloat3& anchor, int count, bool ring = false);  // D-108: ring = the ground round the zone within turret reach
+	int PackSet(int zone, CCircuitDef* cdef, int nanoGroup, int facing, const springai::AIFloat3& anchor, int count, bool ring = false, int maximumGapCells = -1);
 	// D-104: the footprint of cdef nearest flush against a turret slot of nanoGroup
 	// (EdgeGap first, then the packer's order); needExit: a factory's exit clear
 	bool PickFlushSite(int zone, CCircuitDef* cdef, int nanoGroup, int facing, const springai::AIFloat3& anchor, bool needExit,
-			springai::AIFloat3& outPos, int& outGap, springai::AIFloat3& outTouch, int* outServedGap = nullptr, bool ring = false);
+			springai::AIFloat3& outPos, int& outGap, springai::AIFloat3& outTouch, int* outServedGap = nullptr, bool ring = false, int maximumGapCells = -1);
 	// D-104: the clusters factories are packed against (the script registers them)
 	void ClearFactoryZones() { factoryZones.clear(); }
 	void AddFactoryZone(int zone, int group) { factoryZones.push_back(std::make_pair(zone, group)); }
@@ -501,6 +513,8 @@ private:
 	std::vector<std::pair<int, int>> factoryZones;   // D-104: (zone, turret group), the main cluster first
 	int factoryFront = -1;                            // D-104: the facing the labs face (Layout::LabFacing)
 	void RemarkZoneCells(int2 c1, int2 c2);
+	int ReserveZoneMasked(const springai::AIFloat3& centre, int facing, float halfAcross, float halfAlong,
+		bool corridor, SBlockingMap::SM blockingMask);
 	void OnStructureGone(CCircuitDef* cdef, const springai::AIFloat3& pos);
 	int ReserveBuildingEx(CCircuitDef* cdef, const springai::AIFloat3& pos, int facing, int ttlFrames, int group,
 			bool armed, bool anyReach, bool tenant, int zone, bool quiet, bool exitsPreflighted = false);

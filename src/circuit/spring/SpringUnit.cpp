@@ -63,6 +63,19 @@ int CUnitAPI::GetCMD(int unitId, int commandIdx)
 	return sAICallback->Unit_CurrentCommand_getId(skirmishAIId, unitId, commandIdx);
 }
 
+bool CUnitAPI::HasQueuedCommand(int unitId, int commandId) const
+{
+    // Inspect the live queue, including factory build queues and later WAITs.
+    // No frame memo: another owner can replace it in this very callback.
+    // O(Q) worst case, one count callback for an empty queue, no allocation.
+    // Covered against the real C ABI by guard_callback_test.cpp.
+    const int count = sAICallback->Unit_getCurrentCommands(skirmishAIId, unitId);
+    if (count < 0) return true; // failed observation must not suppress recovery
+    for (int index = 0; index < count; ++index)
+        if (sAICallback->Unit_CurrentCommand_getId(skirmishAIId, unitId, index) == commandId) return true;
+    return false;
+}
+
 bool CUnitAPI::HasGuardIntent(int unitId, int targetId, int frame) const
 {
 	const int count = sAICallback->Unit_getCurrentCommands(skirmishAIId, unitId);

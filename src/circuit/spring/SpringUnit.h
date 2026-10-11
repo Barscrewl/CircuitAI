@@ -22,6 +22,7 @@ public:
 
 	int GetCMDQueueSize(int unitId);
 	int GetCMD(int unitId, int commandIdx = 0);
+    bool HasQueuedCommand(int unitId, int commandId) const;
     bool HasRouteIntent(int unitId, const std::vector<routecommand::Command>& issued, int frame) const;
 	bool HasGuardIntent(int unitId, int targetId, int frame) const;
 	// Callback-thread snapshots, without allocating per-unit C++ wrappers.

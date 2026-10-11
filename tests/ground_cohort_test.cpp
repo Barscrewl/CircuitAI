@@ -1,3 +1,4 @@
+#include "terrain/GroundFormation.h"
 #include "terrain/GroundCohort.h"
 #include <cassert>
 #include <cstdio>
@@ -71,5 +72,18 @@ int main() {
             prior=p;
         }
     }
+    assert(formation::Separation(368.6f,451.25f,64,96)>82.f);
+    assert(formation::Separation(380,700,64,96)==96);
+    assert(formation::Separation(380,380,64,96)==64);
+    assert(formation::RearRadius(600,380,475,64,96)==695);
+    assert(formation::Compatible(true,true,true,1000.f*1000.f,900,true));
+    assert(!formation::Compatible(true,true,true,1000.f*1000.f,900,false));
+    assert(!formation::Compatible(false,true,true,0,900,true));
+    assert(!formation::Compatible(true,false,true,0,900,true));
+    assert(!formation::Compatible(true,true,false,0,900,true));
+    assert(cohort::CompletedStage({0,0},{63,0},{100,0},64));
+    assert(!cohort::CompletedStage({0,0},{64,0},{100,0},64));
+    assert(!cohort::CompletedStage({0,0},{32,0},{160,0},64));
+    assert(cohort::CompletedStage({0,0},{32,0},{159,0},64));
     std::puts("ground cohort: catchability, strength, health and 78 firing slots PASS");
 }

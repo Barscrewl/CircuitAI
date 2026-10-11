@@ -1,4 +1,5 @@
 """Isolated SEA combat fixtures. Assets are supplied; AI alone commands combat."""
+from script_settings import role_settings_path
 import argparse, hashlib, json, re, subprocess, sys
 from pathlib import Path
 import playtest, storage
@@ -10,15 +11,51 @@ HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
 
 
+def audit_retreat(text):
+    """Correlate a fresh policy hint, health retreat and an actual MOVE endpoint.
+
+    This proves native staging admission/dispatch, not arrival, survival or
+    repair. State sampling can follow the native order by up to one second.
+    """
+    hints={}; moves={}; states=[]
+    for line in text.splitlines():
+        match=re.search(r'\[f=0*(\d+)\]',line)
+        if not match:continue
+        frame=int(match[1]); fields=dict(re.findall(r'(\w+)=([^\s]+)',line))
+        if '[RetreatProbe] waypoint' in line:
+            hints.setdefault(fields['ship'],[]).append((frame,float(fields['x']),float(fields['z'])))
+        elif '[RetreatProbe] state' in line and fields.get('retreat')=='true':
+            states.append((fields['ship'],frame))
+        elif '[SeaArena]' in line and ' move ' in line:
+            moves.setdefault(fields['id'],[]).append((frame,float(fields['x']),float(fields['z'])))
+    evidence=[]
+    for unit,frame in states:
+        prior=[hint for hint in hints.get(unit,[]) if hint[0]<=frame]
+        if not prior:continue
+        hint=prior[-1]
+        if frame-hint[0]>=45*30:continue
+        for command,x,z in moves.get(unit,[]):
+            distance=((x-hint[1])**2+(z-hint[2])**2)**.5
+            if frame-30<=command<=frame+60 and distance<=129:
+                evidence.append(dict(unit=unit,retreat_frame=frame,command_frame=command,
+                                     hint_frame=hint[0],endpoint_error=distance))
+                break
+    return ([] if evidence else ['No fresh retreat hint matched a native withdrawal MOVE'],evidence)
+
+
 def audit_transit(text, case):
     """Physical arrival/health evidence, independent of AI decision messages."""
-    spec=case['native_transit']; latest={}
+    spec=case['native_transit']; latest={}; maximum_queue=0
     for line in text.splitlines():
         if '[SeaArena]' not in line or ' boat ' not in line:continue
         fields=dict(re.findall(r'(\w+)=([^\s]+)',line))
-        if fields.get('unit')==spec['unit']:latest[fields['id']]=fields
+        if fields.get('unit')==spec['unit'] and all(key in fields for key in ('x','z','health','maxhealth')):
+            latest[fields['id']]=fields
+            maximum_queue=max(maximum_queue,int(fields.get('queue',0)))
     expected=sum(g['count'] for g in case['groups'] if g['team']==0 and g['unit']==spec['unit'])
     failures=[]; x,z=spec['points'][-1]
+    if 'maximum_queue' in spec and maximum_queue>spec['maximum_queue']:
+        failures.append(f'INV-186: rounded straight transit queue {maximum_queue} exceeds {spec["maximum_queue"]}')
     if len(latest)!=expected:failures.append(f'Expected {expected} observed boats; got {len(latest)}')
     for unit,sample in latest.items():
         if int(sample['frame'])<90*30:failures.append(f'{unit}: missing late observation')
@@ -60,11 +97,13 @@ def prepare(a):
         '--extra-widget',str(HERE/'widgets/sea_arena.lua'),
         '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua')],check=True)
     script=d/'script.txt'; s=script.read_text();s=s.replace('[GAME]\n{','[GAME]\n{\n FixedRNGSeed='+str(a.seed)+';',1);script.write_text(s)
-    staged=d/'AI/Skirmish/BARbTest/test/script'; g=staged/'src/global.as';s=g.read_text();before,sea=s.split('namespace Sea {',1)
+    staged=d/'AI/Skirmish/BARbTest/test/script'; g=role_settings_path(staged/'src', 'Sea');s=g.read_text();before,sea=s.split('namespace Sea {',1)
     sea,n=re.subn(r'bool ExperimentalBuild = (true|false);','bool ExperimentalBuild = '+('false' if a.legacy_layout else 'true')+';',sea,count=1);assert n==1
     if a.control: sea=sea.replace('bool AdaptiveFleet = true;','bool AdaptiveFleet = false;')
     if a.order_slack is not None:
         sea,n=re.subn(r'float OrderPositionSlack = [^;]+;', 'float OrderPositionSlack = '+str(a.order_slack)+'f;',sea,count=1);assert n==1
+    if case.get('scout_diagnostics'):
+        sea=sea.replace('bool ScoutDiagnostics = false;', 'bool ScoutDiagnostics = true;')
     g.write_text(before+'namespace Sea {'+sea)
     # Constructors are frozen in all combat-only tests. Production is real only
     # in response cases, where actual supplied economy funds new hulls.
@@ -152,6 +191,53 @@ def prepare(a):
         x,z=case['verified_water_fixture']
         p=staged/'src/systems/sea/sea_invasion.as';s=p.read_text();b=s.index('{',s.index('void Tick()'))
         p.write_text(s[:b+1]+f'\n if (ai.teamId==0) {{ secured=ai.frame>=600; body=aiBattle.WaterBody(AIFloat3({x},0,{z}),false); return; }} // supplied survey precondition only\n'+s[b+1:])
+    if case.get('retreat_boundary_observer'):
+        # Read-only observation of actual offset candidates, before the runtime
+        # bounds guard. This fixture proves edge geometry is exercised, rather
+        # than treating an absence of crashes as evidence of coverage.
+        path=staged/'src/systems/sea/sea_retreat.as'
+        source=path.read_text()
+        needle='const AIFloat3 point=anchorPosition+direction*(BehindLine/length)+tangent*offset;'
+        assert source.count(needle)==1
+        source=source.replace(needle,needle+'\n if (!ProductionMath::Inside(point.x,point.z,float(AiTerrainWidth()),float(AiTerrainHeight()),0)) AiLog("[RetreatBoundary] rejected ship="+ship.id+" x="+point.x+" z="+point.z);')
+        path.write_text(source)
+    if case.get('retreat_observer'):
+        if case.get('screen_anchor_fixture'):
+            # Mechanism isolation: hold the supplied submarine screen near its
+            # spawn. Surface ships still choose combat and health retreat.
+            path=staged/'src/systems/sea/sea_operations.as'
+            source=path.read_text()
+            needle='Cohort@ g=groups[k]; if (g.ids.length()==0) continue;'
+            assert source.count(needle)==1
+            source=source.replace(needle,needle+'''\n
+            if (SeaSubmarines::Handles(ai.GetCircuitDef(g.defId))) {
+                if (g.route is null || g.route.IsDead()) Route(g,g.centre+AIFloat3(128,0,0),false,true,true);
+                continue;
+            }
+''')
+            path.write_text(source)
+        # Observation only; do not force retreat, alter health or command ships.
+        path=staged/'src/systems/sea/sea_retreat.as'
+        source=path.read_text()
+        needle='CCircuitUnit@ ship=ai.GetTeamUnit(SeaCombat::owned[i]);'
+        assert source.count(needle)==1
+        source=source.replace(needle,needle+'\n SeaRetreatProbe::Observe(ship);')
+        needle='ship.SetRetreatWaypoint(goal,anchor,ai.frame+WaypointSeconds*SECOND);'
+        assert source.count(needle)==1
+        source=source.replace(needle,needle+'\n if (anchor>=0) GenericHelpers::LogUtil("[RetreatProbe] waypoint ship="+ship.id+" anchor="+anchor+" x="+goal.x+" z="+goal.z,1);')
+        source+='''
+namespace SeaRetreatProbe {
+    dictionary states;
+    void Observe(CCircuitUnit@ unit) {
+        if (unit is null) return;
+        const bool retreat=unit.task !is null && unit.task.GetType()==int(Task::Type::RETREAT);
+        bool previous=false; states.get(""+unit.id,previous);
+        if (retreat!=previous) GenericHelpers::LogUtil("[RetreatProbe] state ship="+unit.id+" retreat="+retreat,1);
+        states.set(""+unit.id,retreat);
+    }
+}
+'''
+        path.write_text(source)
     case.update(seed=a.seed,side=a.side,minutes=a.minutes,speed=a.speed,control=a.control,order_slack=a.order_slack)
     (d/'LuaUI/Config').mkdir(exist_ok=True,parents=True);(d/'LuaUI/Config/sea_arena.lua').write_text('return '+lua(case)+'\n')
     (d/'sea-arena.json').write_text(json.dumps(case,indent=2))
@@ -164,7 +250,10 @@ def prepare(a):
             +(['enemy transit routes scripted'] if case.get('enemy_routes') else [])
             +(['protected friendly ship route scripted; escort commands remain autonomous'] if case.get('friendly_routes') else [])
             +(['friendly native formation route supplied; mechanism test only'] if case.get('native_transit') else [])
-            +(['verified-water gate supplied; not a natural survey test'] if case.get('verified_water_fixture') else [])},indent=2))
+            +(['verified-water gate supplied; not a natural survey test'] if case.get('verified_water_fixture') else [])
+            +(['retreat state and waypoint observation; no surface retreat commands supplied'] if case.get('retreat_observer') else [])
+            +(['read-only observation of off-map retreat candidates'] if case.get('retreat_boundary_observer') else [])
+            +(['supplied submarines held near spawn; retreat mechanism test only'] if case.get('screen_anchor_fixture') else [])},indent=2))
     subprocess.run([sys.executable,str(ROOT/'tools/knowledge/check_script_api.py'),'--dll',str(a.dll),'--scripts',str(staged)],check=True)
     print('SEA_ARENA='+str(d),flush=True)
     return d,call,case.get('checks','sea-arena')
@@ -181,14 +270,18 @@ def main():
     code=subprocess.run(call+['watch','--dir',str(d),'--role','SEA','--checks',checks,'--minutes',str(a.minutes),'--wall-minutes','15']).returncode
     case=json.loads((d/'sea-arena.json').read_text())
     acceptance=case.get('acceptance')
-    if acceptance or case.get('native_transit') or case.get('progression_audit'):
+    if acceptance or case.get('native_transit') or case.get('progression_audit') or case.get('retreat_observer'):
         archive=max((d/'runs').glob('*'),key=lambda p:p.name)
         text=(archive/'infolog.txt').read_text(errors='replace')
         measurements={}
-        if case.get('progression_audit'):
+        if case.get('retreat_observer'):
+            failures,measurements=audit_retreat(text)
+        elif case.get('progression_audit'):
             failures,measurements=audit_progression(text,case)
         else:
             failures=audit_transit(text,case) if case.get('native_transit') else audit(summarize(text),acceptance)
+        for pattern in case.get('required_log_patterns', []):
+            if not re.search(pattern, text): failures.append('Required policy evidence missing: '+pattern)
         # Never replace the runner's report/result. A smoke PASS may still be
         # a tactical failure; publish the explicit physical judgment beside it.
         with (archive/'sea-tempo-acceptance.json').open('x',encoding='utf-8') as f:

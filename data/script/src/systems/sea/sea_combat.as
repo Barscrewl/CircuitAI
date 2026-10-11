@@ -4,6 +4,7 @@
 #include "sea_operations.as"
 #include "sea_patrol.as"
 #include "sea_protection.as"
+#include "sea_composition.as"
 namespace SeaCombat {
     class Hull {
         CCircuitDef@ def;
@@ -50,13 +51,22 @@ namespace SeaCombat {
         }
     }
     void Leave() {
+        for (uint i=0;i<owned.length();++i) {
+            CCircuitUnit@ unit=ai.GetTeamUnit(owned[i]);
+            if (unit !is null) unit.SetRetreatWaypoint(AIFloat3(0,0,0),-1,-1);
+        }
         SeaOperations::Leave();
+        SeaComposition::Prune();
         SeaPatrol::Leave();
         SeaProtection::Leave();
         for (uint i=0;i<owned.length();++i) {
             CCircuitUnit@ u=ai.GetTeamUnit(owned[i]);
             if (u is null || u.task is null) continue;
             if (!u.task.IsExternalControlled()) continue;
+            // Attachment belongs to the game, not to the SEA role. A role
+            // transition must not briefly fight the gadget for its live queue.
+            // The native external task resumes AI control after owner release.
+            if (u.GetRulesParam("carrier_host_unit_id",-1)>=0) continue;
             IUnitTask@ old=u.task;
             IUnitTask@ task=aiMilitaryMgr.DefaultMakeTask(u);
             if (task !is null && !aiMilitaryMgr.TransferUnit(u,task)) task.Abort();
@@ -79,6 +89,7 @@ namespace SeaCombat {
     void Tick() {
         if (!Active() || ai.frame-frame<SECOND) return;
         frame=ai.frame; Init();
+        SeaComposition::Prune();
         // Independent of builder/layout census; IDs are owned by this policy
         // and reacquired inside each consumer, including transfer/role exit.
         array<Id>@ ids=ai.GetOwnedUnitIds(); owned.resize(0);
@@ -136,7 +147,7 @@ namespace SeaCombat {
             // The T2 yard supplies advanced surface/AA hulls. Keep the T1 yard
             // useful as a submarine screen/raiding stream. This is after the
             // caller's workforce, recovery and urgent air/sub counter checks.
-            if (Global::RoleSettings::Sea::T1SubmarinesAfterT2 && SeaFactories::T2Finished(side)) {
+            if (!Global::RoleSettings::Sea::BalancedFleetComposition && Global::RoleSettings::Sea::T1SubmarinesAfterT2 && SeaFactories::T2Finished(side)) {
                 CCircuitDef@ sub=ai.GetCircuitDef(side=="armada" ? "armsub" : side=="cortex" ? "corsub" : "legnavysub");
                 if (sub !is null && sub.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(sub)) {
                     GenericHelpers::LogUtil("[SEA][SubStream] recruit="+sub.GetName(),1);
@@ -148,11 +159,12 @@ namespace SeaCombat {
         dictionary localCounts;
         const int body=aiBattle.WaterBody(yard.GetPos(ai.frame),false);
         // One owned pass, then O(R) roster arithmetic. A fleet in another sea
-        // cannot repay this yard's underwater deficit. Unfinished frames are
-        // already represented by pending recruits; do not count them twice.
+        // cannot repay this yard's underwater deficit. Native pending recruits
+        // count UNFRAMED tasks only. Include owned frames here exactly once;
+        // otherwise a second yard over-orders while the first hull is building.
         for (uint i=0;i<owned.length();++i) {
             CCircuitUnit@ u=ai.GetTeamUnit(owned[i]);
-            if (u is null || u.GetBuildProgress()<1 || aiBattle.WaterBody(u.GetPos(ai.frame),false)!=body) continue;
+            if (u is null || aiBattle.WaterBody(u.GetPos(ai.frame),false)!=body) continue;
             const string key=""+u.circuitDef.id;
             // dictionary.get uses an out parameter: on a missing key its
             // temporary need not retain our initializer. Always reset on
@@ -172,6 +184,10 @@ namespace SeaCombat {
         if (needAir>0) { kind=2; deficit=needAir; }
         if (needSub>deficit) { kind=1; deficit=needSub; }
         if (kind<0 && urgentOnly) return null;
+        if (kind<0 && Global::RoleSettings::Sea::BalancedFleetComposition) {
+            CCircuitDef@ baseline=SeaComposition::Select(yard,localCounts);
+            if (baseline !is null) return baseline;
+        }
         if (kind<0) {
             if (have[2]<fleet*Global::RoleSettings::Sea::FleetAirCoverShare) { kind=2; deficit=fleet*Global::RoleSettings::Sea::FleetAirCoverShare-have[2]; }
             else if (have[1]<fleet*Global::RoleSettings::Sea::FleetSubCoverShare) { kind=1; deficit=fleet*Global::RoleSettings::Sea::FleetSubCoverShare-have[1]; }

@@ -37,15 +37,4 @@ namespace MapHelpers {
         return (dx * dx + dz * dz) <= (r * r);
     }
 
-    // Return true if the given unit's current position is within 'range' of the task's build position.
-    // Null-safe: returns false if unit or task is null.
-    bool IsUnitInRangeOfTask(CCircuitUnit@ unit, IUnitTask@ task, float range)
-    {
-        if (unit is null || task is null) return false;
-        IBuilderTask@ builderTask = cast<IBuilderTask>(task);
-        if (builderTask is null) return false;
-        const AIFloat3 upos = unit.GetPos(ai.frame);
-        const AIFloat3 tpos = builderTask.GetBuildPos();
-        return IsInRange(upos, tpos, range);
-    }
 }

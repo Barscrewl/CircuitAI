@@ -176,6 +176,10 @@ bool CRangedEngagement::Move(CCircuitUnit* unit,const AIFloat3& dest,bool escape
             && product>0.f && product*product>.94f*live.SqLength2D()*wanted.SqLength2D()) return true;
     }
     if(!ai->GetTerrainManager()->CanMoveToPos(unit->GetArea(),dest) || !SafeMove(unit,pos,dest,policy.safetyMargin,escape)) return false;
+    if(trace) ai->LOG("RANGED: move-replace unit=%d objective=%d mode=%d urgent=%d moving=%d pending=%d queue=%d from=%.1f,%.1f old=%.1f,%.1f new=%.1f,%.1f",
+        id,moveObjective,moveMode,int(urgentMove),int(moving),int(query!=nullptr),
+        ai->GetUnitAPI()->GetCMDQueueSize(id),pos.x,pos.z,destination.x,destination.z,dest.x,dest.z);
+    completedMove=false;
     destination=dest; query.reset(); const unsigned version=++generation;
     world.SetSlot(id,dest,policy.spacing,unit->GetCircuitDef()->GetCostM());
     auto* finder=ai->GetPathfinder();
@@ -211,6 +215,19 @@ bool CRangedEngagement::Move(CCircuitUnit* unit,const AIFloat3& dest,bool escape
         if(trace) ai->LOG("RANGED: path completed unit=%d generation=%u points=%u",id,version,unsigned(points.size()));
         if(solved) ranged::AppendExactGoal(points,dest);
         if(unit->GetCircuitDef()->GetRangedPolicy().coordinated) ranged::CompactStraightRoute(points);
+        else if (points.size() > 2) {
+            // Geometry is independent of composition policy: precision guns
+            // also receive long grid routes. Preserve joins/bends/reversals,
+            // validate original straight legs on the current movement/threat
+            // grid, then retain the existing whole-route combat safety test.
+            // O(points + sampled leg length); no new decision cadence or APM
+            // limit. Failed legs fence only their neighboring straight run.
+            auto line = std::static_pointer_cast<CQueryLineMap>(ai->GetPathfinder()->CreateLineMapQuery(
+                unit, ai->GetThreatMap(), unit->GetPos(ai->GetLastFrame())));
+            ranged::CompactValidatedStraightRoute(points, [&](const AIFloat3& from, const AIFloat3& to) {
+                return line->IsSafeLine(from,to);
+            });
+        }
         if(points.size()>1 && points.back().SqDistance2D(points[points.size()-2])<17.f*17.f)
             ai->LOG("[INVARIANT] INV-167 ranged exact endpoint would cancel its queued predecessor unit=%d",id);
         if(!solved || !LegalPath(unit,points,escape)) {
@@ -284,7 +301,18 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
             assessed && group.committed?relativeClosing:std::max(enemyClosing,relativeClosing);
         if(c.armed && c.mobile && c.groundRange<maxRange && closing>1.f
             && distance<maxRange+64.f+(narrowKite?0.f:std::max(0.f,closing-enemyClosing)*policy.reactionSeconds)) incoming=&c;
-        float reach=c.hazardRadius+policy.safetyMargin+closing*policy.reactionSeconds;
+        // Rear elements anticipate closing threats earlier, without forcing
+        // their screen to wait. SET_TARGET remains active during this movement,
+        // so a ready rocket can fire and its reload is useful escape time.
+        const float anticipation=policy.reactionSeconds
+            +(group.formationRear ? policy.withdrawalLeadSeconds : 0.f);
+        float reach=c.hazardRadius+policy.safetyMargin+closing*anticipation;
+        // Predict relative to the screen's band. Without its depth, the rear's
+        // extra second merely consumes part of its range advantage and can
+        // still start withdrawing AFTER the screen. Stationary threats do not
+        // gain this buffer: that would prevent a safe rocket siege.
+        if(group.formationRear && c.mobile && enemyClosing>0.f)
+            reach+=group.formationScreenOffset;
         const float reclaim=assessed && c.def->IsAbleToReclaim()?c.def->GetBuildDistance()+c.radius+policy.safetyMargin:0.f;
         reach=std::max(reach,reclaim);
         const bool approvedStatic=assessed && group.committed
@@ -322,6 +350,10 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
     if(group.target>=0) {
         const auto arc=cohort::Arc(P(group.focus),P(group.back),group.radius,rank,int(group.members.size()),policy.spacing);
         point.x=arc.x; point.z=arc.z;
+        if(group.formationRear) {
+            point.x-=group.back.z*policy.spacing*.5f;
+            point.z+=group.back.x*policy.spacing*.5f;
+        }
     } else {
         // Keep separate lanes during travel as well as at the firing band.
         // Keep a rounding margin between adjacent straight-line reservations,
@@ -352,7 +384,7 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
         // Advancing into it doubles closure and spends the entire range
         // advantage turning around. Let it enter our fire before pulling back.
         point=pos;
-    } else if(best>=0 && (assessed || group.mode!=cohort::Mode::REGROUP)
+    } else if(best>=0 && !group.formationRear && (assessed || group.mode!=cohort::Mode::REGROUP)
         && world.FreeSlot(id,pos,policy.spacing)
         && !(policy.supportAllies && group.supporting && group.committed
             && (pos.x-group.focus.x)*group.back.x+(pos.z-group.focus.z)*group.back.z>group.screenDepth+policy.spacing)) {
@@ -393,10 +425,30 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
     // here: otherwise its successful HOLD looks like a failed placement and
     // the next lateral candidate immediately orders another MOVE.
     const float arrival=std::max(group.target<0?64.f:32.f,policy.hysteresis);
-    if(!danger && group.mode!=cohort::Mode::REGROUP
+    // A formation deliberately staged outside an immobile battery has no
+    // legal shot. Requiring one here makes adjacent cohorts repeatedly trade
+    // lateral slots. Retain only a reached, still-safe nearby reservation for
+    // the SAME objective/mode; danger and fresh movement admission win above.
+    const bool formationStaging=policy.formationPosition!=RangedPolicy::FormationPosition::NONE
+        && group.mode==cohort::Mode::WITHDRAW && objective && !objective->mobile
+        && moveObjective==group.target && moveMode==int(group.mode);
+    // Recoil may finish a MOVE before its exact endpoint. The route walker
+    // already accepts its final waypoint within 64 elmos; repeatedly sending
+    // that completed command buys no progress. Adopt the reached position only
+    // for safe static staging, using the existing route/slot tolerances. This
+    // is not an arrival relaxation for attacks, retreats or failed commands:
+    // fresh danger, objective/mode changes and spacing all invalidate reuse.
+    const bool completedStage=formationStaging && completedMove && !danger && best<0
+        && cohort::CompletedStage(P(pos),P(destination),P(point),policy.spacing)
+        && world.FreeSlot(id,pos,policy.spacing)
+        && SafeMove(unit,pos,pos,policy.safetyMargin,false);
+    if(completedStage) point=pos;
+    if(!completedStage && !danger && group.mode!=cohort::Mode::REGROUP
         && destination.SqDistance2D(point)<4.f*policy.spacing*policy.spacing
         && pos.SqDistance2D(destination)<arrival*arrival
-        && (best>=0 || group.target<0) && world.FreeSlot(id,destination,policy.spacing)) point=destination;
+        && (best>=0 || group.target<0 || (formationStaging
+            && SafeMove(unit,pos,destination,policy.safetyMargin,false)))
+        && world.FreeSlot(id,destination,policy.spacing)) point=destination;
     urgentMove=danger || moveObjective!=group.target || moveMode!=int(group.mode);
     moveObjective=group.target; moveMode=int(group.mode);
     const bool settled=pos.SqDistance2D(point)<arrival*arrival;
@@ -449,7 +501,11 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
     while(pathCursor<path.size() && (pos.SqDistance2D(path[pathCursor])<4096.f
         || (pathCursor+1<path.size() && pos.SqDistance2D(path[pathCursor+1])<pos.SqDistance2D(path[pathCursor])))) ++pathCursor;
     if(moving && !LegalPath(unit,path,true)) Hold(unit,true);
-    if(moving && ai->GetUnitAPI()->GetCMDQueueSize(id)==0) { moving=false; path.clear(); pathCursor=0; }
+    if(moving && ai->GetUnitAPI()->GetCMDQueueSize(id)==0) {
+        completedMove=!path.empty() && pathCursor==path.size()
+            && pos.SqDistance2D(destination)<4096.f;
+        moving=false; path.clear(); pathCursor=0;
+    }
 
     if(liveWeapon) {
         const int reload=liveWeapon->GetReloadFrame();

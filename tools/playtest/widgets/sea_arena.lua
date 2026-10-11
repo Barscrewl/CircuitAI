@@ -54,6 +54,9 @@ local function command(id,def,team,cmd,params,options,tag,player,fromSynced,from
     c.commands[cmd]=(c.commands[cmd] or 0)+1;c.defs[d.name]=(c.defs[d.name] or 0)+1
     local sig=tostring(cmd);for _,p in ipairs(params or {}) do sig=sig..":"..tostring(p) end
     if last[id]==sig then c.repeatCount=c.repeatCount+1 end;last[id]=sig
+    if cfg.retreat_observer and cmd==CMD.MOVE and params and #params>=3 and tracked[id] then
+        log("move id="..id.." x="..params[1].." z="..params[3])
+    end
     if cmd==CMD.ATTACK and params and #params==1 and tracked[id] then
         log("attack id="..id.." target="..params[1].." def="..d.name)
         local target=tracked[params[1]]
@@ -168,7 +171,8 @@ function widget:GameFrame(f)
                     end
                     log("boat id="..id.." unit="..UnitDefs[u.def].name.." x="..math.floor(x).." z="..math.floor(z)
                         .." health="..math.floor(health or 0).." maxhealth="..math.floor(maximum or 0).." patrol="..tostring(patrol)
-                        .." target="..tostring(Spring.GetUnitRulesParam(id,"unitTargetID") or -1))
+                        .." target="..tostring(Spring.GetUnitRulesParam(id,"unitTargetID") or -1)
+                        .." queue="..tostring(Spring.GetUnitCommandCount(id) or 0))
                 end
             end
         end

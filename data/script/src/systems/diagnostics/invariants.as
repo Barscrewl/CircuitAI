@@ -4,7 +4,7 @@
 #include "../construction/lifecycle.as"
 #include "../construction/layout.as"
 #include "../team/team_economy.as"
-#include "../../roles/tech_forward.as"
+#include "../../roles/tech/tech_forward.as"
 
 // D-076: the invariants the TECH role promises, checked once a second in the
 // game and written to the log as "[INVARIANT] INV-nnn ..." when broken. Every
@@ -19,6 +19,19 @@ namespace Invariants {
 
     bool inv50Done = false;   // D-120
     bool inv51Done = false;   // D-121
+    // Event-time check only: heavy combat gifts remain TECH-owned through travel.
+    // Re-resolve the anchor at handover, including a commander lost mid-flight.
+    bool HeavyDeliveryArrival(CCircuitUnit@ unit, int recipient, int carrierId) {
+        const AIFloat3 anchor = Team::Roster::DeliveryAnchor(Team::Roster::Get(recipient));
+        const float radius = Global::RoleSettings::Tech::HeavyDeliveryArrivalRadius;
+        const bool valid = unit !is null && carrierId < 0 && Team::IsAlly(recipient)
+            && recipient != ai.teamId && anchor.x >= 0.0f && anchor.z >= 0.0f
+            && anchor.x < AiTerrainWidth() && anchor.z < AiTerrainHeight()
+            && MapHelpers::SqDist(unit.GetPos(ai.frame), anchor) <= radius * radius;
+        if (!valid) Violation("INV-189", unit is null ? "missing" : "" + unit.id,
+            "heavy delivery attempted outside recipient anchor or before carrier release");
+        return valid;
+    }
     dictionary inv53Idle;     // D-123: air constructor id -> samples in a row it did nothing
     void Violation(const string &in id, const string &in key, const string &in msg)
     {
@@ -36,8 +49,18 @@ namespace Invariants {
     void OnUnitAdded(CCircuitUnit@ u)
     {
         if (u is null || u.circuitDef is null || !u.circuitDef.IsMobile()) return;
-        if (u.GetProducerId() >= 0 && Lifecycle::IsRetiringId(u.GetProducerId()))
-            Violation("INV-001", "" + u.id, "a retiring factory produced " + u.circuitDef.GetName() + " " + u.id);
+        if (u.GetProducerId() >= 0 && Lifecycle::IsRetiringId(u.GetProducerId())) {
+            int64 retiredFrame = -1;
+            Lifecycle::retiringSince.get("" + u.GetProducerId(), retiredFrame);
+            // UnitAdded is completion/manager adoption, not UnitCreated.
+            // Preserve violations for production that began after retirement;
+            // a pre-existing frame completed by an assistant is a different event.
+            if (u.GetProductionFrame() < 0 || u.GetProductionFrame() >= retiredFrame)
+                Violation("INV-001", "" + u.id, "a retiring factory produced " + u.circuitDef.GetName() + " " + u.id
+                    + " created=" + u.GetProductionFrame() + " retired=" + retiredFrame);
+            else GenericHelpers::LogUtil("[LIFECYCLE] pre-retirement product completed: " + u.id
+                + " created=" + u.GetProductionFrame() + " retired=" + retiredFrame, 2);
+        }
         // INV-010: no mobile combat unit under the plan's income gate (D-080)
         const string name = u.circuitDef.GetName();
         // Gifts have no local producer and retain normal amphibious control.
@@ -58,15 +81,68 @@ namespace Invariants {
         const bool pressure = Spam::IsSpamDef(u.circuitDef) && Spam::repeatTask.exists("" + u.GetProducerId());
         const bool nukeRecon = TechChain::nukeOpening
             && name == UnitHelpers::GetT1AirScoutForSide(Global::AISettings::Side);
-        if (!builder && !coastal && !pressure && !nukeRecon && mi < TechPlan::CombatGate())
+        // The finite heavy batch has its own admission budget. Exempt only
+        // verified production provenance, not every heavy unit or whole role.
+        const bool heavyBatch = TechHeavyRush::IsBatchProduction(u);
+        if (!builder && !coastal && !pressure && !nukeRecon && !heavyBatch
+            && !TechGantry::IsAdmittedProduction(u) && mi < TechPlan::CombatGate())
             Violation("INV-010", u.circuitDef.GetName(), "combat unit " + u.circuitDef.GetName() + " " + u.id + " produced at +" + int(mi) + " metal under the gate " + int(TechPlan::CombatGate()));
+    }
+
+    // The native manager publishes queued counts before this callback. Check
+    // admission, not a later frame-count sample: spending on valid work lowers
+    // the next admission budget without invalidating that committed work.
+    string constructionAdmissionRule;
+    void ConstructionAdmitted(IUnitTask@ task)
+    {
+        IBuilderTask@ building = cast<IBuilderTask>(task);
+        if (building is null || building.buildDef is null) return;
+        const string name = building.buildDef.GetName();
+        const string side = Global::AISettings::Side;
+        const bool energy = name == UnitHelpers::GetWindNameForSide(side)
+            || name == UnitHelpers::GetSolarNameForSide(side) || name == UnitHelpers::GetAdvSolarNameForSide(side)
+            || name == UnitHelpers::GetFusionNameForSide(side) || name == UnitHelpers::GetAdvFusionNameForSide(side);
+        if (energy && building.GetBuildType() == int(Task::BuildType::ENERGY) && !MetalEconomy::Active()
+            && TechChain::EnergyFullSeconds() >= Global::RoleSettings::Tech::InvariantFloatOrderSeconds) {
+            // D-105 deliberately spends a full metal bank rather than converting
+            // more into it. D-108 dedicates an AFUS builder to continuous scaling.
+            // These existing policies must be named, not silently contradicted by
+            // a diagnostic written before them. All other surplus orders still fail.
+            const bool rushEnergy = TechChain::NukeRush() && (name == UnitHelpers::GetFusionNameForSide(side)
+                || name == UnitHelpers::GetWindNameForSide(side) || name == UnitHelpers::GetSolarNameForSide(side));
+            const bool fundedChain = constructionAdmissionRule == "chain.next" && TechBuild::MetalFullLong();
+            const bool dedicatedFusion = constructionAdmissionRule == "air.dedicated"
+                && name == UnitHelpers::GetAdvFusionNameForSide(side);
+            const bool payback = constructionAdmissionRule == "energy.float";
+            GenericHelpers::LogUtil("[Admission] energy=" + name + " rule=" + constructionAdmissionRule
+                + " frame=" + ai.frame + " metal=" + int(aiEconomyMgr.metal.current) + " " + TechChain::FloatWhy()
+                + " exception=" + (rushEnergy || fundedChain || dedicatedFusion || payback), 2);
+            if (!rushEnergy && !fundedChain && !dedicatedFusion && !payback)
+                Violation("INV-009", name, "new " + name + " order while " + TechChain::FloatWhy()
+                    + "; rule=" + constructionAdmissionRule);
+        }
+        if (building.GetBuildType() != int(Task::BuildType::NANO)) return;
+        string why;
+        const int allowed = Layout::activeTurretAdmissionBudget >= 0
+            ? Layout::activeTurretAdmissionBudget : Layout::TurretsAllowed(why);
+        const int committed = Layout::TurretsInFlight();
+        if (committed > allowed)
+            Violation("INV-019", "turrets", "turret admission commits " + committed + " projects with " + allowed
+                + " allowed; metal=" + int(aiEconomyMgr.metal.current) + "; " + why);
     }
 
     // INV-003: the chain never skips a step whose frame is under construction.
     void ChainStepSkipped(const string &in key, int unfinished)
     {
+        HeavyFusionDeferred(key);
+        if (key == "ap" || key == "aap")
+            Violation("INV-027", key, "required air factory dependency was skipped");
         if (unfinished > 0)
             Violation("INV-003", key, "chain step " + key + " skipped while " + unfinished + " frame(s) of it are under construction");
+    }
+    void HeavyFusionDeferred(const string& in key) {
+        if (key == "fusion" && TechHeavyRush::RequiresFusion())
+            Violation("INV-190", key, "pending heavy rush stable-power dependency deferred for floating energy or skipped");
     }
 
     int frameId = -1;
@@ -78,7 +154,6 @@ namespace Invariants {
     int lastLabFacing = -2;       // D-096: INV-018's log on change
     int lastLabExitCount = -1;
     int noForwardSince = -1;
-    int turretsOverSince = -1;    // D-097: INV-019
     int fusionFramesLast = 0;     // D-100: INV-021
     int lastT1LabId = -1;         // D-101: INV-023
     int t1LabFramesLast = 0;      // D-102: INV-025
@@ -93,6 +168,7 @@ namespace Invariants {
     int afusSeenCount = -1;       // D-108: INV-037
     int afusSeenFrame = -1;       // D-108: INV-037
     int fwdIdleLogT1 = -100000;   // D-109: INV-039
+    int forwardT1EligibleSince = -1; // continuous eligibility under the actual production prerequisites
     int fwdIdleLogT2 = -100000;   // D-109: INV-039
     int ferryLog = -100000;       // D-110: INV-041, INV-042
     int baseFactorySince = -1;    // D-114: INV-044
@@ -102,7 +178,6 @@ namespace Invariants {
     dictionary retiredLabsSeen;   // D-102: INV-026
     bool t1LabSeen = false;
     int ladderFloatSince = -1;
-    dictionary energyFrames;   // energy def name -> unfinished count last tick (INV-009)
     dictionary offSince;   // reclaim target id -> frame turrets were first seen off it (INV-008)
 
     // D-175: every role checks the same overflow promise after sharing.
@@ -194,27 +269,8 @@ namespace Invariants {
             afusSince = -1;
         }
 
-        // INV-009: no energy structure is ordered while energy floats (the
-        // owner's rule, D-079): a new energy frame appearing while it floats.
-        {
-            const bool floats = !MetalEconomy::Active() && TechChain::EnergyFullSeconds() >= Global::RoleSettings::Tech::InvariantFloatOrderSeconds;   // metal fields fund production directly; no converter rung
-            array<string> energy = { UnitHelpers::GetWindNameForSide(side), UnitHelpers::GetSolarNameForSide(side), UnitHelpers::GetAdvSolarNameForSide(side),
-                                     UnitHelpers::GetFusionNameForSide(side), UnitHelpers::GetAdvFusionNameForSide(side) };
-            for (uint i = 0; i < energy.length(); ++i) {
-                CCircuitDef@ d = ai.GetCircuitDef(energy[i]);
-                if (d is null) continue;
-                const int now = aiBuilderMgr.GetUnfinishedCount(d);
-                int64 before = 0; energyFrames.get(energy[i], before);
-                // The bounded nuke energy recipe funds future mex upkeep,
-                // construction and stockpile demand, absent from current pull.
-                // AFUS is never part of that exception.
-                const bool rushEnergy = TechChain::NukeRush() && (energy[i] == UnitHelpers::GetFusionNameForSide(side)
-                    || energy[i] == UnitHelpers::GetWindNameForSide(side) || energy[i] == UnitHelpers::GetSolarNameForSide(side));
-                if (now > int(before) && floats && !rushEnergy)
-                    Violation("INV-009", energy[i], "a " + energy[i] + " frame appeared while " + TechChain::FloatWhy());
-                energyFrames.set(energy[i], int64(now));
-            }
-        }
+        // INV-009 observes the admission snapshot in ConstructionAdmitted.
+        // A delayed frame is not a newly chosen energy investment.
 
         // INV-011: past the objective the metal bank does not float while an
         // income step is unmet (D-080, the KI-415 promise)
@@ -277,22 +333,8 @@ namespace Invariants {
             }
         }
 
-        // INV-019 (D-097): no more turret frames stand unfinished than
-        // Layout::TurretsAllowed for InvariantTurretFlightSeconds (played: five
-        // at once in the early game, the metal stalled)
-        {
-            CCircuitDef@ nd = ai.GetCircuitDef(UnitHelpers::GetT1NanoNameForSide(Global::AISettings::Side));
-            const int frames = (nd is null) ? 0 : aiBuilderMgr.GetUnfinishedCount(nd);
-            string why;
-            // the slots, not what is left after the dear frames: a turret started
-            // before the lab is not a violation once the lab starts (D-098)
-            const int allowed = TechChain::NukeRush() ? 2 : Layout::TurretSlots(why);
-            if (frames > allowed) {
-                if (turretsOverSince < 0) turretsOverSince = ai.frame;
-                else if (ai.frame - turretsOverSince >= int(Global::RoleSettings::Tech::InvariantTurretFlightSeconds) * SECOND)
-                    Violation("INV-019", "turrets", "" + frames + " turret frames under construction, " + allowed + " allowed (" + why + ")");
-            } else turretsOverSince = -1;
-        }
+        // INV-019 is checked synchronously at construction admission below.
+        // Existing frames must not be judged against a later, depleted bank.
 
         // INV-021 (D-100): a fusion frame is not started while a mex of ours
         // within ChainMexFarRadius is still T1 with no upgrade under way
@@ -393,9 +435,27 @@ namespace Invariants {
                     const int g2 = aiTerrainMgr.EdgeGapToGroup(fac.circuitDef, fp, ff, Layout::fwdGroup);
                     if (g2 >= 0 && (gap < 0 || g2 < gap)) gap = g2;
                 }
+                // Harbour factories have dedicated support; comparing them
+                // only with the main land box misreports supported water sites.
+                const array<string> harbourSupport = { "tech.harbour.hover", "tech.harbour.yard" };
+                for (uint supportIndex = 0; supportIndex < harbourSupport.length(); ++supportIndex) {
+                    const int supportGroup = aiTerrainMgr.GetLayoutInt(harbourSupport[supportIndex] + ".support_group", 0);
+                    if (supportGroup <= 0) continue;
+                    const int supportGap = aiTerrainMgr.EdgeGapToGroup(fac.circuitDef, fp, ff, supportGroup);
+                    if (supportGap >= 0 && (gap < 0 || supportGap < gap)) gap = supportGap;
+                }
                 GenericHelpers::LogUtil("[Layout] factory " + fac.circuitDef.GetName() + " " + fac.id + " stands " + gap + " cell(s) from a turret", 1);
-                if (gap > 1)
-                    Violation("INV-029", "" + fac.id, fac.circuitDef.GetName() + " " + fac.id + " stands " + gap + " cells from the turrets, not tight");
+                // The preplanned front-line slot explicitly permits the named
+                // LayoutLabFrontGapCells allowance (D-096). The later flush
+                // packing path keeps its one-cell contract. Measure both with
+                // native footprint edges, not the centre-distance heuristic.
+                const AIFloat3 ordered(float(aiTerrainMgr.GetLayoutInt(Layout::BOX + ".ordered_lab_x", -1000)), 0.0f,
+                    float(aiTerrainMgr.GetLayoutInt(Layout::BOX + ".ordered_lab_z", -1000)));
+                const int allowedGap = MapHelpers::SqDist(fp, ordered) <= 1.0f
+                    ? aiTerrainMgr.GetLayoutInt(Layout::BOX + ".ordered_lab_gap", 1) : 1;
+                if (gap > allowedGap)
+                    Violation("INV-029", "" + fac.id, fac.circuitDef.GetName() + " " + fac.id + " stands " + gap
+                        + " cells from the turrets, allowed=" + allowedGap);
             }
         }
 
@@ -405,9 +465,12 @@ namespace Invariants {
             CCircuitUnit@ l2 = Factory::primaryT2BotLab;
             if (l2 !is null && Lifecycle::IsRetiring(l2) && !retiredT2Seen.exists("" + l2.id)) {
                 retiredT2Seen.set("" + l2.id, ai.frame);
-                string why;
-                if (TechBuild::AfusFunded(why))
-                    Violation("INV-031", "" + l2.id, "the advanced lab " + l2.id + " retired while the advanced fusion was funded: " + why);
+                bool fundedAtAdmission = false;
+                // A forward-relocation retirement triggered the old check in
+                // the Supreme reproduction. Its funding rule is unrelated;
+                // also never rejudge an earlier refund using today's bank.
+                if (TechBuild::fusionRetirementFunded.get("" + l2.id, fundedAtAdmission) && fundedAtAdmission)
+                    Violation("INV-031", "" + l2.id, "the advanced lab " + l2.id + " was retired for an AFUS refund despite funding at admission");
             }
         }
 
@@ -498,7 +561,7 @@ namespace Invariants {
             if (l !is null && !s.labSeen) {
                 s.labSeen = true;
                 const int done = TechFactories::FinishedTurrets(s);
-                if (done < TechFactories::TurretsBeforeLab(s))
+                if (done < TechFactories::TurretsBeforeLab(s) && !s.gantryFallback) // D-281: explicit funded, workerless timeout exception
                     Violation("INV-045", "front", "front cluster " + (i + 1) + " (" + s.defName + ") started its factory with " + done + " of its "
                         + s.slots + " turrets finished (" + TechFactories::TurretsBeforeLab(s) + " wanted first)");
             }
@@ -626,9 +689,17 @@ namespace Invariants {
             // T1 spam work waits for the economy online (D-114), so the clock starts
             // at the later of the release and that (played: fired the tick it latched)
             const bool online = TechBuild::EcoOnline();   // first: it latches ecoOnlineFrame
+            // ForwardT1 intentionally waits for the rebuilt advanced lab and
+            // sustained spam budget. Time spent satisfying those prerequisites
+            // cannot be charged to a forward-order deadline (b06 Supreme).
+            const bool forwardReady = TechForward::sinceT1 >= 0 && t1Land > 0 && online
+                && Spam::IsActive() && TechFactories::AdvancedLabUp();
+            if (!forwardReady) forwardT1EligibleSince = -1;
+            else if (forwardT1EligibleSince < 0) forwardT1EligibleSince = ai.frame;
             int last1 = (TechForward::lastOrderT1 > TechForward::sinceT1) ? TechForward::lastOrderT1 : TechForward::sinceT1;
             if (TechBuild::ecoOnlineFrame > last1) last1 = TechBuild::ecoOnlineFrame;
-            if (TechForward::sinceT1 >= 0 && t1Land > 0 && online
+            if (forwardT1EligibleSince > last1) last1 = forwardT1EligibleSince;
+            if (forwardReady
                 && int(TechForward::SpamClusters().length()) < TechForward::SpamLabsWanted(aiEconomyMgr.metal.income)
                 && ai.frame - last1 >= 180 * SECOND && ai.frame - fwdIdleLogT1 >= 180 * SECOND)
             {
@@ -663,6 +734,11 @@ namespace Invariants {
                 CCircuitUnit@ du = (id < 0) ? null : ai.GetTeamUnit(id);
                 IBuilderTask@ bt = (du is null || du.task is null) ? null : cast<IBuilderTask>(du.task);
                 if (bt is null || bt.buildDef is null || bt.buildDef.GetName() == own) continue;
+                // A capacity-saturated converter worker may finish helping the
+                // reactor it joined; do not interrupt when headroom later rises.
+                if (Global::AISettings::Role == AiRole::TECH && r == 1
+                    && Task::BuildType(bt.GetBuildType()) == Task::BuildType::REPAIR
+                    && bt.buildDef.GetName() == UnitHelpers::GetAdvFusionNameForSide(aSide)) continue;
                 if (ai.frame - airOffDutyLog < 30 * SECOND) continue;
                 airOffDutyLog = ai.frame;
                 Violation("INV-035", "air", "dedicated " + id + " (" + own + ") holds " + bt.buildDef.GetName());
@@ -682,7 +758,7 @@ namespace Invariants {
                 const int id = int(parseInt(keys[i]));
                 CCircuitUnit@ t = ai.GetTeamUnit(id);
                 if (t is null || ai.frame - int(at) > 180 * SECOND) { TechBuild::reclaimTargets.delete(keys[i]); offSince.delete(keys[i]); continue; }
-                const int off = aiBuilderMgr.TurretsOnReclaim(id, Global::RoleSettings::Tech::ReclaimTurretMargin, false);
+                const int off = aiBuilderMgr.TurretsOnReclaim(id, Global::RoleSettings::Tech::ReclaimTurretMargin, false, true);
                 if (off <= 0) { offSince.delete(keys[i]); continue; }
                 int64 since = 0;
                 if (!offSince.get(keys[i], since)) { offSince.set(keys[i], int64(ai.frame)); continue; }

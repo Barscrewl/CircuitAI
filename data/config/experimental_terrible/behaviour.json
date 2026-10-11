@@ -2137,7 +2137,10 @@
 			},
 			"corcat": {
 				"role": ["artillery", "heavy"],
-				"attribute": ["siege"],
+				// Shared controller uses loaded rocket range/burst and bounded firing slots.
+			// Bombardment retains splash/static value; no precision-only heavy preference.
+			"attribute": ["siege", "ranged"],
+				"ranged": {"target_mode": "bombardment", "advance_unknown_radar": false, "range_fraction": 0.94, "spacing": 192, "safety_margin": 48, "reaction_seconds": 1.0, "prefer_heavy": false},
 				"threat": {"air": 0.0, "surf": 0.0, "water": 0.0, "default": 0.0},
 				"power": 1.0
 			},

@@ -140,28 +140,6 @@ namespace ObjectiveHelpers {
         }
     }
 
-    // Optional utilities for multi-type objectives (progress sequencing can be layered later)
-    bool HasAnyTypes(const Objectives::StrategicObjective@ o) {
-        return (o !is null) && (o.types.length() > 0);
-    }
-
-    Objectives::BuildingType GetFirstType(const Objectives::StrategicObjective@ o) {
-        // Caller must ensure HasAnyTypes(o) before invoking
-        return o.types[0];
-    }
-
-    // Build-chain support: compute how many of a type have been queued/built for an objective
-    int GetProgressCount(const Objectives::StrategicObjective@ o, Objectives::BuildingType t)
-    {
-        if (o is null) return 0;
-        // Map type to a primary unit name for counting when possible; callers using steps should check by concrete name where needed
-        // Here we sum queued counts across all tracked unit types for this objective (best effort)
-        int total = 0;
-        array<string> keys = ObjectiveManager::GetDefenseQueuedTypes(o.id);
-        for (uint i = 0; i < keys.length(); ++i) { total += ObjectiveManager::GetObjectiveBuildingsQueuedCount(o.id, keys[i]); }
-        return total;
-    }
-
     bool StepEcoSatisfied(const Objectives::ObjectiveStep@ s)
     {
         if (s is null) return true;
@@ -177,29 +155,6 @@ namespace ObjectiveHelpers {
         if (o.pos.x != 0.0f || o.pos.z != 0.0f) return o.pos;
         if (o.line.length() > 0) return o.line[0];
         return fallback;
-    }
-
-    // Get next actionable step index (first with remaining count and eco satisfied); returns -1 if none
-    int GetNextStepIndex(const Objectives::StrategicObjective@ o)
-    {
-        if (o is null) return -1;
-        for (uint i = 0; i < o.steps.length(); ++i) {
-            auto@ s = o.steps[i]; if (s is null) continue;
-            if (!StepEcoSatisfied(s)) continue;
-            // Remaining count is tracked externally via per-type counts; here we only return the first eco-satisfied step
-            return int(i);
-        }
-        return -1;
-    }
-
-    // Effective radius: if not provided, choose a small square (8x8 tiles ~ 64 elmos) for precise points,
-    // or a larger band for lines. This is a coarse heuristic and can be refined per role later.
-    float EffectiveRadius(const Objectives::StrategicObjective@ o) {
-        if (o is null) return 0.0f;
-        if (o.radius > 0.0f) return o.radius;
-        // Default heuristic
-        if (o.line.length() > 0) return 512.0f; // broader line coverage
-        return 256.0f; // default point coverage
     }
 
     bool Matches(
