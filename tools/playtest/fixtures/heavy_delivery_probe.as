@@ -31,6 +31,11 @@ namespace HeavyDeliveryProbe {
         if (fields[1] == "cargo" && ai.teamId == 0) {
             const int id = parseInt(fields[2]);
             CCircuitUnit@ unit = ai.GetTeamUnit(id);
+            if (fields.length()>3 && fields[3]=="constructor") {
+                if (unit is null || !Team::Ferry::TryCarry(unit,2,AIFloat3(4550,0,7750),true))
+                    GenericHelpers::LogUtil("[HeavyDeliveryTest] FAIL constructor refused",1);
+                return true;
+            }
             if (unit is null || unit.circuitDef.GetName() != TechHeavyRush::UnitName()) {
                 GenericHelpers::LogUtil("[HeavyDeliveryTest] FAIL cargo definition", 1); return true;
             }

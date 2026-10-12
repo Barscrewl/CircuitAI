@@ -21,6 +21,7 @@ namespace Ferry {
         // cost 190 against 68-74, and the ferry never carries anything the
         // light one cannot. All six come from the T1 air plant.
         dictionary HeavyTransportBySide = {{"armada", "armhvytrans"}, {"cortex", "corhvytrans"}, {"legion", "legatrans"}};
+        array<string> LightTransportDefs = {"armatlas", "corvalk", "leglts"};
         array<string> HeavyTransportDefs = {"armhvytrans", "corhvytrans", "legatrans"};
         dictionary TransportBySide = {
             {"armada", "armatlas"},

@@ -159,14 +159,26 @@ bool CRangedEngagement::Move(CCircuitUnit* unit,const AIFloat3& dest,bool escape
 {
     const auto& policy=unit->GetCircuitDef()->GetRangedPolicy();
     const auto pos=unit->GetPos(ai->GetLastFrame());
+    bool reusable=true;
+    if(policy.sustainedRush && world.IsSustainedRush(id)) {
+        const auto& plan=world.PlanCohort(unit);
+        if(plan.sustainedRush && plan.target>=0 && (dest.x-pos.x)*(plan.focus.x-pos.x)
+            +(dest.z-pos.z)*(plan.focus.z-pos.z)<-1.f) {
+            ai->LOG("[INVARIANT] INV-197 sustained rush received a backward combat destination unit=%d",id);
+            Hold(unit,true);
+            return false;
+        }
+        reusable=!plan.sustainedRush || (destination.x-pos.x)*(plan.focus.x-pos.x)
+            +(destination.z-pos.z)*(plan.focus.z-pos.z)>=0.f;
+    }
     if(pos.SqDistance2D(dest)<32.f*32.f) { Hold(unit); return false; }
     const bool same=destination.SqDistance2D(dest)<policy.hysteresis*policy.hysteresis;
-    if(same && query) return true;
-    if(same && moving && ai->GetUnitAPI()->GetCMDQueueSize(id)>0 && LegalPath(unit,path,escape)) return true;
-    if(policy.coordinated && policy.intentGain>0.f && !urgentMove && moving
+    if(reusable && same && query) return true;
+    if(reusable && same && moving && ai->GetUnitAPI()->GetCMDQueueSize(id)>0 && LegalPath(unit,path,escape)) return true;
+    if(reusable && policy.coordinated && policy.intentGain>0.f && !urgentMove && moving
         && cohort::KeepMove(P(pos),P(destination),P(dest),policy.intentGain,policy.spacing)
         && ai->GetUnitAPI()->GetCMDQueueSize(id)>0 && LegalPath(unit,path,escape)) return true;
-    if(policy.coordinated && moving && ai->GetUnitAPI()->GetCMDQueueSize(id)>0 && LegalPath(unit,path,escape)) {
+    if(reusable && policy.coordinated && moving && ai->GetUnitAPI()->GetCMDQueueSize(id)>0 && LegalPath(unit,path,escape)) {
         const AIFloat3 live=destination-pos, wanted=dest-pos;
         const float product=live.x*wanted.x+live.z*wanted.z;
         // Preserve a live move that still advances the same local intent.
@@ -211,6 +223,16 @@ bool CRangedEngagement::Move(CCircuitUnit* unit,const AIFloat3& dest,bool escape
         }
         auto points=static_cast<const CQueryPathSingle*>(result)->GetPathInfo()->posPath;
         world.Refresh();
+        if(world.IsSustainedRush(id)) {
+            const auto& plan=world.PlanCohort(unit);
+            const auto current=unit->GetPos(ai->GetLastFrame());
+            // A moving front can invalidate a forward goal while its worker
+            // path is pending. Drop that result on the callback thread.
+            if(plan.sustainedRush && (dest.x-current.x)*(plan.focus.x-current.x)
+                +(dest.z-current.z)*(plan.focus.z-current.z)<0.f) {
+                Hold(unit,true); return;
+            }
+        }
         const bool solved=!points.empty();
         if(trace) ai->LOG("RANGED: path completed unit=%d generation=%u points=%u",id,version,unsigned(points.size()));
         if(solved) ranged::AppendExactGoal(points,dest);
@@ -288,7 +310,8 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
         if(!c.def || c.def->IsAbleToFly() || c.pos.y< -20.f) continue;
         // The local escape decision remains individual: a centroid must not
         // hide a flank being overrun. Mobile exposure is allowed only during
-        // an approved rush; known static coverage is never waived.
+        // an approved rush; sustained commitment deliberately spends against
+        // both mobile and static exposure after local force admission.
         const float distance=std::sqrt(pos.SqDistance2D(c.pos));
         const float enemyClosing=ranged::ClosingSpeed(P(pos),P(c.pos),P(c.velocity));
         const float relativeClosing=assessed?cohort::RelativeClosing(P(pos),P(velocity),P(c.pos),P(c.velocity)):enemyClosing;
@@ -362,6 +385,7 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
         const float offset=(rank-(group.members.size()-1)*.5f)*(policy.spacing+1.f);
         point+=AIFloat3(-group.back.z,0,group.back.x)*offset;
     }
+    if(group.sustainedRush) { danger=nullptr; incoming=nullptr; withdrawalUntil=0; }
     if(danger) {
         AIFloat3 away=pos-danger->pos; away.Normalize2D();
         if(away.SqLength2D()<.5f) away=group.back;
@@ -384,7 +408,7 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
         // Advancing into it doubles closure and spends the entire range
         // advantage turning around. Let it enter our fire before pulling back.
         point=pos;
-    } else if(best>=0 && !group.formationRear && (assessed || group.mode!=cohort::Mode::REGROUP)
+    } else if(best>=0 && !group.sustainedRush && !group.rushFallback && !group.formationRear && (assessed || group.mode!=cohort::Mode::REGROUP)
         && world.FreeSlot(id,pos,policy.spacing)
         && !(policy.supportAllies && group.supporting && group.committed
             && (pos.x-group.focus.x)*group.back.x+(pos.z-group.focus.z)*group.back.z>group.screenDepth+policy.spacing)) {
@@ -408,6 +432,11 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
         }
     }
     CTerrainManager::CorrectPosition(point);
+    // Advancing enemies can move the ideal firing arc behind a committed
+    // shooter. Hold and fire in that case instead of backing out to the arc.
+    // This is a combat-goal constraint, not a change to terrain pathfinding.
+    if(group.sustainedRush && (point.x-pos.x)*(group.focus.x-pos.x)
+        +(point.z-pos.z)*(group.focus.z-pos.z)<0.f) point=pos;
     point.y=ai->GetTerrainManager()->GetAreaData()->GetElevationAt(point.x,point.z);
     bool safe=SafeMove(unit,pos,point,policy.safetyMargin,true);
     if(!safe && !danger) {
@@ -446,7 +475,7 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
     if(!completedStage && !danger && group.mode!=cohort::Mode::REGROUP
         && destination.SqDistance2D(point)<4.f*policy.spacing*policy.spacing
         && pos.SqDistance2D(destination)<arrival*arrival
-        && (best>=0 || group.target<0 || (formationStaging
+        && ((!group.sustainedRush && !group.rushFallback && best>=0) || group.target<0 || (formationStaging
             && SafeMove(unit,pos,destination,policy.safetyMargin,false)))
         && world.FreeSlot(id,destination,policy.spacing)) point=destination;
     urgentMove=danger || moveObjective!=group.target || moveMode!=int(group.mode);
@@ -460,6 +489,8 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
             const int side=k==0?0:(k%2?(k+1)/2:-k/2);
             AIFloat3 candidate=point+AIFloat3(-group.back.z,0,group.back.x)*(side*(policy.spacing+1.f));
             CTerrainManager::CorrectPosition(candidate);
+            if(group.sustainedRush && (candidate.x-pos.x)*(group.focus.x-pos.x)
+                +(candidate.z-pos.z)*(group.focus.z-pos.z)<0.f) continue;
             candidate.y=ai->GetTerrainManager()->GetAreaData()->GetElevationAt(candidate.x,candidate.z);
             if(world.FreeSlot(id,candidate,policy.spacing) && Move(unit,candidate,true)) { placed=true; break; }
         }
@@ -470,6 +501,10 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
             placed=Move(unit,point,true);
             if(!placed) Hold(unit,true);
         }
+        // Commitment disables retreat, not physical firing lanes. Forcing an
+        // occupied rush goal crowds friendly splash weapons into each other.
+        // Keep firing and retry the bounded forward slots next decision.
+        if(!placed && group.sustainedRush) Hold(unit,true);
         if(!placed && !moving) world.SetSlot(id,pos,policy.spacing,def->GetCostM());
     } else if(settled || !safe) {
         Hold(unit,true); world.SetSlot(id,settled?point:pos,policy.spacing,def->GetCostM());
@@ -542,7 +577,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         const float reach=c.hazardRadius+policy.safetyMargin+closingSpeed*escapeSeconds;
         if(d<reach && reach-d>urgency) { closing=&c; urgency=reach-d; }
     }
-    if(closing || frame<withdrawalUntil) {
+    if(!policy.holdFireline && (closing || frame<withdrawalUntil)) {
         if(closing && !(frame<withdrawalUntil && moving)) {
             AIFloat3 away=pos-closing->pos;
             if(away.SqLength2D()<1.f) away=AIFloat3(1.f,0.f,0.f);
@@ -563,6 +598,10 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         if(forward) return;
     }
 
+    if (policy.holdFireline && closing) {
+        Hold(unit,true);
+        withdrawalUntil=0;
+    }
     int best=-1,bestWeapon=-1; float bestScore=-1.f,bestDamage=0.f;
     for(int i:nearby) {
         const auto& c=contacts[i];
@@ -637,6 +676,10 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         if(stalled) { ++failures; lastShotFrame=frame; }
         if(frame<burstUntil) return;
     } else SelectTarget(unit,-1,-1,0.f);
+    if (policy.holdFireline && closing) {
+        world.SetSlot(id,pos,policy.spacing,def->GetCostM());
+        return; // A facing gun remains useful; turning away cannot create fire.
+    }
     if(frame<withdrawalUntil || frame<burstUntil) return;
 
     // Stable target-centered firing bands. Candidate work is bounded (17 sites
@@ -648,6 +691,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
     int unknownObjectives=0;
     const auto consider=[&](int i) {
         const auto& c=contacts[i];
+        if (policy.holdFireline && !c.los) return;
         // A radar dot permits a blind shot, not an invented threat estimate.
         // Precision hulls can opt out of advancing before vision identifies
         // the contact; otherwise they walk into fast assault while arranging
@@ -663,13 +707,18 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
     // reachable ground objective. The shared shortlist is bounded to 16.
     if(objective<0) for(int i:world.Objectives()) {
         const auto& c=contacts[i];
+        if (policy.holdFireline && !c.los) continue;
         if(!c.def && !policy.advanceUnknownRadar) { ++unknownObjectives; continue; }
         if((c.mobile?!policy.allowMobile:!policy.allowStatic) || (c.def && !(c.def->GetCategory()&def->GetTargetCategory()))) continue;
         const float distance=pos.SqDistance2D(c.pos);
         if(distance<nearest) { nearest=distance; objective=i; }
     }
     if(report && unknownObjectives>0) ai->LOG("RANGED: unknown radar approach withheld unit=%d candidates=%d",id,unknownObjectives);
-    if(objective<0) { if(report) ai->LOG("RANGED: no objective unit=%d",id); Disperse(unit); return; }
+    if(objective<0) {
+        if(report) ai->LOG("RANGED: no objective unit=%d",id);
+        if (policy.holdFireline) Hold(unit,true); else Disperse(unit);
+        return;
+    }
     const auto& c=contacts[objective];
     if(!c.def && !policy.advanceUnknownRadar) {
         ai->LOG("[INVARIANT] INV-149 precision movement selected an unidentified radar objective");
@@ -695,6 +744,10 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
             if(!world.Safe(pos,point,policy.safetyMargin,true) || world.DangerSign(point,policy.safetyMargin)>0.f) { ++coverageRejected; continue; }
             if(!world.Trajectory(w,point,c.pos)) { ++fireRejected; continue; }
             if(world.FriendlyLine(w,id,point,c.pos)) { ++fireRejected; continue; }
+            // Forward-fire policy chooses safe advancing/lateral firing sites,
+            // never a rearward range correction. O(1) within the existing
+            // bounded site loop; independent of other ranged units' kiting.
+            if (policy.holdFireline && ((point.x-pos.x)*(c.pos.x-pos.x)+(point.z-pos.z)*(c.pos.z-pos.z))<0.f) continue;
             const float move=pos.SqDistance2D(point);
             const float stable=destination.SqDistance2D(point)<policy.hysteresis*policy.hysteresis?.8f:1.f;
             const float screen=policy.preferScreen && !world.HasScreen(id,point,c.pos)?1.15f:1.f;

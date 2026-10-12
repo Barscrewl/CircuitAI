@@ -4,6 +4,7 @@ end
 local mode = "__MODE__"
 local side = "__SIDE__"
 local heavy = ({armada="armfboy",cortex="corsumo",legion="leginc"})[side]
+if mode=="constructor" then heavy=({armada="armack",cortex="corack",legion="legack"})[side] end
 local carrier = ({armada="armhvytrans",cortex="corhvytrans",legion="legatrans"})[side]
 local lab = ({armada="armap",cortex="corap",legion="legap"})[side]
 local cargo, commanders, firstMex = {}, {}, {}
@@ -39,6 +40,10 @@ function widget:UnitFinished(id, definition, team)
     end
 end
 function widget:UnitLoaded(id, definition, team, transport)
+    if cargo[id] and mode=="constructor" then
+        local name=UnitDefs[Spring.GetUnitDefID(transport)].name
+        emit(((name=="armatlas" or name=="corvalk" or name=="leglts") and "PASS" or "FAIL").." constructor carrier="..name)
+    end
     if cargo[id] then loaded[id]=transport; emit("loaded id="..id.." carrier="..transport) end
 end
 function widget:UnitUnloaded(id, definition, team, transport)
@@ -55,14 +60,17 @@ function widget:UnitGiven(id, definition, newTeam, oldTeam)
     if not cargo[id] or oldTeam~=0 then return end
     local target,kind=nil,"mex"
     local commander=commanders[newTeam]
-    if commander and Spring.ValidUnitID(commander) and not Spring.GetUnitIsDead(commander) then
+    if mode~="constructor" and commander and Spring.ValidUnitID(commander) and not Spring.GetUnitIsDead(commander) then
         local x,_,z=position(commander); target={x,z};kind="commander"
     else target=firstMex[newTeam] end
     local x,_,z=position(id)
     local distance=target and math.sqrt((x-target[1])^2+(z-target[2])^2) or -1
     local aboard=Spring.GetUnitTransporter(id)
-    local expectedKind=mode=="mex" and "mex" or "commander"
-    local passed=newTeam==2 and distance>=0 and distance<=241 and not aboard and kind==expectedKind
+    local expectedKind=(mode=="mex" or mode=="constructor") and "mex" or "commander"
+    -- Constructor drops use Ferry.SafeDropRadius (900); the heavy commander
+    -- rendezvous has its separate 240-elmo arrival contract. Keep both exact.
+    local arrivalLimit=mode=="constructor" and 901 or 241
+    local passed=newTeam==2 and distance>=0 and distance<=arrivalLimit and not aboard and kind==expectedKind
     given[id]=passed
     emit((passed and "PASS" or "FAIL").." given id="..id.." recipient="..newTeam.." anchor="..kind
         .." distance="..math.floor(distance).." loaded="..tostring(aboard))
@@ -94,10 +102,14 @@ function widget:GameFrame(frame)
             spawn(heavy,0,1250+index*100,10000)
             if mode=="flight" then spawn(carrier,0,1250+index*100,10150) end
         end
+        if mode=="constructor" then
+            spawn(({armada="armatlas",cortex="corvalk",legion="leglts"})[side],0,1350,10150)
+            spawn(carrier,0,1550,10150)
+        end
     end
     if frame==600 then
         local ids={};for id in pairs(cargo) do ids[#ids+1]=id end;table.sort(ids)
-        for _,id in ipairs(ids) do message(0,"cargo|"..id) end
+        for _,id in ipairs(ids) do message(0,"cargo|"..id..(mode=="constructor" and "|constructor" or "")) end
     end
     if frame%300==0 then
         message(0,"sample")

@@ -120,6 +120,27 @@ function widget:GameFrame(f)
         log("ready")
     end
     if f<300 then return end
+    if cfg.rush_loss_steps then
+        if not cfg.original_front and f>=cfg.rush_capture_seconds*30 then
+            cfg.original_front={}
+            for id,u in pairs(tracked) do
+                if u.team==0 and UnitDefs[u.def].name==(cfg.rush_front_unit or "corthud") then cfg.original_front[#cfg.original_front+1]=id end
+            end
+            table.sort(cfg.original_front)
+            log("rush_original count="..#cfg.original_front)
+        end
+        for _,step in ipairs(cfg.rush_loss_steps) do
+            if not step.done and f>=step.seconds*30 then
+                step.done=true
+                local live={}
+                for _,id in ipairs(cfg.original_front or {}) do if tracked[id] then live[#live+1]=id end end
+                local remove={}
+                for i=step.remaining+1,#live do remove[#remove+1]=live[i] end
+                Spring.SelectUnitArray(remove,false); Spring.SendCommands("destroy"); Spring.SelectUnitArray({},false)
+                log("rush_loss_step remaining="..step.remaining.." removed="..#remove)
+            end
+        end
+    end
     -- Correctness observer only, O(supplied factories) per frame. Distinguish
     -- an empty engine build queue from physical launch/collision/energy time.
     -- Never issue orders or infer network/FPS gains from these counters.

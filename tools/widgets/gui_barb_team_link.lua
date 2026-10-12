@@ -719,6 +719,7 @@ local win = { x1 = 0, y1 = 0, x2 = 0, y2 = 0 }
 local dragging = nil             -- { mx, my, offX, offY } while the header is dragged
 
 local hit = {}                   -- rebuilt every draw: { x1, y1, x2, y2, id, action, tooltip }
+local aggressionDrag
 local hoverId, pressedId = nil, nil
 
 local ais = {}                   -- teamId -> { teamId, name, color, allyTeam, roster, lastReply, replyKind }
@@ -828,6 +829,21 @@ local function requestRole(teamId, role)
 	end
 	addEvent(string.format("Team %d: switch to %s requested", teamId, role), "info")
 	return send(teamId, "barb|setrole|" .. teamId .. "|" .. role)
+end
+
+local function requestAggression(teamId, value)
+    if not mayCommand(teamId) or type(value) ~= "number" or value ~= value
+        or value < -1 or value > 1 then return false end
+    -- Release-to-send: dragging is local preview, one targeted message at the
+    -- end. The AI reply owns the displayed value; there is no polling/relay.
+    return send(teamId, string.format("barb|aggression|%d|%.4f", teamId, value))
+end
+
+local function dragAggression(mx)
+    if aggressionDrag then
+        aggressionDrag.value = mathMax(-1, mathMin(1,
+            2 * (mx - aggressionDrag.x1) / (aggressionDrag.x2 - aggressionDrag.x1) - 1))
+    end
 end
 
 -- Fly the camera to an AI: its commander, else its factory nearest its start
@@ -983,6 +999,7 @@ function widget:Initialize()
         SelectLane = theatres.Select,
         MousePress = function(x,y,b) return widget:MousePress(x,y,b) end,
         MouseRelease = function(x,y,b) return widget:MouseRelease(x,y,b) end,
+        MouseMove = function(x,y,dx,dy,b) return widget:MouseMove(x,y,dx,dy,b) end,
         ButtonRect = function(id)
             local guide=theatres.ButtonRect(id); if guide then return guide end
             for _,r in ipairs(hit) do if r[5]==id then return {r[1],r[2],r[3],r[4]} end end
@@ -991,6 +1008,11 @@ function widget:Initialize()
 		SetOpen = setOpen,
 		-- the same paths as the buttons (tools/playtest drives them)
 		SetRole = function(teamId, role) return requestRole(teamId, role) end,
+        SetAggression = requestAggression,
+        GetAggression = function(teamId)
+            local e=ais[teamId]
+            return e and e.aggression, e and e.automaticAggression
+        end,
 		GoTo = function(teamId) return goTo(teamId) end,
 		MayCommand = function(teamId) return mayCommand(teamId) end,
 		-- teamId -> { role, allyTeam, name } of every listed AI that announced itself
@@ -1233,6 +1255,11 @@ local function onAIMessage(aiTeam, dataStr)
 			target.roster = r
 			if target.lastReply and string.sub(target.lastReply, 1, 2) == "?:" then target.lastReply = nil; target.replyKind = nil end   -- "not ready" is answered
 		end
+    elseif topic == "aggression" and e then
+        local delta, automatic=tonumber(p[5]),tonumber(p[6])
+        if delta and delta>=-1 and delta<=1 and automatic and automatic>=-1 and automatic<=1 then
+            e.aggression, e.automaticAggression=delta,automatic
+        end
 	elseif topic == "role" and e then
 		local role, status = p[5] or "?", p[6] or ""
 		e.lastReply = string.format("%s: %s", role, status)
@@ -1586,6 +1613,19 @@ local function drawWindow()
 			end, role .. ": " .. (ROLE_HINT[role] or "") .. (cmd and "" or " (only this AI's host can switch its role)"), active, cmd)
 		end
 		cy = cy - 2 * segH - sgap - px(4)
+        local value=(aggressionDrag and aggressionDrag.team==e.teamId) and aggressionDrag.value or (e.aggression or 0)
+        text(font, string.format("Aggression %+.2f",value),left,cy-px(11),px(9),"o",C.onSurfaceVariant)
+        local ax1,ax2,ay=left+px(105),right-px(35),cy-px(8)
+        roundRect(ax1,ay-px(2),ax2,ay+px(2),px(2),C.onSurfaceVariant)
+        glColor(C.onSurfaceVariant); glRect((ax1+ax2)/2,ay-px(5),(ax1+ax2)/2+px(1),ay+px(5))
+        local knob=ax1+(value+1)*.5*(ax2-ax1)
+        roundRect(knob-px(4),ay-px(6),knob+px(4),ay+px(6),px(3),cmd and C.ok or C.onSurfaceVariant)
+        hit[#hit+1]={ax1,ay-px(10),ax2,ay+px(10),"aggression",function() end,
+            "Aggression offset: -1 defensive, 0 automatic, +1 aggressive. Drag, then release to apply to this AI.",cmd and e.teamId or nil}
+        labelButton(right-px(31),cy-px(18),right,cy, nil,"0","aggressionReset",function()
+            requestAggression(e.teamId,0)
+        end,"Reset this AI's aggression offset to zero",false,cmd)
+        cy=cy-px(25)
 		local replyColor = C.onSurfaceVariant
 		if e.replyKind == "ok" then replyColor = C.ok elseif e.replyKind == "warn" then replyColor = C.warn end
 		text(font, fitText(font, e.lastReply and ("reply: " .. e.lastReply) or (cmd and "pick a role to switch this AI" or "read-only: this AI is not hosted by you"), px(8.5), w),
@@ -1663,11 +1703,19 @@ function widget:MousePress(mx, my, mb)
 		dragging = { mx, my, offX, offY }
 		return true
 	end
+    if top and top[5]=="aggression" then
+        if top[8] then
+            aggressionDrag={team=top[8],x1=top[1],x2=top[3],value=0}
+            dragAggression(mx)
+        end
+        return true
+    end
 	if top then pressedId = top[5] end
 	return true
 end
 
 function widget:MouseMove(mx, my, dx, dy, mb)
+    if aggressionDrag then dragAggression(mx); return end
 	if theatres.MouseMove(mx,my) then return end
 	if dragging then
 		offX = dragging[3] + (mx - dragging[1])
@@ -1677,6 +1725,12 @@ function widget:MouseMove(mx, my, dx, dy, mb)
 end
 
 function widget:MouseRelease(mx, my, mb)
+    if aggressionDrag then
+        dragAggression(mx)
+        requestAggression(aggressionDrag.team,aggressionDrag.value)
+        aggressionDrag=nil
+        return false
+    end
 	if theatres.MouseRelease(mx,my,mb) then return false end
 	if dragging then
 		dragging = nil

@@ -255,22 +255,23 @@ namespace Ferry {
     bool RequestTransport(const string &in why)
     {
         if (!IsEnabled()) return false;
-        if (HeavyTransport::Enabled()) {
-            if (HeavyTransport::desired < 1) {
-                HeavyTransport::desired = 1;
-                aiTerrainMgr.SetLayoutInt(HeavyTransport::TargetKey, 1);
-            }
-            HeavyTransport::Request();
-            return true;
-        }
         if (transportId >= 0) return false;   // already have one
         if (lastRequestFrame >= 0
             && (ai.frame - lastRequestFrame) < int(Global::Ferry::RequestCooldownSeconds) * SECOND) {
             return false;
         }
-        lastRequestFrame = ai.frame;
         const AIFloat3 p = Global::Map::StartPos;
-        AiSendMessage(MSG + "|req|" + int(p.x) + "|" + int(p.z));
+        array<Team::Roster::Entry@>@ providers = Team::Roster::WithRole(AiRole::AIR);
+        int provider=-1; float nearest=1e30f;
+        for (uint index=0; index<providers.length(); ++index) {
+            const float distance=MapHelpers::SqDist(p,providers[index].startPos);
+            if (distance<nearest || (distance==nearest && providers[index].teamId<provider)) {
+                nearest=distance; provider=providers[index].teamId;
+            }
+        }
+        if (provider<0) return false;
+        lastRequestFrame = ai.frame;
+        AiSendMessage(MSG + "|req|" + int(p.x) + "|" + int(p.z) + "|light", provider);
         GenericHelpers::LogUtil("[Ferry] requested a transport (" + why + ")", 1);
         WidgetLink::Send("ferry", "req|" + int(p.x) + "|" + int(p.z));
         return true;
@@ -278,6 +279,17 @@ namespace Ferry {
 
     bool IsHeavyTransport(CCircuitUnit@ unit) {
         return unit !is null && Global::Ferry::HeavyTransportDefs.find(unit.circuitDef.GetName()) >= 0;
+    }
+    bool IsLightTransport(CCircuitUnit@ unit) {
+        return unit !is null && Global::Ferry::LightTransportDefs.find(unit.circuitDef.GetName()) >= 0;
+    }
+    // Request identity is (team, cargo class). Heavy demand cannot upgrade or
+    // erase a pending constructor ferry. O(queued allied obligations), bounded
+    // by two classes per ally; no new periodic work or cross-team broadcast.
+    int QueuedRequest(int team, bool heavy) {
+        for (uint index=0; index<waitingTeams.length(); ++index)
+            if (waitingTeams[index]==team && waitingHeavy[index]==heavy) return int(index);
+        return -1;
     }
     // TECH asks on its own. Not "when the T2 lab starts": that fired on the
     // lab task being *enqueued*, which is when TECH plans it, well before any
@@ -289,7 +301,6 @@ namespace Ferry {
         if (Global::AISettings::Role != AiRole::TECH) return;
         if (transportId >= 0) return;
         if (Economy::GetMinMetalIncomeLast10s() < Global::Ferry::RequestMinMetalIncome) return;
-        if (HeavyTransport::Enabled()) return; // persistent pool replaces TECH's one-shot request
         RequestTransport("TECH at +" + int(Global::Ferry::RequestMinMetalIncome) + " metal, no transport");
     }
 
@@ -300,7 +311,19 @@ namespace Ferry {
     // asks Spam. Returns null unless we owe someone a transport.
     IUnitTask@ FactoryMakeTask(CCircuitUnit@ factory)
     {
-        if (!IsEnabled() || !requestPending || buildingId >= 0) return null;
+        if (!IsEnabled() || factory is null || factory.circuitDef is null) return null;
+        if (Global::AISettings::Role == AiRole::TECH && transportId < 0
+            && (queuedCargo.length()>0 || Economy::GetMinMetalIncomeLast10s()>=Global::Ferry::RequestMinMetalIncome)) {
+            string name;
+            if (!Global::Ferry::TransportBySide.get(Global::AISettings::Side,name)) return null;
+            CCircuitDef@ light=ai.GetCircuitDef(name);
+            if (light is null || !factory.circuitDef.CanBuild(light) || Lifecycle::IsRetiring(factory)
+                || light.count+aiFactoryMgr.GetPendingRecruitCount(light)>0) return null;
+            light.maxThisUnit=light.count+1;
+            return aiFactoryMgr.Enqueue(TaskS::Recruit(Task::RecruitType::BUILDPOWER,
+                Task::Priority::NOW,light,factory.GetPos(ai.frame),64.0f));
+        }
+        if (!requestPending || buildingId >= 0) return null;
         if (Global::AISettings::Role != AiRole::AIR) return null;
         if (factory is null || factory.circuitDef is null) return null;
         // One transport, not one per poll. The factory asks for a task every
@@ -392,6 +415,8 @@ namespace Ferry {
         // Any role that asked for one keeps it. A transport arriving unasked -
         // a human gift - is kept too; there is no better use for it.
         HeavyTransport::Added(unit);
+        if (!IsLightTransport(unit)) return;
+        _CloseSlot(unit.circuitDef.GetName());
         if (transportId < 0 || transportId == unit.id) {
             transportId = unit.id;
             transportHoldApplied = _ApplyHold(unit.id, Global::Map::StartPos, "reserved");
@@ -496,9 +521,15 @@ namespace Ferry {
         if (cargo is null || recipient < 0) return _Refuse("no cargo or no recipient");
         if (useProvidedDrop) dropOverrides.set("" + cargo.id, dropPos);
         CCircuitUnit@ t = Transport();
+        if (t !is null && !IsLightTransport(t)) {
+            Invariants::Violation("INV-195",""+t.id,"constructor ferry claimed a non-light transport");
+            return _Refuse("constructor carrier class mismatch");
+        }
         CFerryTask@ task = TaskOf(t);
         if (task is null) {
-            if (t is null && Team::Roster::WithRole(AiRole::AIR).length() == 0)
+            const CCircuitDef@ localPlant=ai.GetCircuitDef(UnitHelpers::GetT1AirPlantForSide(Global::AISettings::Side));
+            if (t is null && (localPlant is null || localPlant.count==0)
+                && Team::Roster::WithRole(AiRole::AIR).length() == 0)
                 return _Refuse("no allied AIR transport provider");
             if (queuedCargo.find(cargo.id) < 0) {
                 queuedCargo.insertLast(cargo.id); queuedRecipient.insertLast(recipient);
@@ -622,7 +653,8 @@ namespace Ferry {
 
         if (Global::AISettings::Role == AiRole::AIR) {
             for (uint i = 0; i < waitingTeams.length(); ++i) {
-                if (waitingTeams[i] == requestTeam || waitingTeams.find(waitingTeams[i]) != int(i))
+                if ((requestPending && waitingTeams[i] == requestTeam && waitingHeavy[i] == requestHeavy)
+                    || QueuedRequest(waitingTeams[i],waitingHeavy[i]) != int(i))
                     Invariants::Violation("INV-075", "" + waitingTeams[i], "duplicate AIR transport obligation");
             }
         }
@@ -715,14 +747,8 @@ namespace Ferry {
             array<Id>@ allies = ai.GetTeamIds();
             if (fromTeamId == ai.teamId || allies.find(fromTeamId) < 0) return true;
             const bool heavy = p.length() >= 5 && p[4] == "heavy";
-            if (requestPending && requestTeam == fromTeamId) {
-                // Do not rewrite a live light recruit. The sender retries heavy
-                // after that delivery, preserving the constructor obligation.
-                if (heavy && orderedFrame < 0 && buildingId < 0) requestHeavy = true;
-                return true;
-            }
-            const int queued = waitingTeams.find(fromTeamId);
-            if (queued >= 0) { if (heavy) waitingHeavy[queued] = true; return true; }
+            if (requestPending && requestTeam == fromTeamId && requestHeavy == heavy) return true;
+            if (QueuedRequest(fromTeamId,heavy)>=0) return true;
             AIFloat3 wantedPos = Global::Map::StartPos;
             if (p.length() >= 4) {
                 wantedPos = AIFloat3(parseFloat(p[2]), 0.f, parseFloat(p[3]));
@@ -746,7 +772,7 @@ namespace Ferry {
             // here as well as in OnUnitAdded: a gifted unit may reach us through
             // a different native handler, and Update() applies the hold either
             // way once the CFerryTask exists.
-            if (p.length() >= 3 && transportId < 0) {
+            if (p.length() >= 3 && transportId < 0 && IsLightTransport(ai.GetTeamUnit(parseInt(p[2])))) {
                 transportId = parseInt(p[2]);
                 transportHoldApplied = false;
             }

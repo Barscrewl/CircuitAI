@@ -4,6 +4,15 @@
 namespace Global {
 namespace RoleSettings {
 namespace Front {
+            bool GeothermalEnabled = true;
+            uint GeothermalBuilders = 2;
+            float GeothermalRadius = 3200.0f;
+            // FRONT funds a T1 vent over three minutes while reserving half
+            // its conservative income for units and ordinary energy growth.
+            float GeothermalBudgetSeconds = 180.0f;
+            float GeothermalIncomeFraction = 0.5f;
+            float GeothermalBootstrapEnergy = 120.0f;
+
             // Role switch cadence (seconds)
             int MinAiSwitchTime = 20;
             int MaxAiSwitchTime = 60;

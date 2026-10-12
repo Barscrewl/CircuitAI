@@ -72,6 +72,12 @@ namespace Sea {
             bool ForwardHarbors = true;
             bool AdaptiveFleet = true; // SEA combat is independent of base-layout migration
             bool FleetOperations = true;
+            bool FleetAttackKnownBases = true;
+            bool SubmarineHoldFireline = true;
+            float SubmarineReplacementRatio = 1.15f;
+            float SubmarineReplacementRadius = 384.0f;
+            int SubmarineReplacementSeconds = 90;
+            array<string> FirelineSubmarineDefinitions = { "armsub", "corsub", "legnavysub" };
             // Untargeted SEA transit only; combat/withdrawal waypoints stay exact.
             bool CompactMoveRoutes = true;
             bool VerifyPowerIndex = false; // correctness games only; duplicates the legacy scan

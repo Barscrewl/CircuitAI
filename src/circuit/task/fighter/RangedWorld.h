@@ -3,6 +3,7 @@
 
 #include "terrain/RangedGeometry.h"
 #include "terrain/GroundCohort.h"
+#include "terrain/LocalRush.h"
 #include "AIFloat3.h"
 #include <map>
 #include <memory>
@@ -102,9 +103,12 @@ public:
         int protectedTarget=-1; // last legally seen commander/reclaimer; losing LOS is not a kill
         springai::AIFloat3 strategic;
         bool committed=false, supporting=false;
+        bool sustainedRush=false, rushFallback=false;
+        int rushFrame=-1;
         float screenDepth=0.f;
     };
     const CohortPlan& PlanCohort(CCircuitUnit* unit);
+    bool IsSustainedRush(int id) const { return rushes.Active(id); }
     bool CohortSafe(CCircuitUnit* unit,const springai::AIFloat3& from,
                     const springai::AIFloat3& to,float margin,bool escaping);
     void ReleaseEscort(int id) { escorts.erase(id); }
@@ -148,6 +152,9 @@ private:
     std::map<int,CohortPlan> cohorts;
     std::unordered_map<int,int> membership;
     int nextCohort=0;
+    rush::Registry rushes;
+    std::vector<rush::Registry::Member> rushCandidates;
+    void ApplyRush(CCircuitUnit* unit, CohortPlan& group);
     void JoinCohort(CCircuitUnit* unit);
     const CohortPlan& PlanIndependentCohort(CCircuitUnit* unit);
     void InvalidateCohortPlans(CohortPlan& group);

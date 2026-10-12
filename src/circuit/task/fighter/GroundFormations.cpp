@@ -15,6 +15,8 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
     PlanIndependentCohort(unit);
     const int key=membership.at(unit->GetId());
     auto& rear=cohorts.at(key);
+    ApplyRush(unit,rear);
+    if(rear.sustainedRush || rear.rushFallback) return rear;
     const auto& policy=unit->GetCircuitDef()->GetRangedPolicy();
     if(policy.formationPosition!=RangedPolicy::FormationPosition::REAR) return rear;
     const int now=circuit->GetLastFrame();

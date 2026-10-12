@@ -1,7 +1,8 @@
 {
   "name": "ranged-starlight-closing",
   "unit": "armmanni",
-  "description": "Delayed fast ground assault verifies tactical withdrawal, real fire and health retreat.",
+  "description": "Delayed fast assault verifies Starlight firing while damaged without health retreat; Sharpshooter has its own unchanged withdrawal control.",
+  "fireline_observer": true,
   "map": "All That Glitters v2.2.3",
   "map_key": "glitters",
   "starts": [

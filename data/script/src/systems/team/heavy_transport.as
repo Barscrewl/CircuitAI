@@ -34,9 +34,6 @@ namespace Team { namespace HeavyTransport {
         if (!Enabled() || cargo is null) return -1;
         for (uint index = 0; index < carriers.length(); ++index) {
             const int id = carriers[index];
-            // Constructor gifts keep their established priority and their native
-            // task. Other carriers can still deliver combat cargo concurrently.
-            if (id == Ferry::transportId && (Ferry::cargoId >= 0 || Ferry::queuedCargo.length() > 0)) continue;
             CFerryTask@ task = Ferry::TaskOf(ai.GetTeamUnit(id));
             if (task !is null && task.GetState() == 0 && task.CanCarry(cargo.id)) return id;
         }
@@ -127,10 +124,6 @@ namespace Team { namespace HeavyTransport {
             if (task !is null && !(carriers[index] == Ferry::transportId && Ferry::cargoId >= 0)
                 && (task.GetState() == Ferry::StateDone || task.GetState() == Ferry::StateFailed)
                 && ai.GetTeamUnit(task.GetCargoId()) is null) task.Reset();
-            if (Ferry::transportId < 0 && task !is null && task.GetState() == 0) {
-                Ferry::transportId = carriers[index];
-                Ferry::transportHoldApplied = held.exists(key);
-            }
         }
         Request(); // receipt, not acknowledgement, closes the outstanding deficit
     }

@@ -1,6 +1,6 @@
 """Isolated SEA combat fixtures. Assets are supplied; AI alone commands combat."""
 from script_settings import role_settings_path
-import argparse, hashlib, json, re, subprocess, sys
+import argparse, hashlib, json, re, subprocess, sys, os
 from pathlib import Path
 import playtest, storage
 from air_arena import lua
@@ -201,7 +201,7 @@ def prepare(a):
         assert source.count(needle)==1
         source=source.replace(needle,needle+'\n if (!ProductionMath::Inside(point.x,point.z,float(AiTerrainWidth()),float(AiTerrainHeight()),0)) AiLog("[RetreatBoundary] rejected ship="+ship.id+" x="+point.x+" z="+point.z);')
         path.write_text(source)
-    if case.get('retreat_observer'):
+    if case.get('retreat_observer') or case.get('fireline_observer'):
         if case.get('screen_anchor_fixture'):
             # Mechanism isolation: hold the supplied submarine screen near its
             # spawn. Surface ships still choose combat and health retreat.
@@ -232,13 +232,18 @@ namespace SeaRetreatProbe {
         if (unit is null) return;
         const bool retreat=unit.task !is null && unit.task.GetType()==int(Task::Type::RETREAT);
         bool previous=false; states.get(""+unit.id,previous);
-        if (retreat!=previous) GenericHelpers::LogUtil("[RetreatProbe] state ship="+unit.id+" retreat="+retreat,1);
+        if (retreat!=previous) GenericHelpers::LogUtil("[RetreatProbe] state ship="+unit.id+" retreat="+retreat+" def="+unit.circuitDef.GetName(),1);
         states.set(""+unit.id,retreat);
     }
 }
 '''
         path.write_text(source)
     case.update(seed=a.seed,side=a.side,minutes=a.minutes,speed=a.speed,control=a.control,order_slack=a.order_slack)
+    if a.cost:
+        from run_full_match_performance import wrap
+        wrap(staged/'src/systems/sea/sea_operations.as','Tick','void','','','sea.operations')
+        wrap(staged/'src/systems/sea/sea_operations.as','Census','void','','','sea.cohort-census')
+        case['cost_profiling']=True
     (d/'LuaUI/Config').mkdir(exist_ok=True,parents=True);(d/'LuaUI/Config/sea_arena.lua').write_text('return '+lua(case)+'\n')
     (d/'sea-arena.json').write_text(json.dumps(case,indent=2))
     (d/'sea-arena-pins.json').write_text(json.dumps({
@@ -252,6 +257,7 @@ namespace SeaRetreatProbe {
             +(['friendly native formation route supplied; mechanism test only'] if case.get('native_transit') else [])
             +(['verified-water gate supplied; not a natural survey test'] if case.get('verified_water_fixture') else [])
             +(['retreat state and waypoint observation; no surface retreat commands supplied'] if case.get('retreat_observer') else [])
+            +(['read-only T1 submarine retreat-state observation'] if case.get('fireline_observer') else [])
             +(['read-only observation of off-map retreat candidates'] if case.get('retreat_boundary_observer') else [])
             +(['supplied submarines held near spawn; retreat mechanism test only'] if case.get('screen_anchor_fixture') else [])},indent=2))
     subprocess.run([sys.executable,str(ROOT/'tools/knowledge/check_script_api.py'),'--dll',str(a.dll),'--scripts',str(staged)],check=True)
@@ -264,9 +270,11 @@ def main():
     p.add_argument('--game',default='Beyond All Reason test-31479-433a460')
     p.add_argument('--control',action='store_true');p.add_argument('--seed',type=int,default=1891);p.add_argument('--minutes',type=int,default=8);p.add_argument('--speed',type=int,default=10)
     p.add_argument('--legacy-layout',action='store_true',help='Verify adaptive combat independently of experimental building')
+    p.add_argument('--cost',action='store_true',help='Record native phases and inclusive SEA policy CPU; run comparisons serially')
     p.add_argument('--order-slack',type=float,help='Isolate optional native naval order changes; zero uses native defaults')
     a=p.parse_args();d,call,checks=prepare(a)
-    subprocess.run(call+['launch','--dir',str(d),'--engine','recoil_2026.07.04'],check=True)
+    subprocess.run(call+['launch','--dir',str(d),'--engine','recoil_2026.07.04'],check=True,
+        env={**os.environ,**({'CIRCUIT_PERF_PHASES':'1'} if a.cost else {})})
     code=subprocess.run(call+['watch','--dir',str(d),'--role','SEA','--checks',checks,'--minutes',str(a.minutes),'--wall-minutes','15']).returncode
     case=json.loads((d/'sea-arena.json').read_text())
     acceptance=case.get('acceptance')

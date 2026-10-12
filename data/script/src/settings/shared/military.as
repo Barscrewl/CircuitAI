@@ -1,6 +1,7 @@
 // Shared defaults; existing Global namespaces are retained for callers.
 namespace Global {
 namespace Military {
+        float AggressionAutoWeight = 0.25f;
         float AttackWaitSeconds = 180.0f;
         float AttackScale = 0.8f;
         // D-214: funded land siege before ordinary FRONT combat selection.

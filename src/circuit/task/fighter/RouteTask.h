@@ -49,6 +49,8 @@ public:
     bool SetSeaTarget(int id); // Existing aircraft-only contract.
     bool SetNavalTarget(int id); // Opt-in water target, priority fire without pursuit.
     void SetRepairThreshold(float value);
+    // Task-scoped policy: never leaks a SEA firing-line choice to another role.
+    void SetCombatRetreat(bool enabled) { combatRetreat = enabled; }
     void SetAirTarget(int id) { if (airControl && airTarget != id) { airTarget = id; ++version; dirty = true; } }
     bool SetUnitRoute(CCircuitUnit* unit, std::vector<springai::AIFloat3>&& waypoints, float radius);
 	/*
@@ -123,6 +125,7 @@ private:
     int seaTarget = -1;
     bool navalTarget = false;
     float repairThreshold = 0.f;
+    bool combatRetreat = true;
     bool SetPriorityTarget(int id, bool naval);
     void IssuePriorityTarget(CCircuitUnit* unit, int id, bool naval);
     std::map<CCircuitUnit*, int> issuedVersion;

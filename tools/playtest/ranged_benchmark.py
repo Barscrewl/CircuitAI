@@ -183,6 +183,7 @@ def main():
     parser.add_argument('--data', type=Path, default=ROOT/'data')
     parser.add_argument('--variant', default='ranged', choices=['baseline','siege','ranged'])
     parser.add_argument('--profile', default='experimental_balanced')
+    parser.add_argument('--game', default='Beyond All Reason test-31479-433a460')
     parser.add_argument('--minutes', type=int, default=4)
     parser.add_argument('--speed', type=int, default=8)
     parser.add_argument('--seed', type=int, default=2071)
@@ -196,7 +197,7 @@ def main():
     for case in args.cases:
         command = [sys.executable, str(HERE/'ranged_arena.py'), '--case', case, '--dll', str(args.dll),
                    '--data', str(args.data), '--variant', args.variant, '--profile', args.profile,
-                   '--minutes', str(args.minutes), '--speed', str(args.speed), '--seed', str(args.seed)]
+                   '--minutes', str(args.minutes), '--speed', str(args.speed), '--seed', str(args.seed), '--game', args.game]
         print('BEGIN_CASE='+case, flush=True)
         if args.headless: command += ['--headless']
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -213,6 +214,9 @@ def main():
             # Keep the original combat/watch result immutable, and require the
             # separate completed-unit/queue analysis for production scenarios.
             cfg = json.loads((directory/'ranged-arena.json').read_text())
+            if cfg.get('rush_lifecycle') and args.variant!='baseline':
+                analysis = subprocess.run([sys.executable,str(HERE/'rush_report.py'),str(directory)])
+                failures += bool(analysis.returncode)
             if cfg.get('production_assertions'):
                 analysis = subprocess.run([sys.executable, str(HERE/'land_siege_report.py'), str(directory)])
                 failures += bool(analysis.returncode)

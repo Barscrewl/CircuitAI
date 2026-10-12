@@ -215,6 +215,10 @@ void CArtilleryTask::OnUnitDamaged(CCircuitUnit* unit, CEnemyInfo* attacker)
 {
 	if (ranged) {
 		ranged->Idle();
+        // Script/JSON chooses this doctrine. Forward-only firing-line hulls
+        // retain their weapon owner even at low HP; other artillery keeps its
+        // existing native repair retreat. No polling or extra query is added.
+        if (unit->GetCircuitDef()->GetRangedPolicy().holdFireline || ranged->IsSustainedRush()) return;
 		// Holding a firing position need never raise another idle event, so
 		// health retreat must hand over now rather than wait in cowards.
 		if (unit->GetHealthPercent() <= unit->GetCircuitDef()->GetRetreat()) {

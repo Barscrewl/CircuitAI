@@ -126,7 +126,7 @@ namespace Factory {
 		if (recovery !is null) return recovery;
 		if (SeaFactories::Hold(u)) return aiFactoryMgr.Enqueue(TaskS::Wait(true, SECOND));
 		// Only AIR changes ordering: transport obligations precede optional spam and combat.
-		if (Global::AISettings::Role == AiRole::AIR) {
+		if (Global::AISettings::Role == AiRole::AIR || Global::AISettings::Role == AiRole::TECH) {
 			IUnitTask@ ferry = Team::Ferry::FactoryMakeTask(u);
 			if (ferry !is null) return ferry;
 		}

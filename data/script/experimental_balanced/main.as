@@ -112,6 +112,7 @@ namespace Main {
 		//if ((ai.frame % (10 * SECOND)) == 0) {
 		Military::UpdateEnemyThreatCache();
 		Military::UpdateEnemyCostCache();
+        Aggression::Update();
 
 		if (Global::profileController !is null) {
 			Global::profileController.MainUpdate();

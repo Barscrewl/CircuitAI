@@ -100,6 +100,10 @@ CMilitaryScript::CMilitaryScript(CScriptManager* scr, CMilitaryManager* mgr)
 	r = engine->RegisterObjectMethod("CMilitaryManager", "bool SetPorcChain(const string& in, bool, const array<string>@+)", asFUNCTION(CMilitaryManager_SetPorcChain), asCALL_CDECL_OBJFIRST); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CMilitaryManager", "uint GetGuardTaskNum() const", asMETHOD(CMilitaryManager, GetGuardTaskNum), asCALL_THISCALL); ASSERT(r >= 0);
 	r = engine->RegisterObjectProperty("CMilitaryManager", "const float armyCost", asOFFSET(CMilitaryManager, armyCost)); ASSERT(r >= 0);
+    r = engine->RegisterObjectMethod("CMilitaryManager", "void SetAggressionDelta(float)", asMETHOD(CMilitaryManager, SetAggressionDelta), asCALL_THISCALL); ASSERT(r >= 0);
+    r = engine->RegisterObjectMethod("CMilitaryManager", "float GetAggressionDelta() const", asMETHOD(CMilitaryManager, GetAggressionDelta), asCALL_THISCALL); ASSERT(r >= 0);
+    r = engine->RegisterObjectMethod("CMilitaryManager", "void SetAutomaticAggression(float)", asMETHOD(CMilitaryManager, SetAutomaticAggression), asCALL_THISCALL); ASSERT(r >= 0);
+    r = engine->RegisterObjectMethod("CMilitaryManager", "float GetAutomaticAggression() const", asMETHOD(CMilitaryManager, GetAutomaticAggression), asCALL_THISCALL); ASSERT(r >= 0);
 	r = engine->RegisterObjectProperty("CMilitaryManager", "int porcMode", asOFFSET(CMilitaryManager, porcMode)); ASSERT(r >= 0);
 	r = engine->RegisterObjectProperty("CMilitaryManager", "float porcBudgetMod", asOFFSET(CMilitaryManager, porcBudgetMod)); ASSERT(r >= 0);
 	r = engine->RegisterObjectProperty("CMilitaryManager", "int porcAllyAA", asOFFSET(CMilitaryManager, porcAllyAA)); ASSERT(r >= 0);

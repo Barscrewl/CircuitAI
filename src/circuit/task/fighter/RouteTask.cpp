@@ -258,6 +258,7 @@ void CRouteTask::OnUnitIdle(CCircuitUnit* unit)
 
 void CRouteTask::OnUnitDamaged(CCircuitUnit* unit, CEnemyInfo* attacker)
 {
+    if (seaControl && !combatRetreat) return;
     if (seaControl && repairThreshold > 0.f && unit->GetHealthPercent() < repairThreshold) {
         // Opt-in task policy, never mutate a shared UnitDef retreat threshold.
         // Native retreat owns safe destination, repair, completion and return.

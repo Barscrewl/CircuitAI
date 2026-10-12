@@ -1,5 +1,8 @@
 // Deterministic SEA admission and handover decisions, independent of engine state.
 namespace SeaMath {
+    bool ReplacementReady(int count,float readyMetal,float enemyMetal,int minimum,float ratio) {
+        return count>=minimum && readyMetal>=enemyMetal*ratio;
+    }
     bool MatchesFactoryReservation(int taskReservation, int factoryReservation, int gantryReservation) {
         // An absent ID (-1) is never ownership, even if both owners are absent.
         return taskReservation>=0 && (taskReservation==factoryReservation || taskReservation==gantryReservation);

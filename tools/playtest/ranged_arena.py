@@ -49,6 +49,9 @@ def prepare(args):
         '--extra-widget',str(HERE/'widgets/ranged_arena.lua'),
         '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua')]
     if args.headless: stage += ['--headless']
+    if case.get('aggression_widget_test'):
+        stage += ['--extra-widget',str(ROOT/'tools/widgets/gui_barb_team_link.lua'),
+                  '--extra-widget',str(HERE/'widgets/aggression_watch.lua')]
     subprocess.run(stage, check=True)
     script = directory/'script.txt'
     script.write_text(script.read_text().replace('[GAME]\n{','[GAME]\n{\n FixedRNGSeed='+str(args.seed)+';',1))
@@ -110,6 +113,10 @@ def prepare(args):
     patched = source[:start]+override+source[start:]
     if case.get('native_route'): patched = 'CRouteTask@ FixtureRoute;\n'+patched
     path.write_text(patched)
+    if 'aggression_delta' in case:
+        path=staged/'script'/args.profile/'main.as'
+        source=path.read_text(); start=source.index('{',source.index('void AiUpdate()'))+1
+        path.write_text(source[:start]+'\n if (ai.teamId==0) aiMilitaryMgr.SetAggressionDelta('+str(float(case['aggression_delta']))+'f); // declared fixture offset\n'+source[start:])
     if case.get('trace_spam'):
         # Supplied buildings did not come through TECH's reserved layout.
         # Its geometry/economy Tick cannot judge this isolated production
@@ -144,6 +151,23 @@ def prepare(args):
                 data=data[:match.start(2)]+block+data[match.end(2):]
             path.write_bytes(data)
     case.update(variant=args.variant,profile=args.profile,seed=args.seed,minutes=args.minutes,speed=args.speed,headless=args.headless)
+    if case.get('fireline_observer'):
+        # Read task ownership in the real host; never issue combat commands.
+        profile=staged/'script'/args.profile/'main.as'
+        source=profile.read_text()
+        start=source.index('{',source.index('void AiUpdate()'))+1
+        probe='''
+        if (ai.teamId==0) {
+            array<int>@ observed=ai.GetOwnedUnitIds();
+            for (uint i=0;i<observed.length();++i) {
+                CCircuitUnit@ unit=ai.GetTeamUnit(observed[i]);
+                if (unit is null || unit.circuitDef.GetName()!="armmanni" || unit.task is null) continue;
+                if (unit.task.GetType()==int(Task::Type::RETREAT)) AiLog("[INVARIANT] Starlight entered retreat");
+                if (unit.GetHealthPercent()<.65f) AiLog("[FirelineTest] damaged gun holds native firing owner");
+            }
+        }
+'''
+        profile.write_text(source[:start]+probe+source[start:])
     config=directory/'LuaUI/Config';config.mkdir(parents=True,exist_ok=True)
     (config/'ranged_arena.lua').write_text('return '+lua(case)+'\n')
     (directory/'ranged-arena.json').write_text(json.dumps(case,indent=2)+'\n')

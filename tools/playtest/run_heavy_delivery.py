@@ -15,11 +15,13 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dll',type=Path,required=True)
     parser.add_argument('--side',choices=('armada','cortex','legion'),default='cortex')
-    parser.add_argument('--mode',choices=('flight','walk','mex','local','request'),default='flight')
+    parser.add_argument('--mode',choices=('flight','walk','mex','local','request','constructor'),default='flight')
+    parser.add_argument('--game',default='Beyond All Reason test-31578-8247b61')
     parser.add_argument('--profile',default='experimental_balanced')
     args=parser.parse_args()
     minutes = 10 if args.mode in ('local', 'request') else 5
-    directory=storage.allocate('tech','economy','delivery-'+args.mode+'-'+args.side,'supreme','supplied')
+    label='cons' if args.mode=='constructor' else args.mode
+    directory=storage.allocate('tech','economy','delivery-'+label+'-'+args.side,'supreme','supplied')
     print('DELIVERY_DIRECTORY='+str(directory),flush=True)
     # Standard map positions, reduced population. Team 2 is the closer FRONT;
     # team 3 is closer to TECH but farther from the actual front.
@@ -33,7 +35,7 @@ StartSpot(AIFloat3(11456,0,1901), AiRole::TECH, false)
 };''')
     command=[sys.executable,str(playtest.HERE/'playtest.py')]
     subprocess.run(command+['stage','--dir',str(directory),'--dll',str(args.dll),
-        '--map','Supreme Isthmus v1.7','--map-file',str(mapfile),'--ally-spots','1,2,3,4',
+        '--map','Supreme Isthmus v1.7','--map-file',str(mapfile),'--ally-spots','1,2,3,4','--game',args.game,
         '--role','TECH','--roles','TECH,FRONT,AIR','--side',args.side,'--ai-option','profile='+args.profile,
         '--speed','10','--minutes',str(minutes),'--bonus','0','--shots','0.8@2200@1400:10000,1.6@3000@2900:8700,3@2400@4595:7440,4.5@2400@4595:7440',
         '--lean-render','--modoption','deathmode=neverend','--modoption','startmetal=100000',

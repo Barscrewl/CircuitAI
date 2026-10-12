@@ -12,6 +12,7 @@
 #include "../../helpers/combat/porc_helpers.as"
 #include "../../helpers/spatial/layout_helpers.as"
 #include "glyphs.as"
+#include "../combat/aggression.as"
 
 /******************************************************************************
 
@@ -189,13 +190,16 @@ namespace Commands {
         array<string>@ parts = data.split("|");
         if (parts.length() < 3) return false;
         const string cmd = parts[1];
-        if (int(parseInt(parts[2])) != ai.teamId) {
+        // UI sends canonical decimal IDs. Prefix parsing would accept junk
+        // such as "0bad" as team zero, including for the aggression control.
+        if (parts[2] != "" + ai.teamId) {
             GenericHelpers::LogUtil("[Commands] Ignored command addressed to team " + parts[2] + ": " + data, 3);
             return true;
         }
 
         if (cmd == "theatres") { Lanes::RequestOverlay(parts.length() > 3 && parts[3] == "refresh"); return true; }
         if (cmd == "query") {
+            Aggression::Announce();
             if (Team::Roster::IsReady()) {
                 WidgetLink::Send("roster", "self|" + Team::Roster::Encode());
             } else {
@@ -205,6 +209,10 @@ namespace Commands {
         }
         if (cmd == "setrole" && parts.length() >= 4) {
             SwitchRole(parts[3]);
+            return true;
+        }
+        if (cmd == "aggression" && parts.length() == 4) {
+            Aggression::SetDelta(parts[3]);
             return true;
         }
         // barb|draw|<team>|commander|clear : map drawing from the AI (owner's request, 2026-09-26)

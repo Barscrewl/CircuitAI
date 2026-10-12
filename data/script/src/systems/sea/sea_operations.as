@@ -11,6 +11,8 @@ namespace SeaOperations {
         int defId=-1, body=-1, created=0, ordered=-100000, target=-999, nativeUntil=0;
         int search=0, retry=0, serial=0, sampleFrame=0, sampleTarget=-1, pursuitStart=0;
         bool released=false;
+        bool holdingFireline=false;
+        int replacementReleased=-1;
         bool perimeterAdvancing=false;
         int avoidUntil=0;
         AIFloat3 avoidCentre;
@@ -130,7 +132,7 @@ namespace SeaOperations {
                         Cohort@ candidate=groups[bucket[j]];
                         const float dist=MapHelpers::SqDist(p,candidate.previousCentre);
                         const bool settled=candidate.route is null || candidate.route.IsDead() || dist<radius*radius*.16f;
-                        if (dist<best && SeaMath::JoinCohort(dist,radius,candidate.capacity,
+                        if (!candidate.holdingFireline && dist<best && SeaMath::JoinCohort(dist,radius,candidate.capacity,
                             membershipLimit,candidate.released,settled)) { index=bucket[j]; best=dist; }
                     }
                 }
@@ -223,6 +225,7 @@ namespace SeaOperations {
             @g.route=cast<CRouteTask>(aiMilitaryMgr.Enqueue(TaskF::Route()));
             if (g.route is null) return false;
             g.route.SetSeaControl(true);
+            g.route.SetCombatRetreat(!SeaSubmarines::HoldsFireline(lead.circuitDef));
             // Fixed per hull type, not the number present on its first tick.
             // A one-ship assembly route must not lock future recruits into a
             // single column. Width leaves room to share one useful firing band.
@@ -257,10 +260,10 @@ namespace SeaOperations {
         return true;
     }
     bool Coast(Cohort@ g, const CCircuitDef@ def, bool reserve) {
-        // A verified, quiet sea is a prerequisite, not absence of one contact.
-        // Keep one local fighting cohort on naval duty and give landing-site
-        // protection precedence. New water contacts preempt this branch.
-        if (reserve || !SeaInvasion::secured || SeaInvasion::body!=g.body
+        // Known reachable coastal targets need not wait for whole-sea survey
+        // completion. Water contacts and landing-site protection still preempt
+        // this branch; each station must lie outside observed weapon coverage.
+        if ((!Global::RoleSettings::Sea::FleetAttackKnownBases && (reserve || !SeaInvasion::secured || SeaInvasion::body!=g.body))
             || !(def.HasSurfToLand() || def.HasSubToLand())) return false;
         if (ai.frame>=g.coastSearch) {
             g.coastSearch=ai.frame+10*SECOND; g.coastTarget=-1;
@@ -279,7 +282,8 @@ namespace SeaOperations {
                 for (int j=0;j<8;++j) {
                     const float angle=float(j)*.78539816f;
                     const AIFloat3 p=Spam::_Clamp(AIFloat3(target.x+cos(angle)*range,0,target.z+sin(angle)*range));
-                    if (aiBattle.WaterBody(p,false)!=g.body || !aiTerrainMgr.CanReachAt(lead,p,64)) continue;
+                    if (aiBattle.WaterBody(p,false)!=g.body || aiBattle.SurfThreat(p)>.1f
+                        || !aiTerrainMgr.CanReachAt(lead,p,64)) continue;
                     const float score=(aiBattle.IsGroundContactEconomy(i) ? 3000.0f : 1800.0f)
                         /(1.0f+sqrt(MapHelpers::SqDist(g.centre,p))/1600.0f+aiBattle.SurfThreat(p));
                     if (score>best) { best=score; g.coastTarget=id; g.coastGoal=p; }
@@ -364,6 +368,11 @@ namespace SeaOperations {
     }
     void RepairPolicy(Cohort@ g) {
         if (g.route is null || g.route.IsDead()) return;
+        if (SeaSubmarines::HoldsFireline(ai.GetCircuitDef(g.defId))) {
+            g.route.SetCombatRetreat(false);
+            g.route.SetRepairThreshold(0);
+            return;
+        }
         if (ai.frame-g.repairCheck>=15*SECOND) {
             g.repairCheck=ai.frame; g.repairAccess=false;
             CCircuitUnit@ lead=ai.GetTeamUnit(g.ids[0]);
@@ -392,6 +401,7 @@ namespace SeaOperations {
         if (Global::RoleSettings::Sea::CoordinatedFleet) SeaSubmarines::MergeSettled();
         if (Global::RoleSettings::Sea::CoordinatedFleet) SeaRetreat::Publish();
         SeaSubmarines::BeginDecisions();
+        SeaSubmarines::PrepareReplacements();
         dictionary reserves;
         // One pass rather than an extra fleet scan for every coastal mission.
         for (uint i=0;i<groups.length();++i) {
@@ -419,6 +429,7 @@ namespace SeaOperations {
             const bool siege=Siege(def);
             const bool subWeapon=def.HasSurfToWater() || def.HasSubToWater();
             const bool submarine=SeaSubmarines::Handles(def);
+            const bool fireline=SeaSubmarines::HoldsFireline(def);
             const int preferredFlagship=submarine && Global::RoleSettings::Sea::CoordinatedFleet ? SeaSubmarines::Preferred(g) : -1;
             int bestTargetRank=-1;
             float nearest=1e30f, enemySubs=0, cover=0, bestScore=-1, enemyCost=0, localEnemy=0, localAlly=0;
@@ -522,11 +533,11 @@ namespace SeaOperations {
                 }
                 continue;
             }
-            if (siege) {
-                // Missile ships and flagships already have working native
-                // artillery behavior. Only override it for immediate screening;
-                // once safe, restore that owner rather than turning them into
-                // short-range assault cohorts.
+            if (siege && (!Global::RoleSettings::Sea::FleetAttackKnownBases
+                || (target<0 && !Coast(g,def,false)))) {
+                // With no shared reachable objective, native artillery retains
+                // its normal task. A known naval/base target instead uses this
+                // hull's own weapon range under the common SEA owner.
                 if (g.target==-2 && g.route !is null && !g.route.IsDead()) {
                     for (uint j=0;j<g.ids.length();++j) {
                         CCircuitUnit@ u=ai.GetTeamUnit(g.ids[j]);
@@ -538,6 +549,7 @@ namespace SeaOperations {
                 }
                 continue;
             }
+            if (siege && target<0) continue; // Coast owns this ranged firing station.
             if (Escort(def)) {
                 // Native SupportTask selects ATTACK/DEFEND squads only; it
                 // cannot follow a fleet while that fleet owns a route. Follow
@@ -567,6 +579,11 @@ namespace SeaOperations {
                 continue;
             }
             if (ai.frame<g.retry && !targetUrgent && (!submarine || target<0)) continue;
+            const float contactRange=targetDef is null ? def.GetMaxRange(2) : AiMax(def.GetMaxRange(2),targetDef.GetMaxRange(2));
+            const bool engaged=fireline && target>=0 && (targetFlags&128)==0
+                && (nearest<(contactRange+128)*(contactRange+128) || g.sampleHealth-g.health>.01f);
+            if (!engaged) g.holdingFireline=false;
+            if (fireline && !engaged && SeaSubmarines::Replacement(g)) continue;
             if (!g.released) {
                 // Assembly is not permission to sit under fire. A local
                 // weapon-range contact or damage releases this cohort now;
@@ -605,6 +622,14 @@ namespace SeaOperations {
                 const bool bait=enemyCanFire && g.pursuitStart>0 && elapsed>=2 && SeaMath::PursuitBad(distance-range,def.GetSpeed(),enemySpeed,
                     g.health,advantage,elapsed,g.sampleDistance-distance,g.sampleHealth-g.health,
                     Global::RoleSettings::Sea::FleetClosingSeconds,beyond);
+                if (fireline && engaged && (bait || distance<range*.95f)) {
+                    // Forward-only torpedoes cannot cover a turn. Keep the
+                    // engaged owners firing; fresh hulls build a separate line.
+                    if (bait || g.health<.7f || advantage<.85f)
+                        SeaSubmarines::OpenReplacement(g,targetPosition,AiMax(enemyCost,localEnemy+enemySubs));
+                    SeaSubmarines::HoldFireline(g,target);
+                    continue;
+                }
                 if (bait) {
                     Fail(g,target);
                     // A short legal withdrawal cancels the chase immediately;
@@ -625,7 +650,8 @@ namespace SeaOperations {
                 // Range margin lets the entire shallow line fire. Do not
                 // continually move a firing fleet merely because a target drifts.
                 const bool remembered=(targetFlags&128)!=0;
-                const float slack=AiMax(64.0f,SeaMath::ApproachRange(range,def.GetLosRadius(),remembered));
+                const float desired=AiMax(64.0f,SeaMath::ApproachRange(range,def.GetLosRadius(),remembered));
+                const float slack=fireline && engaged ? AiMin(distance,desired) : desired;
                 if (distance>1) goal=AIFloat3(goal.x+(g.centre.x-goal.x)*slack/distance,0,
                     goal.z+(g.centre.z-goal.z)*slack/distance);
                 const bool inBand=!remembered && distance<range*.98f && distance>range*.72f;
@@ -689,6 +715,10 @@ namespace SeaOperations {
             if (!rangeCorrection && !SeaMath::NewObjective(g.target,target,MapHelpers::SqDist(goal,g.goal),ai.frame-g.ordered,
                 Global::RoleSettings::Sea::FleetSearchSeconds*SECOND)) continue;
             if (submarine && target>=0 && !SeaSubmarines::OutsideStaticTorpedoes(goal)) {
+                if (fireline && engaged) {
+                    SeaSubmarines::OpenReplacement(g,targetPosition,AiMax(enemyCost,localEnemy+enemySubs));
+                    SeaSubmarines::HoldFireline(g,target); continue;
+                }
                 // Reject the exposed firing approach, not the entire sea.
                 // The next census can select another eligible ship or yard.
                 Fail(g,target);

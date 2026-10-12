@@ -74,12 +74,98 @@ namespace SeaSubmarines {
     bool Handles(const CCircuitDef@ definition) {
         return definition !is null && Global::RoleSettings::Sea::CombatSubmarineDefinitions.find(definition.GetName())>=0;
     }
+    bool HoldsFireline(const CCircuitDef@ definition) {
+        return Global::RoleSettings::Sea::SubmarineHoldFireline && definition !is null
+            && Global::RoleSettings::Sea::FirelineSubmarineDefinitions.find(definition.GetName())>=0;
+    }
+    class ReplacementLine {
+        int body=-1, created=0, expires=0, count=0;
+        float enemyMetal=0, readyMetal=0;
+        AIFloat3 position;
+    }
+    array<ReplacementLine@> replacementLines;
+    // At most one replacement station per connected sea. Owned values expire
+    // after the last losing engagement or reset on role change. O(G*W), where
+    // W is active water bodies, once on the existing one-second SEA tick.
+    void PrepareReplacements() {
+        for (int i=int(replacementLines.length())-1;i>=0;--i) {
+            if (ai.frame>=replacementLines[i].expires) replacementLines.removeAt(i);
+            else { replacementLines[i].count=0; replacementLines[i].readyMetal=0; }
+        }
+        const float radius=Global::RoleSettings::Sea::SubmarineReplacementRadius;
+        for (uint i=0;i<SeaOperations::groups.length();++i) {
+            SeaOperations::Cohort@ g=SeaOperations::groups[i];
+            if (g.holdingFireline || !HoldsFireline(ai.GetCircuitDef(g.defId))) continue;
+            for (uint j=0;j<replacementLines.length();++j) {
+                ReplacementLine@ line=replacementLines[j];
+                if (g.body!=line.body || g.replacementReleased>=line.created
+                    || MapHelpers::SqDist(g.centre,line.position)>radius*radius) continue;
+                line.count+=int(g.ids.length());
+                line.readyMetal+=ai.GetCircuitDef(g.defId).costM*float(g.ids.length())*g.health;
+            }
+        }
+    }
+    void OpenReplacement(SeaOperations::Cohort@ g,const AIFloat3 &in enemy,float enemyMetal) {
+        for (uint i=0;i<replacementLines.length();++i) if (replacementLines[i].body==g.body) {
+            replacementLines[i].expires=ai.frame+Global::RoleSettings::Sea::SubmarineReplacementSeconds*SECOND;
+            replacementLines[i].enemyMetal=AiMax(replacementLines[i].enemyMetal,enemyMetal); return;
+        }
+        CCircuitUnit@ lead=ai.GetTeamUnit(g.ids[0]);
+        AIFloat3 away=g.centre-enemy;
+        const float length=AiMax(1.0f,sqrt(away.x*away.x+away.z*away.z)); away=away/length;
+        AIFloat3 best; float threat=1e30f; bool found=false;
+        // Nine bounded rearward sites, one time per replacement station. The
+        // original line never travels here. Reinforcements use normal routing.
+        for (int depth=1;depth<=3;++depth) for (int side=-1;side<=1;++side) {
+            const AIFloat3 p=g.centre+away*(float(depth)*400)+AIFloat3(-away.z,0,away.x)*(float(side)*256);
+            if (aiBattle.WaterBody(p,false)!=g.body || !OutsideStaticTorpedoes(p)
+                || !aiTerrainMgr.CanReachAt(lead,p,64)) continue;
+            const float danger=aiBattle.AmphThreat(p);
+            if (danger<threat) { threat=danger; best=p; found=true; }
+        }
+        if (!found || threat>Global::RoleSettings::Sea::SubmarinePerimeterMaximumThreat) return;
+        ReplacementLine@ line=ReplacementLine(); line.body=g.body; line.position=best;
+        line.created=ai.frame; line.expires=ai.frame+Global::RoleSettings::Sea::SubmarineReplacementSeconds*SECOND;
+        line.enemyMetal=enemyMetal; replacementLines.insertLast(line);
+        GenericHelpers::LogUtil("[SEA][SubReplacement] form body="+g.body+" goal="+int(best.x)+","+int(best.z),1);
+    }
+    bool Replacement(SeaOperations::Cohort@ g) {
+        for (uint i=0;i<replacementLines.length();++i) {
+            ReplacementLine@ line=replacementLines[i];
+            if (line.body!=g.body || g.replacementReleased>=line.created) continue;
+            if (SeaMath::ReplacementReady(line.count,line.readyMetal,line.enemyMetal,
+                Global::RoleSettings::Sea::SubmarineDepartureCount,Global::RoleSettings::Sea::SubmarineReplacementRatio)) {
+                g.replacementReleased=line.created; g.released=true;
+                GenericHelpers::LogUtil("[SEA][SubReplacement] advance cohort="+g.serial+" power="+line.readyMetal,1);
+                return false;
+            }
+            if (g.target!=-8 || g.route is null || g.route.IsDead()) {
+                if (!SeaOperations::Route(g,line.position,false,true,true,true,false)) return false;
+                g.target=-8; g.route.SetNavalTarget(-1);
+            }
+            return true;
+        }
+        return false;
+    }
+    void HoldFireline(SeaOperations::Cohort@ g,int target) {
+        if (!g.holdingFireline || g.route is null || g.route.IsDead()) {
+            if (!SeaOperations::Route(g,g.centre,true,false,true)) return;
+            for (uint i=0;i<g.ids.length();++i) {
+                CCircuitUnit@ unit=ai.GetTeamUnit(g.ids[i]); if (unit is null || unit.task !is g.route) continue;
+                array<AIFloat3> hold={unit.GetPos(ai.frame)};
+                if (!g.route.SetUnitRoute(unit,hold,32))
+                    Invariants::Violation("INV-194",""+unit.id,"submarine firing hold rejected");
+            }
+            GenericHelpers::LogUtil("[SEA][SubFireline] hold cohort="+g.serial+" target="+target,1);
+        }
+        g.holdingFireline=true; g.target=target; g.route.SetNavalTarget(target);
+    }
     int TargetRank(const CCircuitDef@ definition, int flags) {
         return SeaMath::SubmarineTargetRank(definition !is null && SeaProtection::Flagship(definition),
             (flags&StaticContactMask)!=0,(flags&UnknownContactMask)!=0,(flags&FactoryContactMask)!=0,
             (flags&4)!=0);
     }
-    void Reset() { ready=false; shorelineSectors.resize(0); owners.deleteAll(); expiry.deleteAll(); }
+    void Reset() { ready=false; shorelineSectors.resize(0); owners.deleteAll(); expiry.deleteAll(); replacementLines.resize(0); }
     void Init() {
         if (ready) return;
         SeaPatrol::Grid(); SeaShorelines::Init();

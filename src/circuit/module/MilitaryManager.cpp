@@ -57,10 +57,20 @@
 #include "Log.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <map>
 
 namespace circuit {
+
+void CMilitaryManager::SetAggressionDelta(float value)
+{
+    if(std::isfinite(value)) aggressionDelta=std::clamp(value,-1.f,1.f);
+}
+void CMilitaryManager::SetAutomaticAggression(float value)
+{
+    if(std::isfinite(value)) automaticAggression=std::clamp(value,-1.f,1.f);
+}
 
 using namespace springai;
 using namespace terrain;

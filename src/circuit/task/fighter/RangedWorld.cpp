@@ -317,6 +317,9 @@ void CRangedWorld::EnsureAllies() const
     alliesDirty = false;
 }
 void CRangedWorld::Leave(int id) {
+    rushes.Leave(id);
+    if(verifyRangedQueries && !rushes.Valid())
+        circuit->LOG("[INVARIANT] INV-196 local rush membership or original-front casualty accounting is inconsistent");
     slots.erase(id); ReleaseShot(id);
     auto member=membership.find(id);
     if(member!=membership.end()) {

@@ -46,8 +46,9 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--baseline',type=Path,required=True,help='Pin directory containing DLL and data/')
     p.add_argument('--candidate',type=Path,required=True)
+    p.add_argument('--game',default='Beyond All Reason test-31479-433a460')
     p.add_argument('--case', default='thug-fixed-population',
-        choices=['thug-fixed-population','t1-formation-fixed-population'])
+        choices=['thug-fixed-population','t1-formation-fixed-population','armada-formation-fixed-population'])
     p.add_argument('--background-pid',type=int,action='append',default=[],
         help='Explicit existing user game: measure command/population controls only; CPU acceptance remains pending. Never stops that process.')
     a=p.parse_args()
@@ -60,7 +61,8 @@ def main():
         key=(group['team'],group['unit'])
         expected[key]=expected.get(key,0)+group['count']
     directory=storage.allocate('shared','performance',
-        'thug-comparison' if a.case=='thug-fixed-population' else 'formation-comparison',
+        'thug-comparison' if a.case=='thug-fixed-population' else
+        ('armada-form-comparison' if a.case=='armada-formation-fixed-population' else 'formation-comparison'),
         fixture['map_key'],'benchmark')
     print('THUG_PERFORMANCE='+str(directory),flush=True)
     runs={}
@@ -71,7 +73,7 @@ def main():
             cmd=[sys.executable,str(HERE/'ranged_benchmark.py'),'--cases',a.case,
                 '--dll',str(pin/'SkirmishAI.dll'),'--data',str(pin/'data'),
                 '--variant','baseline' if label=='baseline' else 'ranged',
-                '--seed',str(seed),'--speed','16','--minutes','3']
+                '--seed',str(seed),'--speed','16','--minutes','3','--game',a.game]
             log=directory/f'{label}-{seed}.log'
             with log.open('w') as stream:
                 code=subprocess.run(cmd,stdout=stream,stderr=subprocess.STDOUT).returncode

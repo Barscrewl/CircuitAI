@@ -12,6 +12,7 @@
 #include "../../types/terrain.as"
 #include "../../systems/production/factory_production.as"
 #include "../../systems/combat/land_siege.as"
+#include "../../systems/construction/front_geothermal.as"
 // Builder state and helpers for enqueueing structures like nanos
 #include "../../manager/builder.as"
 #include "../../manager/economy.as"
@@ -25,6 +26,7 @@ namespace RoleFront {
     ******************************************************************************/
 
     void Front_Init() {
+        FrontGeothermal::Reset();
         GenericHelpers::LogUtil("Front role initialization logic executed", 2);
 
         // Apply FRONT role settings
@@ -549,6 +551,10 @@ namespace RoleFront {
         GenericHelpers::LogUtil("[Front_BuilderAiMakeTask] called for builder", 3);
         if (builder is null) return null; // Defensive check
 
+        // Select explicit geo work before asking native to enqueue another
+        // energy task. Overriding an already-created task would leak work.
+        IUnitTask@ geothermal=FrontGeothermal::Work(builder);
+        if (geothermal !is null) return geothermal;
         // Pre-create and cache a single default task instance; never recreate.
         IUnitTask@ defaultTask = Builder::MakeDefaultTaskWithLog(builder.id, "FRONT");
 

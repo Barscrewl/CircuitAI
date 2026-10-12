@@ -103,6 +103,7 @@ namespace Main {
 		// Refresh the cached enemy threat/cost layers the role quotas read.
 		Military::UpdateEnemyThreatCache();
 		Military::UpdateEnemyCostCache();
+        Aggression::Update();
 
 		if (Global::profileController !is null) {
 			Global::profileController.MainUpdate();

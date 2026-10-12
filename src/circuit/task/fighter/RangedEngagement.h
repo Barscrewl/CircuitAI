@@ -16,6 +16,7 @@ public:
     void MoveFailed() { query.reset(); moving=false; completedMove=false; orientUntil=0; nextFrame=0; ++failures; }
     void Release(CCircuitUnit* unit, bool commands=true);
     int Target() const { return target; }
+    bool IsSustainedRush() const { return world.IsSustainedRush(id); }
 private:
     void SelectTarget(CCircuitUnit* unit,int id,int weapon,float damage);
     bool Move(CCircuitUnit* unit,const springai::AIFloat3& destination,bool escape);

@@ -336,3 +336,9 @@ void test_unplanned_invasion_slots_never_own_overflow_factory_tasks() {
     Check(SeaMath::MatchesFactoryReservation(25,25,-1));
     Check(SeaMath::MatchesFactoryReservation(26,25,26));
 }
+void test_replacement_line_requires_numbers_and_health_adjusted_power() {
+    Check(!SeaMath::ReplacementReady(2,4000,1000,3,1.15f));
+    Check(!SeaMath::ReplacementReady(6,900,1000,3,1.15f));
+    Check(SeaMath::ReplacementReady(3,1200,1000,3,1.15f));
+    Check(SeaMath::ReplacementReady(4,1600,0,3,1.15f));
+}

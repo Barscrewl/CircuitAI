@@ -513,14 +513,25 @@ void CFactoryManager::ReadConfig()
 			boolean("prefer_screen", policy.preferScreen);
 			boolean("allow_radar", policy.allowRadar);
 			boolean("advance_unknown_radar", policy.advanceUnknownRadar);
+			boolean("hold_fireline", policy.holdFireline);
 			boolean("stage_when_blocked", policy.stageWhenBlocked);
 			boolean("coordinated", policy.coordinated);
+            // Fireline holding is an individual forward-arc doctrine. Reject
+            // unsupported cohort ownership instead of silently allowing retreats.
+            if (policy.holdFireline && policy.coordinated) valid = false;
 			number("cohort_size", policy.cohortSize, 1.f, 12.f);
 			number("cohort_radius", policy.cohortRadius, 128.f, 1600.f);
 			number("regroup_seconds", policy.regroupSeconds, 0.f, 20.f);
 			number("rush_ratio", policy.rushRatio, 1.f, 5.f);
 			number("catch_seconds", policy.catchSeconds, 0.f, 15.f);
 			number("engagement_seconds", policy.engagementSeconds, 0.f, 30.f);
+            boolean("sustained_rush", policy.sustainedRush);
+            number("sustained_rush_ratio", policy.sustainedRushRatio, 1.f, 10.f);
+            number("sustained_rush_radius", policy.sustainedRushRadius, 128.f, 1600.f);
+            number("sustained_rush_min_front", policy.sustainedRushMinFront, 1.f, 256.f);
+            number("sustained_rush_remaining", policy.sustainedRushRemaining, .01f, 1.f);
+            number("sustained_rush_cooldown", policy.sustainedRushCooldown, 1.f, 120.f);
+            number("sustained_rush_range", policy.sustainedRushRange, .25f, 1.f);
 			number("advantage_enter", policy.advantageEnter, 1.f, 5.f);
 			number("advantage_exit", policy.advantageExit, 1.f, 5.f);
 			number("loss_fraction", policy.lossFraction, 0.f, .9f);
@@ -553,6 +564,8 @@ void CFactoryManager::ReadConfig()
                     if (policy.formationSeparationMinimum > policy.formationSeparationMaximum) valid = false;
                 }
             }
+            if (policy.sustainedRush && (!policy.coordinated || policy.engagementSeconds <= 0.f
+                || policy.formationPosition == RangedPolicy::FormationPosition::NONE)) valid = false;
 			if (policy.advantageExit > policy.advantageEnter) valid = false;
 			if (valid) cdef->SetRangedPolicy(policy);
 			else {
