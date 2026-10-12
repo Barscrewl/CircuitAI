@@ -34,6 +34,9 @@ namespace TechPlan {
     {
         plan = Choose();
         phase = 0;
+        CCircuitDef@ afus = ai.GetCircuitDef(TechChain::DefFor("afus"));
+        if (afus !is null && afus.count > aiBuilderMgr.GetUnfinishedCount(afus))
+            aiTerrainMgr.SetLayoutInt("tech.heavy.afus-completed", 1);
         GenericHelpers::LogUtil("[TECH][Plan] " + plan + " (combat gate +" + int(CombatGate()) + " metal; T2 air constructors from +"
             + int(Global::RoleSettings::Tech::PlanAirConstructorsFromMetal) + ")", 1);
     }
@@ -72,13 +75,21 @@ namespace TechPlan {
             s.insertLast(TechChain::Step("heavy", "", 1));
             return s;
         }
+        // The heavy foundation displaced the normal first-AFUS objective.
+        // Restore it in phase one without consuming the selected plan's phase
+        // or rerolling/restarting its completed-ever heavy obligation.
+        const bool restoreAfus = phase == 0 && TechHeavyRush::Selected()
+            && TechHeavyRush::completed >= TechHeavyRush::TargetCount()
+            && aiTerrainMgr.GetLayoutInt("tech.heavy.afus-completed", 0) == 0;
+        if (restoreAfus)
+            s.insertLast(TechChain::Step("afus", TechChain::DefFor("afus"), 1));
         ++phase;
         const int gate200 = int(Global::RoleSettings::Tech::PlanCombatGate);
         const int gate500 = int(Global::RoleSettings::Tech::PlanT3RushCombatGate);
         const int lrpcAt = int(Global::RoleSettings::Tech::PlanLrpcMetal);
         if (plan == "nuke") {
             if (phase == 1) {
-                if (objective != "nuke") s.insertLast(TechChain::Step("silo", TechChain::DefFor("silo"), 1));
+                if (objective != "nuke" && !TechHeavyRush::SiloReady()) s.insertLast(TechChain::Step("silo", TechChain::DefFor("silo"), 1));
                 else s.insertLast(TechChain::Step("ap", TechChain::DefFor("ap"), 1)); // D-229: no aircraft-factory spending before the rush silo
                 s.insertLast(TechChain::Step("income", "", gate200));
             } else if (phase == 2) {
@@ -98,7 +109,7 @@ namespace TechPlan {
         } else if (plan == "t3rush") {
             if (phase == 1) {
                 if (TechGantry::EarlyEnabled()) {
-                    s.insertLast(TechChain::Step("afus", TechChain::DefFor("afus"), 1));
+                    if (!restoreAfus) s.insertLast(TechChain::Step("afus", TechChain::DefFor("afus"), 1));
                     s.insertLast(TechChain::Step("earlygantry", TechChain::DefFor("gantry"), 1));
                 }
                 s.insertLast(TechChain::Step("ap", TechChain::DefFor("ap"), 1));   // D-103: only an air constructor builds the advanced aircraft plant
@@ -116,6 +127,8 @@ namespace TechPlan {
                 s.insertLast(TechChain::Step("income", "", gate500));
             }
         }
+        if (restoreAfus && (s.length() == 0 || s[0].key != "afus"))
+            Invariants::Violation("INV-193", plan, "completed heavy batch lost first-AFUS continuation");
         return s;
     }
 

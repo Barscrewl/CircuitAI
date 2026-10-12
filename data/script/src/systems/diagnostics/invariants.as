@@ -103,7 +103,8 @@ namespace Invariants {
             || name == UnitHelpers::GetSolarNameForSide(side) || name == UnitHelpers::GetAdvSolarNameForSide(side)
             || name == UnitHelpers::GetFusionNameForSide(side) || name == UnitHelpers::GetAdvFusionNameForSide(side);
         if (energy && building.GetBuildType() == int(Task::BuildType::ENERGY) && !MetalEconomy::Active()
-            && TechChain::EnergyFullSeconds() >= Global::RoleSettings::Tech::InvariantFloatOrderSeconds) {
+            && TechChain::EnergyFullSeconds() >= Global::RoleSettings::Tech::InvariantFloatOrderSeconds
+            && TechChain::EnergyFloats()) {
             // D-105 deliberately spends a full metal bank rather than converting
             // more into it. D-108 dedicates an AFUS builder to continuous scaling.
             // These existing policies must be named, not silently contradicted by
@@ -114,10 +115,14 @@ namespace Invariants {
             const bool dedicatedFusion = constructionAdmissionRule == "air.dedicated"
                 && name == UnitHelpers::GetAdvFusionNameForSide(side);
             const bool payback = constructionAdmissionRule == "energy.float";
+            // D-286: admission and this observer use the same useful-conversion
+            // decision. A full bank alone does not prove conversion can grow.
+            const bool heavyFoundation = TechHeavyRush::RequiresFusion()
+                && name == UnitHelpers::GetFusionNameForSide(side);
             GenericHelpers::LogUtil("[Admission] energy=" + name + " rule=" + constructionAdmissionRule
                 + " frame=" + ai.frame + " metal=" + int(aiEconomyMgr.metal.current) + " " + TechChain::FloatWhy()
-                + " exception=" + (rushEnergy || fundedChain || dedicatedFusion || payback), 2);
-            if (!rushEnergy && !fundedChain && !dedicatedFusion && !payback)
+                + " exception=" + (rushEnergy || fundedChain || dedicatedFusion || payback || heavyFoundation), 2);
+            if (!rushEnergy && !fundedChain && !dedicatedFusion && !payback && !heavyFoundation)
                 Violation("INV-009", name, "new " + name + " order while " + TechChain::FloatWhy()
                     + "; rule=" + constructionAdmissionRule);
         }

@@ -287,8 +287,18 @@ private:
 	int gw, gh;
 	Grid height, maxHeight;   // per cell: mean and highest point
 	Grid surfaceSlope;   // mean engine slope: catches sideways travel along a cliff
-    struct UnitTerrain { lane::Terrain grid; Grid slope; int frame = -100000; };
+    struct UnitTerrain {
+        lane::Terrain grid;
+        Grid slope;
+        std::uint64_t heightRevision = 0;
+        int frame = -100000;
+    };
     std::unordered_map<int, UnitTerrain> unitTerrain;
+    // One callback-thread scratch set per AI, shared across definition/dry keys.
+    // Retain allocations, never route results or live obstacle observations.
+    Grid unitRouteSlope, unitRouteThreat;
+    std::vector<char> unitRouteObstacles;
+    lane::PointWorkspace unitRouteWorkspace;
 	std::vector<springai::AIFloat3> sources;
 	Grid routeHeat, routeShare;
 	std::vector<char> lane;

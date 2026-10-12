@@ -362,13 +362,11 @@ namespace TechChain
     float EnergyFullSeconds() { return (energyFullSince < 0) ? 0.0f : float(ai.frame - energyFullSince) / float(SECOND); }
     bool EnergyFloats()
     {
-        // Once the dedicated reactor worker is online, a full bank does not
-        // justify more converters if installed/committed capacity already uses
-        // the available supply. Allow the AFUS ladder to continue instead.
-        if (Global::AISettings::Role==AiRole::TECH && TechBuild::airAfusId>=0) {
-            CCircuitDef@ converter=ai.GetCircuitDef(UnitHelpers::GetAdvEnergyConverterNameForSide(Global::AISettings::Side));
-            if (converter !is null && EcoPlanner::TechConversionHeadroom()<aiEconomyMgr.GetEnergyUse(converter)) return false;
-        }
+        return EnergyBankFloats() && (Global::AISettings::Role != AiRole::TECH
+            || EcoPlanner::TechConversionCanDefer());
+    }
+    bool EnergyBankFloats()
+    {
         if (EnergyFullSeconds() >= Global::RoleSettings::Tech::ChainEnergyFloatSeconds) return true;
         // a full bank with income clearly over the pull is floating now, however new
         // (played: the advanced fusion ordered 15 s after the fusion at +1,291)

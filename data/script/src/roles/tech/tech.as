@@ -1667,7 +1667,11 @@ namespace RoleTech
 	}
 
 	void Tech_BuilderAiUnitRemoved(CCircuitUnit @unit, Unit::UseAs usage)
-	{ /* moved to Builder::AiUnitRemoved */
+	{ /* other bookkeeping moved to Builder::AiUnitRemoved */
+        if (unit !is null) {
+            EcoPlanner::conversionReasons.delete("" + unit.id);
+            floatAssistReasons.delete("" + unit.id);
+        }
 	}
 
 	IUnitTask @Tech_BuilderAiMakeTask(CCircuitUnit @u)
@@ -1892,6 +1896,9 @@ namespace RoleTech
 		if (builderTask !is null)
 		{
 			Task::BuildType bt = Task::BuildType(builderTask.GetBuildType());
+            if (done && bt == Task::BuildType::ENERGY && builderTask.buildDef !is null
+                && builderTask.buildDef.GetName() == TechChain::DefFor("afus"))
+                aiTerrainMgr.SetLayoutInt("tech.heavy.afus-completed", 1);
 
 			// MexTracker bookkeeping is done role-independently in Builder::AiTaskRemoved.
 			if (bt == Task::BuildType::MEXUP)
@@ -2178,7 +2185,30 @@ namespace RoleTech
 			|| aiEconomyMgr.metal.current >= Global::RoleSettings::Tech::FloatMetalCurrent;
 	}
 
-	IUnitTask @Tech_FloatSpend(CCircuitUnit @u, bool isT2, float metalIncome, float energyIncome)
+    dictionary floatAssistReasons;
+    bool Tech_ProductiveWorker(CCircuitUnit@ worker) {
+        if (worker is null || ai.GetTeamUnit(worker.id) !is worker
+            || worker.task is null || worker.task.IsDead() || worker.task.IsExternalControlled()) return false;
+        IBuilderTask@ task = cast<IBuilderTask>(worker.task);
+        if (task is null) return false;
+        const Task::BuildType kind = Task::BuildType(task.GetBuildType());
+        if (kind == Task::BuildType::GUARD || kind == Task::BuildType::WAIT
+            || kind == Task::BuildType::RECLAIM) return false;
+        if (task.target !is null)
+            return ai.GetTeamUnit(task.target.id) is task.target && !Lifecycle::IsRetiring(task.target)
+                && task.target.GetBuildProgress() < 1.0f;
+        // A live owned construction task may still be travelling to its frame,
+        // or deliberately resource-starved. Neither needs a progress timer.
+        return task.buildDef !is null;
+    }
+    IUnitTask@ Tech_FloatSpend(CCircuitUnit@ u, bool isT2, float metalIncome, float energyIncome) {
+        EcoPlanner::ConversionDecision@ previous = EcoPlanner::conversionDecision;
+        if (previous is null) EcoPlanner::BeginConversionDecision(u);
+        IUnitTask@ task = Tech_FloatSpendImpl(u, isT2, metalIncome, energyIncome);
+        if (previous is null) EcoPlanner::EndConversionDecision(previous);
+        return task;
+    }
+	IUnitTask @Tech_FloatSpendImpl(CCircuitUnit @u, bool isT2, float metalIncome, float energyIncome)
 	{
 		if (u is null || u.circuitDef is null) return null;
 		if (!Tech_IsFloating(metalIncome)) return null;
@@ -2187,11 +2217,17 @@ namespace RoleTech
 
 		if (!isT2)
 		{
-			if (Builder::primaryT2BotConstructor !is null && !(u is Builder::primaryT2BotConstructor))
+            CCircuitUnit@ target = Builder::primaryT2BotConstructor;
+            const bool productive = target !is u && Tech_ProductiveWorker(target);
+            const string reason = productive ? "productive:" + target.id : "no productive owned construction";
+            string previousReason;
+            if (!floatAssistReasons.get("" + u.id, previousReason) || previousReason != reason) {
+                floatAssistReasons.set("" + u.id, reason);
+                GenericHelpers::LogUtil("[TECH][FloatAssist] worker=" + u.id + " " + reason, 1);
+            }
+			if (productive)
 			{
-				GenericHelpers::LogUtil("[TECH][Float] T1 constructor " + u.id + " assists the T2 constructor (metal "
-					+ int(bank) + ")", 1);
-				return GuardHelpers::AssignWorkerGuard(u, Builder::primaryT2BotConstructor, Task::Priority::HIGH, true, 60 * SECOND);
+				return GuardHelpers::AssignWorkerGuard(u, target, Task::Priority::HIGH, true, 60 * SECOND);
 			}
 			return null;   // nothing a T1 constructor can spend it on; normal ladder, capped nanos
 		}
@@ -2206,7 +2242,8 @@ namespace RoleTech
 				return t;
 			}
 		}
-		else
+		// A failed converter attempt must still reach funded reactor growth.
+		// Existing energy ownership and Layout reservations remain authoritative.
 		{
 			if (bank >= Global::RoleSettings::Tech::FloatAFUSMetalCurrent)
 			{

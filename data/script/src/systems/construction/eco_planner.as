@@ -11,6 +11,7 @@
 #include "layout.as"
 #include "../../manager/economy.as"
 #include "../../helpers/math/build_power_math.as"
+#include "../../helpers/math/tech_economy_math.as"
 
 /******************************************************************************
 
@@ -66,6 +67,101 @@ keeping AIR reservations, execution, milestones and aircraft demand separate.
 
 ******************************************************************************/
 namespace EcoPlanner {
+    string ConversionReasonName(ConversionReason reason) {
+        if (reason == READY) return "ready";
+        if (reason == PENDING) return "pending";
+        if (reason == CAPACITY) return "capacity";
+        if (reason == METAL_FULL) return "metal-full";
+        if (reason == UNAVAILABLE) return "unavailable";
+        if (reason == UNBUILDABLE) return "unbuildable";
+        if (reason == INCOME) return "income";
+        if (reason == PLACEMENT) return "placement";
+        return "no-option";
+    }
+    class ConversionDecision {
+        CCircuitUnit@ worker;
+        bool read = false;
+        float headroom = 0.0f;
+        bool placementRejected = false;
+        int placementRejectedDef = -1;
+        bool selectionRejected = false;
+        void Reset(CCircuitUnit@ unit) {
+            @worker = unit; read = false; headroom = 0.0f;
+            placementRejected = false; placementRejectedDef = -1; selectionRejected = false;
+        }
+    }
+    // Callback-local contents, reused storage. Allocate only at a new nesting
+    // high-water mark, not per builder ask (16 AIs / late armies). Release drops
+    // the unit handle and restores the caller; enqueue invalidates headroom.
+    // HeavyStrategyProbe verifies nested restoration and storage reuse.
+    ConversionDecision@ conversionDecision;
+    array<ConversionDecision@> conversionWorkspaces;
+    uint conversionDepth = 0;
+    void BeginConversionDecision(CCircuitUnit@ worker) {
+        if (conversionDepth == conversionWorkspaces.length())
+            conversionWorkspaces.insertLast(ConversionDecision());
+        @conversionDecision = conversionWorkspaces[conversionDepth++];
+        conversionDecision.Reset(worker);
+    }
+    void EndConversionDecision(ConversionDecision@ previous) {
+        conversionDecision.Reset(null);
+        --conversionDepth;
+        @conversionDecision = previous;
+    }
+    float ConversionSupply() {
+        if (conversionDecision is null) return TechConversionHeadroom();
+        if (!conversionDecision.read) {
+            conversionDecision.headroom = TechConversionHeadroom();
+            conversionDecision.read = true;
+        }
+        return conversionDecision.headroom;
+    }
+    ConversionReason TechConversionAdmission(CCircuitDef@ def, CCircuitUnit@ worker) {
+        if (TechBuild::MetalFullLong() || aiEconomyMgr.isMetalFull) return METAL_FULL;
+        if (def is null) return UNAVAILABLE;
+        const int pending = aiBuilderMgr.GetQueuedBuildCount(int(Task::BuildType::CONVERT), def)
+            + aiBuilderMgr.GetUnfinishedCount(def);
+        const int parallel = TechChain::EnergyBankFloats() ? Global::RoleSettings::Tech::ConverterParallel : 1;
+        const float income = Economy::GetMinMetalIncomeLast10s();
+        const bool advanced = def.GetName() == UnitHelpers::GetAdvEnergyConverterNameForSide(Global::AISettings::Side);
+        const ConversionReason reason = DecideConversion(false, true, pending, parallel,
+            ConversionSupply() >= aiEconomyMgr.GetEnergyUse(def), def.IsAvailable(ai.frame),
+            worker is null || (worker.circuitDef !is null && worker.circuitDef.CanBuild(def)),
+            advanced ? income >= Global::RoleSettings::Tech::MinimumMetalIncomeForAdvConverter
+                : income < Global::RoleSettings::Tech::BuildT1ConvertersUntilMetalIncome,
+            conversionDecision !is null && conversionDecision.placementRejected
+                && conversionDecision.placementRejectedDef == def.id);
+        return reason == READY && conversionDecision !is null && conversionDecision.selectionRejected
+            ? (pending > 0 ? PENDING : NO_OPTION) : reason;
+    }
+    bool TechConversionCanDefer() {
+        CCircuitUnit@ worker = conversionDecision is null ? null : conversionDecision.worker;
+        const bool advanced = worker is null ? TechBuild::IntoT2()
+            : UnitHelpers::GetConstructorTier(worker.circuitDef) >= 2;
+        const string side = Global::AISettings::Side;
+        if (advanced) {
+            const ConversionReason advancedReason = TechConversionAdmission(
+                ai.GetCircuitDef(UnitHelpers::GetAdvEnergyConverterNameForSide(side)), worker);
+            if (advancedReason == READY || advancedReason == PENDING) return true;
+        }
+        const ConversionReason reason = TechConversionAdmission(
+            ai.GetCircuitDef(UnitHelpers::GetEnergyConverterNameForSide(side)), worker);
+        return reason == READY || reason == PENDING;
+    }
+    // At most one entry per live worker; destruction removes it. Emit only
+    // reason/phase transitions, not changing bank values on every decision.
+    dictionary conversionReasons;
+    void TraceConversion(CCircuitUnit@ worker, ConversionReason reason) {
+        if (worker is null) return;
+        const string key = "" + worker.id;
+        const string signature = "" + int(reason) + ":" + TechPlan::phase;
+        string previous;
+        if (conversionReasons.get(key, previous) && previous == signature) return;
+        conversionReasons.set(key, signature);
+        GenericHelpers::LogUtil("[TECH][Conversion] worker=" + worker.id + " phase=" + TechPlan::phase
+            + " reason=" + ConversionReasonName(reason) + " headroom=" + int(ConversionSupply())
+            + " energy=" + int(aiEconomyMgr.energy.income) + " metal=" + int(aiEconomyMgr.metal.current), 1);
+    }
     array<string> techConverterNames;
     float TechConversionHeadroom() {
         if (AiPerfEnabled) AiPerfBeginLabel("tech-conversion-capacity");
@@ -342,7 +438,14 @@ namespace EcoPlanner {
             if (!AirMath::EnergyEraAllows(key == "wind" || key == "solar", key == "advsolar", s.fusionUp, s.afusStarted)) return null;
         } else if (Global::energyAllowed !is null && !Global::energyAllowed(name)) return null;   // D-077: no T1 energy in the fusion era
         // Only what the turret box holds within a turret's reach (D-063).
-        if (!s.air && !Layout::CanPlace(d)) return null;
+        if (!s.air && !Layout::CanPlace(d)) {
+            if (Global::AISettings::Role == AiRole::TECH && (key == "t1conv" || key == "advconv")
+                && conversionDecision !is null) {
+                conversionDecision.placementRejected = true;
+                conversionDecision.placementRejectedDef = d.id;
+            }
+            return null;
+        }
         Option@ o = Option();
         o.key = key;
         @o.def = d;
@@ -445,11 +548,11 @@ namespace EcoPlanner {
         // ConverterParallel at a time and the surplus is read as at least half
         // the income, the pull being inflated by whatever is under construction
         // (played: one T2 converter in three and a half minutes at a full bank)
-        const bool floats = s.air ? s.eStor > 0.0f && s.eCur >= s.eStor * Global::RoleSettings::Tech::EcoConvertEnergyPercent : TechChain::EnergyFloats();
+        const bool floats = s.air ? s.eStor > 0.0f && s.eCur >= s.eStor * Global::RoleSettings::Tech::EcoConvertEnergyPercent : TechChain::EnergyBankFloats();
         const int par = floats ? Global::RoleSettings::Tech::ConverterParallel : 1;
         if (floats && surplus < s.eIncome * 0.5f) surplus = s.eIncome * 0.5f;
         if (Global::AISettings::Role == AiRole::TECH)
-            surplus = AiMin(surplus, TechConversionHeadroom());
+            surplus = AiMin(surplus, ConversionSupply());
         Option@ adv = Make("advconv", UnitHelpers::GetAdvEnergyConverterNameForSide(side), s, true);
         if (s.builderIsT2 && adv !is null && s.advConvsQueued < par
             && surplus >= adv.energyUse
@@ -699,14 +802,33 @@ namespace EcoPlanner {
         }
         CCircuitDef@ def = DefOf(key);
         if (def is null || !def.IsAvailable(ai.frame)) return null;
-        if (Global::AISettings::Role==AiRole::TECH && (key=="t1conv" || key=="advconv")
-            && TechConversionHeadroom()<aiEconomyMgr.GetEnergyUse(def)) return null;
+        const bool techConverter = Global::AISettings::Role==AiRole::TECH && (key=="t1conv" || key=="advconv");
+        if (techConverter) {
+            const ConversionReason admission = TechConversionAdmission(def, u);
+            if (admission != READY) { TraceConversion(u, admission); return null; }
+        }
         // INV-032 (D-105): no converter is ordered while the metal bank is full
         if ((key == "t1conv" || key == "advconv") && TechBuild::MetalFullLong())
             Invariants::Violation("INV-032", key, "a " + def.GetName() + " ordered with the metal bank full for " + int(Global::RoleSettings::Tech::PowerAheadSeconds) + " s");
         const Task::BuildType type = TypeOf(key);
+        if (Global::AISettings::Role == AiRole::TECH && (key == "fusion" || key == "afus")) {
+            if (!TechBuild::EnergyAllowed(def.GetName())) return null;
+            // One existing reactor commitment owns construction, including its
+            // travel to an unframed site. Retain the normal assist mechanism.
+            if (Builder::EnergyBuildTask !is null && !Builder::EnergyBuildTask.IsDead())
+                return Builder::EnqueueAssistEnergy(Task::Priority::HIGH, 60 * SECOND,
+                    Global::RoleSettings::Tech::EnergyFocusMaxAssists);
+        }
         const Task::Priority prio = (key == "fusion" || key == "afus") ? Task::Priority::HIGH : Task::Priority::NORMAL;
         IUnitTask@ t = Layout::Place(type, prio, def, TimeoutOf(key), u);
+        if (techConverter) {
+            if (conversionDecision !is null) {
+                conversionDecision.read = false; // an enqueue changes committed capacity immediately
+                conversionDecision.placementRejected = t is null;
+                conversionDecision.placementRejectedDef = t is null ? def.id : -1;
+            }
+            TraceConversion(u, t is null ? PLACEMENT : PENDING);
+        }
         if (t !is null && type == Task::BuildType::ENERGY) Builder::_SetEnergyBuildTask(t);
         return t;
     }

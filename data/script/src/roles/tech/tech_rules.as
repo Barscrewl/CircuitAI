@@ -325,7 +325,14 @@ namespace TechRules {
         float surplus = c.surplus;
         if (EnergyOutscalesMetal(c) && surplus < Global::RoleSettings::Tech::EcoConverterUse) surplus = Global::RoleSettings::Tech::EcoConverterUse;
         const string key = EcoPlanner::PickConverter(c.eco, surplus, why);
-        if (key.length() == 0) return null;
+        if (key.length() == 0) {
+            // An abstract supply gate is insufficient when the real chooser
+            // cannot offer work. Release the hold for this decision only.
+            if (EcoPlanner::conversionDecision !is null) EcoPlanner::conversionDecision.selectionRejected = true;
+            EcoPlanner::TraceConversion(c.u, EcoPlanner::conversionDecision !is null
+                && EcoPlanner::conversionDecision.placementRejected ? EcoPlanner::PLACEMENT : EcoPlanner::NO_OPTION);
+            return null;
+        }
         return ByKey(c, key);
     }
     // D-075, the owner's rule: metal income above spending while a structure
@@ -511,7 +518,10 @@ namespace TechRules {
     IUnitTask@ Evaluate(CCircuitUnit@ u)
     {
         if (AiPerfEnabled) AiPerfBegin(3);
+        EcoPlanner::ConversionDecision@ previous = EcoPlanner::conversionDecision;
+        EcoPlanner::BeginConversionDecision(u);
         IUnitTask@ result = EvaluateMeasured(u);
+        EcoPlanner::EndConversionDecision(previous);
         if (AiPerfEnabled) AiPerfEnd(3);
         return result;
     }

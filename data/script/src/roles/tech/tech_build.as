@@ -457,9 +457,21 @@ namespace TechBuild {
     {
         CCircuitDef@ d = ai.GetCircuitDef(defName);
         if (d is null || !d.IsAvailable(ai.frame) || !u.circuitDef.CanBuild(d)) return null;
-        if (type==Task::BuildType::CONVERT && Global::AISettings::Role==AiRole::TECH
-            && EcoPlanner::TechConversionHeadroom()<aiEconomyMgr.GetEnergyUse(d)) return null;
-        return Layout::Place(type, Task::Priority::HIGH, d, 300 * SECOND, u);
+        const bool converter = type==Task::BuildType::CONVERT && Global::AISettings::Role==AiRole::TECH;
+        if (converter) {
+            const EcoPlanner::ConversionReason reason = EcoPlanner::TechConversionAdmission(d, u);
+            if (reason != EcoPlanner::READY) { EcoPlanner::TraceConversion(u, reason); return null; }
+        }
+        IUnitTask@ task = Layout::Place(type, Task::Priority::HIGH, d, 300 * SECOND, u);
+        if (converter) {
+            if (EcoPlanner::conversionDecision !is null) {
+                EcoPlanner::conversionDecision.read = false;
+                EcoPlanner::conversionDecision.placementRejected = task is null;
+                EcoPlanner::conversionDecision.placementRejectedDef = task is null ? d.id : -1;
+            }
+            EcoPlanner::TraceConversion(u, task is null ? EcoPlanner::PLACEMENT : EcoPlanner::PENDING);
+        }
+        return task;
     }
     // the dedicated two: always their own structure (assist their own kind's
     // frame when the layout has no site). D-108: never anything else: with no

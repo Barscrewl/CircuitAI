@@ -50,6 +50,7 @@ done
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/spam_math.as" "$REPO/tests/spam_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/nuke_math.as" "$REPO/tests/nuke_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/heavy_rush_math.as" "$REPO/tests/heavy_rush_math_tests.as" || rc=1
+"$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/tech_economy_math.as" "$REPO/tests/tech_economy_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/gantry_math.as" "$REPO/tests/gantry_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/assist_math.as" "$REPO/tests/assist_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/transport_math.as" "$REPO/tests/transport_math_tests.as" || rc=1

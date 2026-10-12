@@ -56,6 +56,8 @@ def main():
     parser.add_argument('--profile', default='experimental_balanced')
     parser.add_argument('--game', default='Beyond All Reason test-31578-8247b61')
     parser.add_argument('--nuke', action='store_true')
+    parser.add_argument('--no-heavy', action='store_true', help='Verify ordinary first-AFUS progression without the heavy overlay')
+    parser.add_argument('--require-afus', action='store_true', help='Require physical completion of team 0\'s first AFUS')
     parser.add_argument('--supplied', action='store_true')
     parser.add_argument('--smoke', action='store_true', help='Profile/strategy VM check only; no batch timing claim')
     args = parser.parse_args()
@@ -74,7 +76,7 @@ def main():
         str(playtest.HERE / 'widgets/heavy_rush_watch.lua')] + options, check=True)
     profile = directory / 'AI/Skirmish/BARbTest/test/script' / args.profile / 'main.as'
     text = profile.read_text()
-    for key, value in {'Tech_Spam_Rush': '0.0f', 'Tech_T2_RUSH': '1.0f',
+    for key, value in {'Tech_Spam_Rush': '0.0f', 'Tech_T2_RUSH': '0.0f' if args.no_heavy else '1.0f',
                        'Tech_T3_RUSH': '0.0f', 'Tech_NUKE_RUSH': '1.0f' if args.nuke else '0.0f'}.items():
         text, count = re.subn(r'(float\s+' + key + r'\s*=\s*)[0-9.]+f', r'\g<1>' + value, text)
         if count != 1:
@@ -87,12 +89,24 @@ def main():
     if args.supplied:
         widget = directory / 'LuaUI/Widgets/heavy_rush_watch.lua'
         widget.write_text(widget.read_text().replace('local supplied = false', 'local supplied = true'))
+    check_name = 'tech/economy/heavy_smoke' if args.smoke else 'tech/economy/heavy_rush'
+    if args.no_heavy or args.require_afus:
+        checks = json.loads((playtest.HERE / 'checks' / (check_name + '.json')).read_text())
+        checks['stop_minute'] = float(args.minutes)
+        if args.no_heavy:
+            checks['expect'] = [item for item in checks['expect'] if item['key'] != 'heavy batch']
+        if args.require_afus:
+            checks['expect'].append({'key': 'first AFUS completed', 'pattern': r'\[Playtest\] finished (armafus|corafus|legafus) team 0',
+                                     'by_minute': float(args.minutes), 'scope': 'any'})
+        check_path = directory / 'heavy-checks.json'
+        check_path.write_text(json.dumps(checks, indent=2))
+        check_name = str(check_path)
     subprocess.run(command + ['launch', '--dir', str(directory)], check=True)
     result = subprocess.run(command + ['watch', '--dir', str(directory), '--role', 'TECH',
         '--minutes', args.minutes, '--wall-minutes', '20', '--keep-going', '--checks',
-        'tech/economy/heavy_smoke' if args.smoke else 'tech/economy/heavy_rush'])
+        check_name])
     log = (directory / 'infolog.txt').read_text(errors='replace')
-    summary = dict(directory=str(directory), supplied=args.supplied, nuke=args.nuke, side=args.side,
+    summary = dict(directory=str(directory), supplied=args.supplied, nuke=args.nuke, heavy=not args.no_heavy, side=args.side,
                    errors=re.findall(r'.*(?:: ERR\s+:|SCRIPT CRASH).*', log),
                    strategy_pass='[HeavyStrategyTest] PASS' in log and '[HeavyStrategyTest] FAIL' not in log,
                    watch_exit=result.returncode)
@@ -100,7 +114,7 @@ def main():
     summary.update(delivery_evidence(log))
     (directory / 'heavy-rush-result.json').write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
-    return 0 if (args.smoke or summary['batch_complete']) and summary['strategy_pass'] and not summary['errors'] and result.returncode == 0 else 1
+    return 0 if (args.smoke or args.no_heavy or summary['batch_complete']) and summary['strategy_pass'] and not summary['errors'] and result.returncode == 0 else 1
 
 
 if __name__ == '__main__':

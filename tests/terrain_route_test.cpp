@@ -1,5 +1,6 @@
 #include "circuit/terrain/LaneSolver.h"
 #include "circuit/terrain/TerrainCorridor.h"
+#include "circuit/terrain/TerrainPublication.h"
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -7,6 +8,22 @@
 #include <chrono>
 using namespace circuit::lane;
 static void Check(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+static void PublicationRevision() {
+    Grid a(64, 10.f), b=a;
+    Check(HeightRevision(1,a,b)==1,"unchanged recycled terrain retains content revision");
+    b[17]=11.f;
+    auto revision=HeightRevision(1,a,b);
+    Check(revision==2,"fine deformation increments revision");
+    a=b; b[17]=10.f;
+    Check(HeightRevision(revision,a,b)==3,"restored geometry does not reuse an old epoch");
+    Check(HeightRevision(0,a,b)==0,"wrapped revision remains uncacheable");
+    Check(HeightRevision(std::numeric_limits<std::uint64_t>::max(),a,b)==0,"wrap disables reuse");
+    b.push_back(10.f);
+    Check(HeightRevision(3,a,b)==4,"dimension changes invalidate");
+    a[0]=std::numeric_limits<float>::quiet_NaN(); b=a;
+    Check(HeightRevision(4,a,b)==5,"nonfinite snapshots fail closed");
+    std::cout<<"terrain publication mutation and wrap checks passed\n";
+}
 // Frozen full-field point-query contract: the optimized query must return the
 // identical ordered cell vector, including strict-cost ties and directed edges.
 static std::vector<int> FullRoute(const Terrain& t, int origin, int goal, int cls,
@@ -133,6 +150,7 @@ static void ExactResultCache() {
     std::cout<<"Exact route cache 2000 queries: uncached_ms="<<uncached<<" cached_ms="<<cached<<"\n";
 }
 int main() {
+    PublicationRevision();
     ExactResultCache();
     Differential();
     Terrain t; t.gw=20; t.gh=12;
