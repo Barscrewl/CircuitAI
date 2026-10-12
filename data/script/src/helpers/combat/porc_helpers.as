@@ -170,20 +170,6 @@ namespace PorcHelpers {
 		aiMilitaryMgr.SetPorcChain(side, true, DefaultChain(side, true));
 	}
 
-	// Move `name` to position `to` if it is present. The common role edit:
-	// pull a piece forward so a cluster reaches it sooner, or push it back.
-	void Prioritise(array<string>@ chain, const string &in name, uint to)
-	{
-		if (chain is null) return;
-		int at = -1;
-		for (uint i = 0; i < chain.length(); ++i) {
-			if (chain[i] == name) { at = int(i); break; }
-		}
-		if (at < 0) return;
-		chain.removeAt(uint(at));
-		chain.insertAt(to < chain.length() ? to : chain.length(), name);
-	}
-
 	// Substitute every occurrence of `from` with `to`, in place. Unlike Remove
 	// plus insertLast this keeps the position, which is the whole point when
 	// position is priority: the replacement is reached exactly as often as the
@@ -200,18 +186,6 @@ namespace PorcHelpers {
 			}
 		}
 		return n;
-	}
-
-	// Drop every entry named in `names`. For a role that should never build a
-	// class of defence at all.
-	void Remove(array<string>@ chain, const array<string>@ names)
-	{
-		if (chain is null || names is null) return;
-		for (uint i = 0; i < names.length(); ++i) {
-			for (uint j = 0; j < chain.length(); ++j) {
-				if (chain[j] == names[i]) { chain.removeAt(j); break; }
-			}
-		}
 	}
 
 	/**************************************************************************

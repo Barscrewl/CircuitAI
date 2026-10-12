@@ -15,9 +15,12 @@ def fields(text):
 
 def analyze(directory):
     log=directory/'infolog.txt'
-    result={key:[] for key in ('minutes','scopes','phases','labels','gc','orders','order_details','origins','roster','teams','game_over','deaths','errors')}
+    result={key:[] for key in ('minutes','scopes','phases','labels','gc','orders','order_details','origins','command_joint','command_units','command_unit','command_traffic','wait_removals','roster','teams','game_over','deaths','errors')}
     tags={'SkirmishPerf':'minutes','PerfPhase':'phases','PerfLabel':'labels','PerfGC':'gc',
           'AirOrders':'orders','AirOrdersDetail':'order_details','CommandOrigin':'origins',
+          'CommandJoint':'command_joint','CommandUnits':'command_units','CommandUnit':'command_unit',
+          'CommandTraffic':'command_traffic',
+          'CommandWaitRemoval':'wait_removals',
           'FullMatchRoster':'roster','FullMatchTeam':'teams','FullMatchEnd':'game_over','SkirmishPerfTeamDied':'deaths'}
     reserve,failed,inv=Counter(),Counter(),Counter()
     last_frame=0

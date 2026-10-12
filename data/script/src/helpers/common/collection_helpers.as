@@ -1,4 +1,4 @@
-// Generic collection/dictionary helpers
+
 
 // get(?&out) may use a conversion temporary. A failed lookup does not promise
 // to preserve the caller's initializer; choose the fallback AFTER the call.
@@ -8,11 +8,4 @@ int DictIntOr(const dictionary &in d, const string &in key, int fallback=0)
 {
     int value=0;
     return d.get(key,value) ? value : fallback;
-}
-
-int DictSize(dictionary@ d)
-{
-    if (d is null) return 0;
-    array<string>@ keys = d.getKeys();
-    return (keys is null ? 0 : keys.length());
 }

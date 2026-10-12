@@ -21,8 +21,16 @@ function widget:UnitDestroyed(id)
  builtBy[id]=nil
 end
 function widget:GameFrame(f)
- -- GlobalLOS reveals enemies to the AI too; preserve fog in natural runs.
- if cfg.supplied and f==150 then Spring.SendCommands({"cheat 1","globallos"}) end
+ if cfg.overflow and f%900==0 then
+  log("visibility radar="..tostring(Spring.IsPosInLos(6900,0,9700,0)))
+ end
+ -- GlobalLOS freezes engine sight-map updates (ILosType::UpdateUnit).
+ -- Capacity admission needs the live map, so its overflow fixture uses real
+ -- forward radars below. Preserve historical seaplane comparison fixtures.
+ if cfg.supplied and f==150 then
+  Spring.SendCommands("cheat 1")
+  if not cfg.overflow then Spring.SendCommands("globallos") end
+ end
  if cfg.supplied~=false then
   if f==300 then give(n[1],5824,10736) end
   if f==330 then give(n[5],6400,11400) end
@@ -36,6 +44,13 @@ function widget:GameFrame(f)
   -- an override of the role's economic thresholds. Naval fixtures are kept
   -- away from the tested home berth and still require water at each site.
   if f==7200 then
+   -- This is a capacity-admission test, not a scout benchmark. Give real
+   -- allied LOS at prospective forward berths; GlobalLOS disables the
+   -- engine's live sight-map updates. Keep the production fog gate.
+   if cfg.overflow then
+    for i=0,3 do give("armfrad",6450+i*450,9700) end
+    log("supplied forward berth vision for overflow-capacity fixture")
+   end
    local converter=({armada="armuwmmm",cortex="coruwmmm",legion="leganavaleconv"})[cfg.side]
    for i=0,11 do
     give(n[5],8000+(i%4)*192,10800+math.floor(i/4)*192)

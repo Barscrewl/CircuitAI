@@ -47,11 +47,14 @@ public:
 	RecruitType GetRecruitType() const { return recruitType; }
 	void SetRepeat(bool value) { repeat = value; }
 	bool IsRepeat() const { return repeat; }
+	void SetCompletionRefill(bool value) { completionRefill = value; }
 
 private:
 	RecruitType recruitType;
 	float sqradius;
 	bool repeat = false;
+	bool completionRefill = false;
+	int lastBuildCommandFrame = -1;
 };
 
 } // namespace circuit

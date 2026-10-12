@@ -5,7 +5,7 @@ import re
 
 def audit(text, case):
     spec = case['progression_audit']
-    spawns, detected, boats, ammo = {}, {}, {}, {}
+    spawns, detected, boats, ammo, deaths = {}, {}, {}, {}, {}
     for line in text.splitlines():
         if '[SeaArena]' not in line:
             continue
@@ -21,6 +21,8 @@ def audit(text, case):
             boats.setdefault(unit, []).append(row)
         elif ' protection ' in line:
             ammo[unit] = max(ammo.get(unit, 0), int(row['stockpile']))
+        elif ' death ' in line:
+            deaths[unit] = row
     failures, measurements = [], {}
     if spec['kind'] == 'shores':
         yards = [u for u, r in spawns.items() if r['team'] == '1' and r['unit'] == spec['unit']]
@@ -30,6 +32,38 @@ def audit(text, case):
         for u in yards:
             if detected.get(u, math.inf) > spec['by_seconds']:
                 failures.append(f'Yard {u} not discovered before shoreline deadline')
+    elif spec['kind'] == 'scout_travel':
+        scouts = [u for u, r in spawns.items() if r['team'] == '0' and r['unit'] == spec['unit']]
+        if len(scouts) != spec['count']:
+            failures.append('Wrong fixed scout population')
+        distances = {}
+        for unit in scouts:
+            samples = boats.get(unit, [])
+            positions = [(float(row['x']), float(row['z'])) for row in samples]
+            distances[unit] = max((math.dist(positions[0], p) for p in positions), default=0)
+            if unit in deaths or distances[unit] < spec['minimum_travel']:
+                failures.append(f'Scout {unit} failed surviving-travel acceptance')
+        measurements['travel_from_first_sample'] = distances
+    elif spec['kind'] == 'scout_release':
+        scouts = [u for u, r in spawns.items() if r['team'] == '0' and r['unit'] == spec['unit']]
+        kills = [int(r['frame']) for r in deaths.values()
+                 if r.get('unit') == spec['target'] and r.get('attackerTeam') == '0']
+        if len(scouts) != spec['count'] or not kills:
+            return ['Missing supplied scouts or confirmed target kill'], measurements
+        release_after = min(kills) + spec['release_seconds'] * 30
+        frames = {}
+        for u in scouts:
+            if u in deaths:
+                failures.append(f'Scout {u} died')
+            for row in boats.get(u, []):
+                if int(row['frame']) >= release_after and row.get('target') == '-1':
+                    frames.setdefault(int(row['frame']), {})[u] = (float(row['x']), float(row['z']))
+        spans = [max(math.dist(a, b) for a in positions.values() for b in positions.values())
+                 for positions in frames.values() if len(positions) == len(scouts)]
+        measurements['post_kill_max_spread'] = max(spans, default=0)
+        measurements['kill_seconds'] = min(kills) / 30
+        if not spans or max(spans) < spec['minimum_spread']:
+            failures.append('Scouts did not clear their targets and disperse after the kill')
     else:
         supports = [u for u, r in spawns.items() if r['team'] == '0' and r['unit'] == spec['support']]
         flags = [u for u, r in spawns.items() if r['team'] == '0' and r['unit'] == spec['flagship']]

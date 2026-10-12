@@ -132,7 +132,10 @@ std::vector<int> Solver::PointRoute(const Point& from, const Point& to, int cls,
     auto& previous = ws.previous;
     if (threatVersion == 0 || obstacles != nullptr || ws.version != threatVersion
         || ws.terrain != &height || ws.threat != &threat || penalty.size() != height.size()
-        || ws.landCost != landCost || ws.waterCost != waterCost || ws.weight != threatWeight || ws.ceiling != maxWaterThreat) {
+        || ws.landCost != landCost || ws.waterCost != waterCost || ws.weight != threatWeight || ws.ceiling != maxWaterThreat
+        || ws.surfaceWeight != mountainSurfaceWeight) {
+      ws.routes.clear(); ws.routeOrder.clear(); ws.nextRoute = 0;
+      ws.surfaceWeight = mountainSurfaceWeight;
       penalty.resize(height.size()); blocked.resize(height.size());
       for (size_t c = 0; c < height.size(); ++c) {
         const float value = std::isfinite(threat[c]) ? std::max(0.f, threat[c]) : 1e9f;
@@ -147,14 +150,34 @@ std::vector<int> Solver::PointRoute(const Point& from, const Point& to, int cls,
     // Do not mutate cached blocked cells: an escape exception belongs to this
     // query only, including corner checks and origin==goal.
     if (goal != origin && blocked[goal]) return {};
+    // The solver observes grid cells, not sub-cell coordinates. Reuse only an
+    // identical directed query under the exact immutable terrain/cost epoch.
+    // This skips a search, never samples threats less often or changes ties.
+    // Lookup O(log K), returned path copy O(P), bounded O(K*P) storage. The
+    // caller retains terrain lifetime; dynamic overlays bypass this cache.
+    const bool reusable = threatVersion != 0 && obstacles == nullptr;
+    const std::array<int,3> key{origin,goal,cls};
+    if (reusable) {
+        const auto found = ws.routes.find(key);
+        if (found != ws.routes.end()) return found->second;
+    }
+    const auto retain = [&](const std::vector<int>& path) {
+        if (!reusable) return;
+        if (ws.routes.size() == PointWorkspace::maximumCachedRoutes) {
+            ws.routes.erase(ws.routeOrder[ws.nextRoute]);
+            ws.routeOrder[ws.nextRoute] = key;
+            ws.nextRoute = (ws.nextRoute + 1) % PointWorkspace::maximumCachedRoutes;
+        } else ws.routeOrder.push_back(key);
+        ws.routes.emplace(key,path);
+    };
     std::vector<int> result;
     DijkstraMulti({goal}, penalty, cls, nullptr, distance, previous, true, 0.f, &blocked,
         0.f, true, nullptr, origin, &ws.search, origin);
-    if (!ws.search.Seen(origin) || distance[origin] == std::numeric_limits<float>::max()) return {};
+    if (!ws.search.Seen(origin) || distance[origin] == std::numeric_limits<float>::max()) { retain(result); return {}; }
     int at = origin;
     for (size_t step = 0; step < height.size(); ++step) {
         result.push_back(at);
-        if (at == goal) return result;
+        if (at == goal) { retain(result); return result; }
         at = previous[at];
         if (at < 0) break;
     }

@@ -4,21 +4,9 @@ namespace ProductionMath {
     // Zero/One are integer identities; ZeroValue/UnitValue are float identities.
     const float ZeroValue = 0.0f;
     const int Zero = 0;
-    const float ConstructorBankCostFraction = 0.5f;
-    const float ConstructorMetalIncomeShare = 0.35f;
-    const float ConstructorMetalReserve = 100.0f;
-    const float ConstructorFundingSeconds = 30.0f;
-    const float ConstructorEnergyIncomeShare = 0.3f;
-    const float ConstructorEnergyReserve = 200.0f;
     const float UnitValue = 1.0f;
     const float FloatingStorageFraction = 0.75f;
     const float MinimumFloatingMetal = 300.0f;
-    const float RetainedStorageFraction = 0.5f;
-    const float SupportMetalIncomeShare = 0.5f;
-    const float SupportMetalReserve = 150.0f;
-    const float SupportFundingSeconds = 20.0f;
-    const float SupportEnergyIncomeShare = 0.25f;
-    const float SupportEnergyReserve = 300.0f;
     const int One = 1;
     const float DefaultReachMargin = 16.0f;
     const int ClusterColumnCount = 3;
@@ -36,21 +24,12 @@ namespace ProductionMath {
     {
         return completedAdvancedFusions || income - retiringOutput >= pull * margin;
     }
-    bool StrikeReady(float homeValue, float enemyAirValue, bool intrusion, float ratio)
-    {
-        return !intrusion && Valid(homeValue) && homeValue > ZeroValue && Valid(enemyAirValue)
-            && Valid(ratio) && ratio > ZeroValue && homeValue >= enemyAirValue * ratio;
-    }
+
     bool ConstructorTurn(int consecutive, int maximum)
     {
         return consecutive >= Zero && maximum > Zero && consecutive < maximum;
     }
-    bool ConstructorFunded(float metalBank, float energyBank, float metalIncome, float energyIncome, float metalCost, float energyCost)
-    {
-        return Valid(metalCost) && metalCost > ZeroValue && metalBank >= metalCost * ConstructorBankCostFraction
-            && Funded(metalBank, metalIncome * ConstructorMetalIncomeShare, ConstructorMetalReserve, ZeroValue, metalCost, ConstructorFundingSeconds)
-            && Funded(energyBank, energyIncome * ConstructorEnergyIncomeShare, ConstructorEnergyReserve, ZeroValue, energyCost, ConstructorFundingSeconds);
-    }
+
     bool AssistUseful(float assigned, float work, float progress, float seconds)
     {
         if (!Valid(assigned) || !Valid(work) || !Valid(progress) || progress >= UnitValue
@@ -67,20 +46,7 @@ namespace ProductionMath {
         return Valid(bank) && Valid(storage) && storage > ZeroValue
             && bank >= (storage * FloatingStorageFraction > MinimumFloatingMetal ? storage * FloatingStorageFraction : MinimumFloatingMetal);
     }
-    float ConstructionPower(float income, float bank, float storage, float powerPerMetal, float floatingMetalMultiplier, float drainSeconds)
-    {
-        if (!Valid(income) || !Valid(bank) || !Valid(storage) || !Valid(powerPerMetal)
-            || !Valid(floatingMetalMultiplier) || !Valid(drainSeconds) || drainSeconds <= ZeroValue) return ZeroValue;
-        const bool floating = MetalFloating(bank, storage);
-        const float draw = floating && bank > storage * RetainedStorageFraction ? (bank - storage * RetainedStorageFraction) / drainSeconds : ZeroValue;
-        return (income + draw) * powerPerMetal * (floating ? floatingMetalMultiplier : UnitValue);
-    }
-    bool SupportQueueReady(int pending, int parallel, float metalBank, float energyBank, float metalIncome, float energyIncome, float metalCost, float energyCost)
-    {
-        if (pending < Zero || parallel <= Zero || pending >= parallel || !Valid(metalCost) || !Valid(energyCost)) return false;
-        return Funded(metalBank, metalIncome * SupportMetalIncomeShare, SupportMetalReserve, float(pending) * metalCost, metalCost, SupportFundingSeconds)
-            && Funded(energyBank, energyIncome * SupportEnergyIncomeShare, SupportEnergyReserve, float(pending) * energyCost, energyCost, SupportFundingSeconds);
-    }
+
     bool LabIncomeReady(float minimum, bool fullWindow, float threshold, float bank, float cost)
     {
         if (!Valid(minimum) || !Valid(threshold) || !Valid(bank) || !Valid(cost) || cost <= ZeroValue || threshold <= ZeroValue) return false;
@@ -132,13 +98,7 @@ namespace ProductionMath {
         if (target < Zero || otherDefenders < Zero || committedElsewhere < Zero) return Zero;
         return (target > otherDefenders ? target - otherDefenders : Zero) + committedElsewhere;
     }
-    int WorkforceTarget(float targetWork, float unitWork, int floor, int maximumCount)
-    {
-        if (!Valid(targetWork) || !Valid(unitWork) || unitWork <= ZeroValue || floor < Zero || maximumCount < floor) return Zero;
-        for (int unitCount = floor; unitCount < maximumCount; ++unitCount)
-            if (float(unitCount) * unitWork >= targetWork) return unitCount;
-        return maximumCount;
-    }
+
     float ClusterAcross(int slot, float width) { return float(slot % ClusterColumnCount - One) * width; }
     float ClusterAlong(int slot, float depth) { return (float(slot / ClusterColumnCount) - ClusterRowCenter) * depth; }
     float ClusterDiameterSquared(float width, float depth) { return ClusterWidthSquaredFactor * width * width + ClusterDepthSquaredFactor * depth * depth; }
@@ -168,12 +128,7 @@ namespace ProductionMath {
         if (energyCost > ZeroValue && rate * energyCost > energy) rate = energy / energyCost;
         return rate;
     }
-    // Costs and work are totals over a count-weighted batch, not averaged rates.
-    float BatchRate(float work, float power, float startupDelaySeconds, int count)
-    {
-        if (count <= Zero) return ZeroValue;
-        return Rate(work, power, startupDelaySeconds * float(count));
-    }
+
     bool Funded(float bank, float income, float reserve, float committed, float cost, float seconds)
     {
         if (!Valid(bank) || !Valid(income) || !Valid(reserve) || !Valid(committed) || !Valid(cost) || !Valid(seconds)) return false;

@@ -1,4 +1,5 @@
 #include "terrain/RangedGeometry.h"
+#include "terrain/HeightMapGeometry.h"
 #include "ranged_legacy_index.h"
 #include <cassert>
 #include <chrono>
@@ -10,6 +11,29 @@
 using namespace circuit::ranged;
 int main()
 {
+    // KI-571: projected firing positions at every edge/corner must sample a
+    // valid cell; interior arithmetic and invalid-input rejection are exact.
+    for (float x : {-10000.f, -1.f, 0.f, 15.5f, 31.5f, 32.f, 10000.f}) {
+        for (float z : {-10000.f, -1.f, 0.f, 7.5f, 23.5f, 24.f, 10000.f}) {
+            float boundedX=x, boundedZ=z;
+            assert(circuit::terrain_geometry::BoundHeightPoint(boundedX,boundedZ,4,12,8));
+            const int index=int(boundedZ)/8*4+int(boundedX)/8;
+            assert(index>=0 && index<12);
+            if(x>=0 && x<32 && z>=0 && z<24) assert(x==boundedX && z==boundedZ);
+        }
+    }
+    for(float invalid : {std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()}) {
+        float x=invalid,z=1;
+        assert(!circuit::terrain_geometry::BoundHeightPoint(x,z,4,12,8));
+        x=1; z=invalid;
+        assert(!circuit::terrain_geometry::BoundHeightPoint(x,z,4,12,8));
+    }
+    float x=1,z=1;
+    assert(!circuit::terrain_geometry::BoundHeightPoint(x,z,0,12,8));
+    assert(!circuit::terrain_geometry::BoundHeightPoint(x,z,4,0,8));
+    assert(!circuit::terrain_geometry::BoundHeightPoint(x,z,4,11,8));
+    assert(!circuit::terrain_geometry::BoundHeightPoint(x,z,4,12,0));
     // Queue the exact formation slot without toggling off a nearby grid
     // endpoint. Recoil uses a strict 17-elmo positional cancellation radius.
     std::vector<Point> route;
@@ -48,6 +72,11 @@ int main()
     std::uniform_real_distribution<float> coordinate(-8192,8192);
     std::vector<Point> points(4096);
     SpatialIndex index;
+    assert(index.CanQuery({-100.f,100.f},1000.f));
+    assert(!index.CanQuery({std::numeric_limits<float>::quiet_NaN(),0.f},1.f));
+    assert(!index.CanQuery({0.f,0.f},std::numeric_limits<float>::infinity()));
+    assert(!index.CanQuery({std::numeric_limits<float>::max(),0.f},1.f));
+    assert(!index.CanQuery({0.f,0.f},-1.f));
     index.Configure(12288,12288);
     ranged_reference::SpatialIndex old;
     for(size_t i=0;i<points.size();++i) { points[i]={coordinate(rng),coordinate(rng)}; index.Add(points[i],int(i)); old.Add(points[i],int(i)); }
@@ -98,5 +127,33 @@ int main()
         std::iota(ids.begin(),ids.end(),0); ids[129]=special; auto sorted=ids;
         std::sort(sorted.begin(),sorted.begin()+256); ordered.Sort(ids,256); assert(ids==sorted);
     }
-    std::cout << "ranged geometry: ordered legacy/brute-force spatial oracle, early exits, generations, overflow and ID sort PASS\n";
+    // SEA static envelopes: different weapon reaches and negative margins
+    // must retain the old strict boundary. Rebuild publications between rounds.
+    SpatialIndex waterWeapons;
+    struct WaterWeapon { Point point; float range; };
+    for (int publication=0; publication<12; ++publication) {
+        waterWeapons.Clear();
+        std::vector<WaterWeapon> weapons;
+        float largest=0;
+        for (int index=0; index<200; ++index) {
+            const float range=float(rng()%2400);
+            weapons.push_back({{coordinate(rng),coordinate(rng)},range});
+            waterWeapons.Add(weapons.back().point,index);
+            largest=std::max(largest,range);
+        }
+        for (int query=0; query<300; ++query) {
+            const Point point{coordinate(rng),coordinate(rng)};
+            const float margin=float(int(rng()%1200)-600), formation=float(rng()%1000);
+            const auto within=[&](int index) {
+                const auto& weapon=weapons[index];
+                const float radius=(weapon.range+margin)+formation;
+                const float x=point.x-weapon.point.x,z=point.z-weapon.point.z;
+                return x*x+z*z<radius*radius;
+            };
+            bool legacy=false;
+            for (int index=0; index<int(weapons.size()); ++index) legacy=legacy || within(index);
+            assert(waterWeapons.Any(point,(largest+std::fabs(margin))+std::fabs(formation),within)==legacy);
+        }
+    }
+    std::cout << "ranged geometry: ordered legacy/brute-force spatial oracle, early exits, generations, overflow, weapon envelopes and ID sort PASS\n";
 }

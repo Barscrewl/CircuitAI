@@ -1,4 +1,5 @@
 """Serial native GUARD regression: supplied recovery fixture or ordinary SEA."""
+from script_settings import role_script_path
 import argparse
 import hashlib
 import json
@@ -44,7 +45,7 @@ def main():
         # SEA intentionally releases guards from idle constructors/factories.
         # Fixture-owned native tasks must not compete with that role policy.
         # Natural tests retain it unchanged, including ordinary guard cleanup.
-        sea=src/'roles/sea_build.as';text=sea.read_text()
+        sea=role_script_path(src, 'sea_build');text=sea.read_text()
         needle='CCircuitUnit@ target=ai.GetTeamUnit(t.GetGuardTargetId());'
         assert text.count(needle)==1
         sea.write_text(text.replace(needle,'if (GuardProbe::Owns(u.id)) continue;\n            '+needle))

@@ -17,6 +17,13 @@ class AIFloat3 { int x; float distance2D(const AIFloat3 &in p) const { return fl
 class CCircuitDef { int id; float costM; bool air; bool CanBuild(CCircuitDef@ d) { return d.id!=4; } }
 class CCircuitUnit { CCircuitDef@ circuitDef; AIFloat3 GetPos(int f) { return AIFloat3(); } }
 class IUnitTask { int id; }
+namespace Task { enum BuildType { GEO } }
+class IBuilderTask : IUnitTask { Task::BuildType GetBuildType() { return Task::GEO; } }
+// Geothermal handoff is outside this cache-equivalence oracle's role domain.
+namespace Team { namespace GeoRelease {
+    IUnitTask@ Work(CCircuitUnit@ unit, const AIFloat3 &in position) { return null; }
+    bool Waiting(const AIFloat3 &in position) { return false; }
+}}
 class Slot { int role; AIFloat3 pos; bool dead; int orderedFrame; int standFrame; }
 class WCluster { int kind; bool stale; AIFloat3 pos; array<Slot@> slots; }
 class AI { int frame=12000; } AI ai;
@@ -40,6 +47,9 @@ class Builder {
 } Builder aiBuilderMgr;
 CCircuitDef@ Def(int role) { return role==0?null:defs[role]; }
 bool Active() { return true; }
+// This differential suite isolates pending-order caching after policy admission.
+// TECH's defense-release gate is exercised by the conversion runtime fixture.
+bool PlacementReleased(int kind, const AIFloat3 &in position) { return true; }
 float MetalIncome() { return income; }
 float Gate(int kind) { return kind==2?150:0; }
 bool SuperStartable(WCluster@ c) { return income>=300; }
@@ -102,12 +112,15 @@ void Advance() {
 def generate():
     result = COMMON
     for name, path in (("Old", ROOT/'tests/fixtures/performance/weapon_work_before.as'),
-                       ("New", ROOT/'data/script/src/roles/tech_weapons.as')):
+                       ("New", ROOT/'data/script/src/roles/tech/tech_weapons.as')):
         source = path.read_text(encoding='utf-8')
         body = function(source, 'int OutstandingOrders()') + '\n' + function(source, 'IUnitTask@ Work(')
         body = re.sub(r'if \(AiPerfEnabled\) AiPerf\w+\([^;]*\);', '', body)
         body = re.sub(r'GenericHelpers::LogUtil\([^;]*;', 'RecordBudgetLog();', body)
-        body = body.replace('"art2"', '2').replace('"super"', '3')
+        # The legacy fixture has no geothermal/special roles. Preserve its
+        # measured cache domain rather than inventing a handoff simulation.
+        body = re.sub(r'\s*if \(s.role == "special"[^\n]*\n', '\n', body)
+        body = body.replace('"art2"', '2').replace('"super"', '3').replace('"geoartillery"', '6')
         body = body.replace('OutstandingOrders()', name+'OutstandingOrders()').replace('IUnitTask@ Work(', 'IUnitTask@ '+name+'Work(')
         start = body.index('{')+1
         body = body[:start]+' ++countCalls; '+body[start:]
@@ -116,8 +129,8 @@ def generate():
 
 
 TESTS = r'''
-void test_weapon_work_equivalence() {
-    for(uint n=1;n<=20000;++n) {
+void CompareWeaponWork(uint first, uint last) {
+    for(uint n=first;n<=last;++n) {
         Prepare(n); int oldCount=OldOutstandingOrders();
         IUnitTask@ oldTask=OldWork(unit); array<int>@ before=Snapshot(oldTask);
         @oldTask=OldWork(unit); array<int>@ again=Snapshot(oldTask);
@@ -136,6 +149,12 @@ void test_repeated_read_work() {
     Prepare(1,true); Check(NewWork(unit) is null); Check(countCalls==1);
 }
 '''
+# Keep all 20,000 seeds, with GC opportunities between engine callbacks.
+# A single giant VM call otherwise retains millions of deferred class objects
+# and hits AngelScript's debug reference-count ceiling before checking policy.
+TESTS += '\n'.join(
+    f'void test_weapon_work_equivalence_{index}() {{ CompareWeaponWork({index*1000+1}, {(index+1)*1000}); }}'
+    for index in range(20))
 BENCH = r'''
 void bench_0_old() { Prepare(1,true);for(int i=0;i<1000;++i)Check(OldWork(unit) is null);Check(countCalls==32000); }
 void bench_1_new() { Prepare(1,true);for(int i=0;i<1000;++i)Check(NewWork(unit) is null);Check(countCalls==1000); }

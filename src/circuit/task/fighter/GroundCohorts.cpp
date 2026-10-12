@@ -5,6 +5,7 @@
 #include "unit/enemy/EnemyUnit.h"
 #include "spring/SpringUnit.h"
 #include "terrain/TerrainManager.h"
+#include "terrain/HeightMapGeometry.h"
 #include "module/MilitaryManager.h"
 #include "setup/SetupManager.h"
 #include "util/Utils.h"
@@ -24,7 +25,7 @@ void CRangedWorld::JoinCohort(CCircuitUnit* unit)
     const auto* def=unit->GetCircuitDef(); const auto& policy=def->GetRangedPolicy();
     const auto pos=unit->GetPos(circuit->GetLastFrame());
     int chosen=-1; float nearest=policy.cohortRadius*policy.cohortRadius;
-    formations.Query(P(pos),policy.cohortRadius,[&](int other) {
+    const auto consider=[&](int other) {
         auto m=membership.find(other); if(m==membership.end()) return;
         auto& g=cohorts.at(m->second);
         if(g.members.size()>=size_t(policy.cohortSize)) return;
@@ -37,13 +38,23 @@ void CRangedWorld::JoinCohort(CCircuitUnit* unit)
         }
         const float d=pos.SqDistance2D(ally->GetPos(circuit->GetLastFrame()));
         if(d<nearest || (d==nearest && m->second<chosen)) { nearest=d; chosen=m->second; }
-    });
+    };
+    // Formation membership follows actual nearby bodies, not their reserved
+    // destination slots. A travelling cohort may reserve a point far ahead;
+    // using that index strands newly produced screens in singleton groups.
+    // Keep the legacy lookup for units that have not opted into formations.
+    if(policy.formationPosition!=RangedPolicy::FormationPosition::NONE) {
+        EnsureAllies();
+        allies.Query(P(pos),policy.cohortRadius,[&](int index) { consider(friends[index].id); });
+    } else
+        formations.Query(P(pos),policy.cohortRadius,consider);
     if(chosen<0) chosen=nextCohort++;
-    auto& group=cohorts[chosen]; group.members.push_back(id); group.frame=-1;
+    auto& group=cohorts[chosen]; group.members.push_back(id);
+    InvalidateCohortPlans(group);
     membership[id]=chosen;
 }
 
-const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
+const CRangedWorld::CohortPlan& CRangedWorld::PlanIndependentCohort(CCircuitUnit* unit)
 {
     const int now=circuit->GetLastFrame(), id=unit->GetId();
     const auto* def=unit->GetCircuitDef(); const auto& policy=def->GetRangedPolicy();
@@ -57,7 +68,7 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
     // Do not use the shared plan's last frame as this clock: a follower can
     // refresh it immediately before the leader and starve merging forever.
     // Full cohorts cannot accept a merge, so avoid their local query entirely.
-    if(current.members.front()==id && current.members.size()<size_t(policy.cohortSize) && now>=current.nextMerge) {
+    if(current.formationPartner<0 && current.members.front()==id && current.members.size()<size_t(policy.cohortSize) && now>=current.nextMerge) {
         current.nextMerge=now+60;
         int merge=-1;
         const auto pos=unit->GetPos(now);
@@ -65,7 +76,7 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
             auto m=membership.find(other);
             if(m==membership.end() || m->second>=key) return;
             auto& g=cohorts.at(m->second); auto* ally=circuit->GetTeamUnit(other);
-            if(!ally || ally->GetCircuitDef()!=def || ally->GetArea()!=unit->GetArea()
+            if(g.formationPartner>=0 || !ally || ally->GetCircuitDef()!=def || ally->GetArea()!=unit->GetArea()
                 || current.members.size()+g.members.size()>size_t(policy.cohortSize)
                 || ally->GetPos(now).SqDistance2D(pos)>policy.cohortRadius*policy.cohortRadius) return;
             if(policy.engagementSeconds>0.f) {
@@ -113,6 +124,7 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
     // to admit the battle; an ally being hit is not permission to charge DGuns.
     AIFloat3 alliedFront=g.center; int engagedAllies=0;
     if(policy.supportAllies) {
+        EnsureAllies();
         AIFloat3 sum;
         allies.Query(P(g.center),policy.cohortRadius,[&](int i) {
             const auto& f=friends[i];
@@ -191,6 +203,9 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
     const auto& capabilities=CapabilitiesFor(unit->GetCircuitDef());
     float range=def->GetMaxRange(CCircuitDef::RangeType::LAND);
     if(!capabilities.weapons.empty()) range=Range(capabilities.weapons.front(),g.center,enemy.pos);
+    // A sustained campaign still selects fresh legal objectives here, but its
+    // fixed-loss contract supersedes the ordinary exposure estimator.
+    if(policy.sustainedRush && rushes.Active(id)) return g;
     if(policy.engagementSeconds>0.f) { AssessCohort(unit,g,enemy,range); return g; }
     const float firing=range*policy.rangeFraction;
     float hostileValue=0.f, danger=0.f; bool outranged=false;
@@ -265,6 +280,88 @@ const CRangedWorld::CohortPlan& CRangedWorld::PlanCohort(CCircuitUnit* unit)
     return g;
 }
 
+void CRangedWorld::ApplyRush(CCircuitUnit* unit, CohortPlan& g)
+{
+    const auto& p=unit->GetCircuitDef()->GetRangedPolicy();
+    if(!p.sustainedRush) return;
+    const int now=circuit->GetLastFrame(), id=unit->GetId();
+    // Campaign liveness is checked even within an already planned frame:
+    // destruction and task handover can occur between two shooters.
+    int key=rushes.Find(id);
+    if(key>=0 && (!rushes.Active(id) || g.target<0)) {
+        const auto* c=rushes.Get(key);
+        circuit->LOG("RUSH: end campaign=%d initial=%u remaining=%u reason=%s",key,
+            c->initial,c->remaining,g.target<0?"clear":"losses");
+        rushes.Finish(key,now); key=-1;
+    }
+    g.sustainedRush=false; g.rushFallback=rushes.Cooldown(id)>now;
+    if(key<0 && !g.rushFallback && g.rushFrame!=now && g.target>=0
+        && g.center.SqDistance2D(g.focus)<std::pow(p.sustainedRushRadius,2.f)) {
+        g.rushFrame=now;
+        EnsureAllies(); rushCandidates.clear();
+        float own=0.f, hostile=0.f; unsigned fronts=0; bool present=false;
+        int join=-1; float nearest=p.sustainedRushRadius*p.sustainedRushRadius;
+        // Reuse the legal snapshot: O(B + F_local log N + E_local), for B
+        // visited buckets and N owned units (GetTeamUnit is a map lookup).
+        // Once/cohort/frame; committed lookup is expected O(1). No census.
+        allies.Query(P(g.center),p.sustainedRushRadius,[&](int index) {
+            const auto& f=friends[index];
+            if(!f.def || f.pos.SqDistance2D(g.center)>p.sustainedRushRadius*p.sustainedRushRadius
+                || membership.find(f.id)==membership.end()
+                || rushes.Cooldown(f.id)>now) return;
+            const auto& other=f.def->GetRangedPolicy();
+            auto* live=circuit->GetTeamUnit(f.id);
+            if(!other.sustainedRush || other.formationFamily!=p.formationFamily
+                || !live || live->IsDead() || live->GetArea()!=unit->GetArea()) return;
+            const int active=rushes.Find(f.id);
+            if(active>=0) {
+                const float distance=f.pos.SqDistance2D(g.center);
+                if(rushes.Active(f.id) && (distance<nearest || (distance==nearest && (join<0 || active<join)))) {
+                    nearest=distance; join=active;
+                }
+                return;
+            }
+            const bool front=other.formationPosition==RangedPolicy::FormationPosition::FRONT;
+            rushCandidates.push_back({f.id,front});
+            present=present || f.id==id;
+            fronts+=front; own+=f.def->GetCostM();
+        });
+        if(join>=0) {
+            rushes.Reinforce(join,rushCandidates); key=rushes.Find(id);
+        } else if(present && float(fronts)>=p.sustainedRushMinFront
+            && p.formationPosition==RangedPolicy::FormationPosition::FRONT) {
+            const float extent=p.sustainedRushRadius+largestCohortHazard;
+            bool unknown=false;
+            enemies.Query(P(g.center),extent,[&](int index) {
+                const auto& c=contacts[index];
+                if(!c.def && c.pos.SqDistance2D(g.center)<=p.sustainedRushRadius*p.sustainedRushRadius) unknown=true;
+                if(c.def && !c.def->IsAbleToFly() && c.pos.y>=-20.f
+                    && c.pos.SqDistance2D(g.center)<=std::pow(p.sustainedRushRadius+c.hazardRadius,2.f))
+                    hostile+=c.cost;
+            });
+            const float aggression=circuit->GetMilitaryManager()->GetAggression();
+            if(!unknown && hostile>0.f && rush::Score(own,hostile,p.sustainedRushRatio,aggression)>=0.f) {
+                key=rushes.Start(rushCandidates,p.sustainedRushRemaining,
+                    int(p.sustainedRushCooldown*FRAMES_PER_SEC));
+                circuit->LOG("RUSH: start campaign=%d initial=%u members=%u own=%.0f enemy=%.0f aggression=%.3f score=%.3f",
+                    key,fronts,unsigned(rushCandidates.size()),own,hostile,aggression,
+                    rush::Score(own,hostile,p.sustainedRushRatio,aggression));
+            }
+        }
+    }
+    static const bool verify=std::getenv("CIRCUIT_VERIFY_RANGED_QUERIES")!=nullptr;
+    if(verify && !rushes.Valid())
+        circuit->LOG("[INVARIANT] INV-196 local rush membership or original-front casualty accounting is inconsistent");
+    if(key>=0) {
+        g.sustainedRush=true; g.committed=true; g.mode=cohort::Mode::RUSH;
+        g.radius=unit->GetCircuitDef()->GetMaxRange()*p.sustainedRushRange;
+        g.formationRear=false;
+    } else if(g.rushFallback) {
+        g.committed=false; g.assault.clear(); g.mode=cohort::Mode::WITHDRAW;
+        g.radius=std::max(g.radius,unit->GetCircuitDef()->GetMaxRange()+p.spacing*3.f);
+    }
+}
+
 float CRangedWorld::EffectiveDps(CCircuitDef* def,int armor,int category,
     const AIFloat3& from,const AIFloat3& to,float horizon,bool advancing)
 {
@@ -289,7 +386,18 @@ void CRangedWorld::AssessCohort(CCircuitUnit* unit,CohortPlan& g,const Contact& 
     auto* def=unit->GetCircuitDef(); const auto& p=def->GetRangedPolicy();
     const float horizon=p.engagementSeconds, firing=range*p.rangeFraction;
     AIFloat3 firingPoint=enemy.pos+g.back*firing;
-    firingPoint.y=circuit->GetTerrainManager()->GetAreaData()->GetElevationAt(firingPoint.x,firingPoint.z);
+    const auto* area=circuit->GetTerrainManager()->GetAreaData();
+    // KI-571: a valid enemy plus a firing offset can lie beyond any map edge.
+    // Bound the assessment point before the unchecked terrain lookup. Do not
+    // change the shared height sampler's contract or clamp only its index.
+    if (!terrain_geometry::BoundHeightPoint(firingPoint.x,firingPoint.z,
+            area->heightMapXSize,area->heightMap.size(),SQUARE_SIZE)) {
+        g.committed=false; g.supporting=false; g.assault.clear();
+        g.mode=cohort::Mode::HOLD; g.reason=cohort::Reason::UNREACHABLE;
+        g.focus=g.center; g.radius=0.f; g.loss=0.f; g.advantage=0.f;
+        return;
+    }
+    firingPoint.y=area->GetElevationAt(firingPoint.x,firingPoint.z);
     cohort::Force own,hostile;
     g.supporting=false; g.screenDepth=firing;
     float danger=0.f;
@@ -338,6 +446,7 @@ void CRangedWorld::AssessCohort(CCircuitUnit* unit,CohortPlan& g,const Contact& 
     // Lazy combat-health callbacks are memoized in the frame's Friend entry;
     // overlapping cohorts share those observations. Artillery-only games pay
     // none of this cost. Count only physically useful allied fire support.
+    EnsureAllies();
     allies.Query(P(enemy.pos),1400.f,[&](int index) {
         auto& f=friends[index];
         if(!f.def || !f.def->IsAttacker()) return;
@@ -356,7 +465,8 @@ void CRangedWorld::AssessCohort(CCircuitUnit* unit,CohortPlan& g,const Contact& 
         // Another Thug cohort contributes firepower, but is not a fragile
         // support line. Treating newly admitted/merging Thugs as rocket support
         // accidentally enabled screening exposure in ordinary kite duels.
-        const bool supporting=p.supportAllies && !ours && !f.def->GetRangedPolicy().coordinated && f.def->IsMobile()
+        const bool supporting=p.supportAllies && !ours && (!f.def->GetRangedPolicy().coordinated
+                || f.def->GetRangedPolicy().formationPosition == RangedPolicy::FormationPosition::REAR) && f.def->IsMobile()
             && !f.def->IsAbleToFly() && f.pos.SqDistance2D(g.center)<p.cohortRadius*p.cohortRadius;
         if(supporting) {
             g.supporting=true;
@@ -389,7 +499,12 @@ void CRangedWorld::AssessCohort(CCircuitUnit* unit,CohortPlan& g,const Contact& 
     const bool screening=g.supporting && !staticCoverage;
     const float limit=staticCoverage?p.staticLossFraction:
         screening?std::max(p.lossFraction,p.supportLossFraction):p.lossFraction;
-    const auto result=cohort::Assess(own,hostile,horizon,approach,p.advantageEnter,p.advantageExit,limit,
+    // Preserve the established dodging/repair policy at a neutral slider.
+    // Automatic army balance influences rush admission; only the explicit
+    // user offset changes ordinary engagement/withdrawal risk tolerance.
+    const float bias=p.sustainedRush?circuit->GetMilitaryManager()->GetAggressionDelta():0.f;
+    const float caution=std::clamp(1.f-.5f*bias,.5f,1.5f);
+    const auto result=cohort::Assess(own,hostile,horizon,approach,p.advantageEnter*caution,p.advantageExit*caution,limit/caution,
         g.committed || screening,screening?hostileArmed:1);
     g.loss=result.loss; g.advantage=result.advantage;
     g.committed=result.commit && !uncertain && !forbidden && approach<=p.catchSeconds;
@@ -423,6 +538,10 @@ void CRangedWorld::AssessCohort(CCircuitUnit* unit,CohortPlan& g,const Contact& 
 bool CRangedWorld::CohortSafe(CCircuitUnit* unit,const AIFloat3& from,const AIFloat3& to,float margin,bool escaping)
 {
     const auto& g=PlanCohort(unit);
+    // Sustained assault deliberately spends the local force until its fixed
+    // original front roster reaches the configured loss threshold. Terrain,
+    // path ownership, target legality and friendly-fire checks still apply.
+    if(g.sustainedRush) return true;
     const AIFloat3 center=(from+to)*.5f;
     const float radius=std::sqrt(from.SqDistance2D(to))*.5f+largestCohortHazard+margin;
     // Keep the generic Safe predicate unchanged for every other ranged unit.

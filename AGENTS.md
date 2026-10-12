@@ -2,6 +2,51 @@
 
 These instructions apply to the entire repository. `AGENTS.md` is the sole repository instruction entry point for every coding agent. Keep repository guidance in this open, harness-neutral format; do not add vendor-specific instruction routers, coding-agent settings, hooks, or discovery files. Reusable runbooks remain in the open Agent Skills format under `skills/`, with vendor-neutral discovery links under `.agents/skills/`. "Repository Map" below describes the files and folders this document names.
 
+## Primary test profile
+
+Use `experimental_balanced` as the primary profile for simulations and regression checks unless the user specifies otherwise. Run other profiles as compatibility coverage when shared code changes; do not substitute them for balanced-profile verification.
+
+## Performance requirements for every change
+
+Treat performance as a design constraint for every runtime change, including
+C++, AngelScript, JSON tuning, Lua widgets and cross-AI messaging. Review cost
+before implementation and verify it before claiming completion. Read
+`../rjm.bar.docs/projects/circuitai/performance/engineering-guide.md` before
+adding or changing recurring work, not only when replacing an optimization.
+
+- Budget for 16 AI instances and large late-game armies. Identify invocation
+  frequency, collection sizes, worst-case work, allocations, engine callbacks,
+  emitted commands and message volume. A cheap per-unit operation can become
+  expensive when repeated per unit, per AI or per simulation frame.
+- Prefer lifecycle-maintained indexes, bounded local queries, shared decision
+  snapshots and allocation reuse over repeated full scans. Use constant-time
+  lookups where appropriate, but state the real complexity, mutation cost and
+  memory tradeoffs; do not label an entire search O(1) because one lookup is.
+  Caches require explicit ownership, invalidation and lifetime contracts.
+- Review command traffic as well as CPU time. Avoid redundant live orders only
+  after validating task ownership, queue contents, target, options, expiry and
+  recovery state. A formation or group controller does not necessarily reduce
+  per-unit engine commands or network traffic. Review widget polling and relay
+  fan-out with the same care as native and script loops.
+- Preserve economy, combat efficacy and threat-response latency. Do not hide
+  cost by adding APM caps, delaying reactions, reducing scouting or changing
+  decision cadence without explicit authorization for that behavior change.
+  Optimizations must preserve ordering, tie-breaking, random draws and task
+  lifecycle semantics. Keep engine callbacks and mutable AI state on their
+  supported thread; workers may use owned immutable snapshots only under a
+  verified threading and result-validation contract.
+- Comment non-obvious performance decisions near the implementation: why the
+  approach is used, complexity variables, ownership, invalidation events and
+  the relevant regression test. Keep detailed evidence in the external
+  benchmark store and maintenance contracts in the engineering guide.
+- Verify proportionately: documentation-only edits need no simulation; runtime
+  changes need relevant correctness checks, and hot paths or new recurring
+  work need representative before/after cost evidence using equivalent inputs.
+  Use experimental_balanced primarily. Distinguish component CPU, allocations,
+  commands, whole-game FPS and multiplayer traffic; report what was measured
+  and any verification gaps. Never infer FPS or network improvements from
+  asymptotic reasoning or a microbenchmark alone.
+
 ## Project Context
 
 CircuitAI is a C++ Skirmish AI for the Recoil RTS engine. Native behavior is under `src/circuit/`. The primary, active AngelScript implementation and profiles are under the root `data/` tree: policy code is in `data/script/` and JSON behavior profiles are in `data/config/`. The parallel `data_sample/` tree contains sample AngelScript and configuration for reference only; it is not the implementation target. The C++ code is normally integrated into an engine checkout as a Skirmish AI and depends on Recoil's generated C++ AI wrapper.
@@ -129,31 +174,31 @@ This is the implementation target for every AngelScript and profile change.
 | `data/script/src/` | The shared AngelScript graph that the experimental profiles include through `src/setup.as`. |
 | `data/script/src/common.as` | Shared initialisation data - armour definitions and categories - used by every profile `init.as`. |
 | `data/script/src/define.as` | Script constants, aliases, masks, priorities, and random helpers expected by all modules. |
-| `data/script/src/global.as` | Global script state shared across modules. |
+| `data/script/src/global.as` | Live shared state, strategy state and compatibility include entry for settings/defaults.as. Default tuning lives under settings/. |
+| `data/script/src/settings/` | Explicit defaults.as include index; shared defaults under shared/ and one default file per role under roles/. Keep existing Global namespaces and mutable override semantics. |
 | `data/script/src/setup.as` | Include root for the shared graph. `Setup::setupMap()` resolves map, start spot, faction, role, unit-limit overlays, and role delegates, and logs the deterministic startup snapshot. |
 | `data/script/src/unit.as` | Unit lifecycle hooks reaching script from the native managers. |
 | `data/script/src/task.as` | Task hooks: `AiMakeTask`, `AiTaskAdded`, `AiTaskRemoved`, and related policy. |
 | `data/script/src/maps.as` | Map registration and lookup for the per-map configurations. |
-| `data/script/src/maps/` | One file per supported map, plus `default_map_config.as` as the fallback and `factory_mapping.as` for terrain-to-factory selection. |
+| `data/script/src/maps/` | One file per supported map, plus `default_map_config.as` as the fallback. |
 | `data/script/src/manager/` | Native callback adapters only: `builder.as`, `economy.as`, `factory.as`, `military.as`. Stateful gameplay capabilities belong in `systems/`; role selection and sequencing remain in `roles/`. |
 | `data/script/src/systems/` | Stateful capabilities grouped into air, sea, amphibious, construction, production (with factory_configs), combat, team, world, presentation and diagnostics. See the script overview for navigation and ownership rules. |
-| `data/script/src/roles/` | Role delegates that specialise shared manager behaviour: `air.as`, `front.as`, `sea.as`, `support.as`, `tactical.as`, `tech.as`. |
-| `data/script/src/types/` | Script value types: `ai_role.as`, `building_type.as`, `map_config.as`, `opener.as`, `profile.as`, `profile_controller.as`, `role_config.as`, `start_spot.as`, `strategic_objectives.as`, `strategy.as`, `terrain.as`. |
+| `data/script/src/roles/` | Role-specific folders (air, front, sea, support, tactical, tech), each with its role entry and existing supporting files. Operational capabilities remain in systems/. |
+| `data/script/src/types/` | Script value types: `ai_role.as`, `building_type.as`, `map_config.as`, `profile_controller.as`, `role_config.as`, `start_spot.as`, `strategic_objectives.as`, `strategy.as`, `terrain.as`. |
 | `data/script/src/helpers/` | Helpers organized by responsibility: `math/` (pure calculations), `construction/` (builder/economy/factory/guard policy), `spatial/` (territory/layout/map/walls), `combat/` (defense chains), `units/` (rosters/classification), `roles/` (roles and limits), `objectives/` (state and execution), `common/` (collections/logging/task names). Keep pure math independent of managers and engine callbacks. |
 | `data/script/src/systems/team/sea_assist.as` | SEA donates one T1 construction ship to a TACTICAL ally at +50 metal income, and TACTICAL lifts its zero shipyard caps once it owns a sea constructor. |
 | `data/script/src/systems/team/ferry.as` | Transport ferry policy: the AIR/TECH request protocol over `AiSendMessage`, and the donation hand-over. See `../rjm.bar.docs/projects/circuitai/transport-ferry.md`. |
 | `data/script/src/helpers/construction/sea_constructor_helpers.as` | The naval economy ladder a construction ship runs (T2 shipyard, mex upgrades, naval converter, nanos, tidals; advanced converter and naval fusion for a T2 sub), parameterised by a `Settings` object so SEA and TACTICAL share one policy. See `../rjm.bar.docs/projects/circuitai/roles/sea.md` and `../rjm.bar.docs/projects/circuitai/roles/tactical.md`. |
 | `data/script/src/helpers/spatial/layout_helpers.as` | Base-layout policy entry point and lane-facing selection; canonical footprint and slot geometry is native. See `../rjm.bar.docs/projects/circuitai/base-layout.md`. |
-| `data/script/src/roles/tech_build.as` | `TechBuild` (D-066): the acts of TECH's experimental build system - turrets, keep-current, the start factory on its slot, T1-lab reclaim, mex expansion, defence, native's queued repairs, assist, guard, wait - and `MakeTask`, which evaluates the rule table; never null. See `../rjm.bar.docs/projects/circuitai/roles/tech_build.md`. |
-| `data/script/src/roles/tech_weapons.as` | `TechWeapons` (D-126): TECH's weapon clusters - kill zones, air defence, artillery, long range, super cannon, coast - found at strategic defence points, re-ranked, income gated, budgeted; rows `weapons.cluster` and `weapons.super`. See `../rjm.bar.docs/projects/circuitai/roles/tech_weapons.md`. |
+| `data/script/src/roles/tech/tech_build.as` | `TechBuild` (D-066): the acts of TECH's experimental build system - turrets, keep-current, the start factory on its slot, T1-lab reclaim, mex expansion, defence, native's queued repairs, assist, guard, wait - and `MakeTask`, which evaluates the rule table; never null. See `../rjm.bar.docs/projects/circuitai/roles/tech_build.md`. |
+| `data/script/src/roles/tech/tech_weapons.as` | `TechWeapons` (D-126): TECH's weapon clusters - kill zones, air defence, artillery, long range, super cannon, coast - found at strategic defence points, re-ranked, income gated, budgeted; rows `weapons.cluster` and `weapons.super`. See `../rjm.bar.docs/projects/circuitai/roles/tech_weapons.md`. |
 | `data/script/src/systems/world/lanes.as` | `Lanes` (D-127): lanes between both teams' starts per movement class, drawn after the intro, recalculated as the front moves, `BestLane` for attack planning. See `../rjm.bar.docs/projects/circuitai/roles/tech-lanes.md`. |
 | `data/script/src/systems/world/water_theatres.as` | D-128: read-only pond/sea classification over native connected water bodies, start-based shore affiliation, terrain-tested advisory shipyard/tidal/seaplane sites. No placement or task changes. See `../rjm.bar.docs/projects/circuitai/roles/tech-lanes.md`. |
 | `data/script/src/systems/world/strategic_sites.as` | D-129: advisory geothermal forward coverage, isolated dry-land islands and joined defend/assault beach fronts. All calculations remain AI-side; the BARb control widget only renders. |
-| `data/script/src/roles/tech_rules.as` | `TechRules` (D-067): TECH's whole builder sequence as one ordered table of `(key, who, when[], act)` rows over a context built once per ask; named predicates, `[Rule] <key>` trace. The T1-lab cases (opening, recover, spam) are three rows. See `../rjm.bar.docs/projects/circuitai/roles/tech_rules.md`. |
+| `data/script/src/roles/tech/tech_rules.as` | `TechRules` (D-067): TECH's whole builder sequence as one ordered table of `(key, who, when[], act)` rows over a context built once per ask; named predicates, `[Rule] <key>` trace. The T1-lab cases (opening, recover, spam) are three rows. See `../rjm.bar.docs/projects/circuitai/roles/tech_rules.md`. |
 | `data/script/src/systems/construction/eco_planner.as` | `EcoPlanner` (D-058/D-063): TECH's one next-building function after the mex-first opening - energy draining, energy floating (converter), build power short or metal floating (turret), energy below target, storage - offering only what the turret box can hold and placing through `Layout::Place`. See `../rjm.bar.docs/projects/circuitai/eco-planner.md`. |
 | `data/script/src/systems/construction/layout.as` | `Layout` (D-060/D-063): TECH's policy shell over native layout geometry. It chooses the factory-pair candidate, fits the turret box behind it (rows of invisible turrets reserved slot by slot on the flattest buildable rectangle), adopts named state after load, and packs every economy structure and turret against the turret rows (native `PackNearGroup`, `NextSlotAny`), pinned. See `../rjm.bar.docs/projects/circuitai/layout-design.md`. |
 | `data/script/src/helpers/combat/porc_helpers.as` | Porcupine chain policy: reads the config-seeded chain through `aiMilitaryMgr.GetPorcChain`, appends the content-option tiers, and lets a role rewrite it. See `../rjm.bar.docs/projects/circuitai/porc-chain.md`. |
-| `data/script/src/misc/commander.as` | Commander-specific script policy. |
 
 ### Reference only - `data_sample/`
 
@@ -238,7 +283,7 @@ This is the implementation target for every AngelScript and profile change.
 | `tools/playtest/cases/`, `tools/playtest/checks/` | Reusable scenario/check definitions under `<domain>/<area>/`. Never mix raw engine outputs with definitions. Naming rules are in each directory's README. |
 | `../rjm.bar.docs/projects/circuitai/test-storage.md`, `../rjm.bar.docs/projects/circuitai/test-storage-moves.md`, `../rjm.bar.docs/projects/circuitai/test-storage-migration.json` | Storage conventions, linked migration inventory and one-time byte-preservation audit for the definition moves and historical benchmarks/images. |
 | `../CircuitAI.benchmarks/doc/benchmarks/` | Benchmark discovery by gameplay domain; generated indices distinguish original evidence, views and revisions. New compact immutable bundles live under `records/<domain>/<area>/<scenario>/<date>/<UTC-id>/`. Existing ledgers and scorecard paths remain unchanged. |
-| `data/script/src/roles/tech_chain.as` | `TechChain` (D-070): TECH's rush chain - `Tech::RushObjective` (t2/fusion/afus/nuke/gantry/titan/eco/auto) becomes an ordered list of cumulative targets computed from the map's wind (the rush simulator's lines); the `chain.next` row executes it ahead of the economy rows; caps re-asserted in `Tick`. See `../rjm.bar.docs/projects/circuitai/roles/tech_chain.md`. |
+| `data/script/src/roles/tech/tech_chain.as` | `TechChain` (D-070): TECH's rush chain - `Tech::RushObjective` (t2/fusion/afus/nuke/gantry/titan/eco/auto) becomes an ordered list of cumulative targets computed from the map's wind (the rush simulator's lines); the `chain.next` row executes it ahead of the economy rows; caps re-asserted in `Tick`. See `../rjm.bar.docs/projects/circuitai/roles/tech_chain.md`. |
 | `tools/playtest/bench_loop.sh` | `SPEED=8 NOTE=... bash tools/playtest/bench_loop.sh t2 fusion afus nuke gantry titan`: one headless tech-versus-tech run per objective with `--set RushObjective`, each recorded by the tracker; `DLL=<path>` tests a specific DLL. |
 | `tools/playtest/benchmark.py` | Turns a playtest run into a row of `../CircuitAI.benchmarks/doc/benchmarks/tech-rush.md` (milestone times from the widget's `[Playtest] finished` lines, income, best-so-far table). |
 | `../CircuitAI.benchmarks/doc/benchmarks/tech-rush.md` | Generated by the tracker: the rush benchmark targets, floors, the best run per objective and every recorded run. |

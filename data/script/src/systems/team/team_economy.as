@@ -32,8 +32,6 @@ namespace TeamEconomy {
     const int STORAGE = 1;
     const int INCOME = 2;
     const int USAGE = 3;
-    const int PULL = 4;
-    const int SHARE = 5;
     const int SENT = 6;
     const int RECEIVED = 7;
     const int EXCESS = 8;
@@ -62,7 +60,6 @@ namespace TeamEconomy {
     }
 
     bool SendMetal(int teamId, float amount) { return aiEconomyMgr.SendResourceTo(METAL, amount, teamId); }
-    bool SendEnergy(int teamId, float amount) { return aiEconomyMgr.SendResourceTo(ENERGY, amount, teamId); }
 
     // one line per teammate, for the log
     string Describe(int teamId)

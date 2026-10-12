@@ -109,12 +109,6 @@ class MapConfig {
         return "UNKNOWN";
     }
 
-    bool HasFactoryWeights(AiRole role) {
-        string key = RoleKey(role);
-        dictionary@ dummy;
-        return FactoryWeights.get(key, @dummy);
-    }
-
     dictionary@ GetSideFactoryWeightsByRole(AiRole role) {
         string key = RoleKey(role);
         dictionary@ roleDict;
@@ -138,9 +132,6 @@ class MapConfig {
             }
         }
     }
-
-    // Back-compat setter: forward to new API
-    void SetRoleUnitLimits(dictionary@ byRole) { SetRoleUnitLimitOverlays(byRole); }
 
     // Get per-role unit limit overlay for a given role; may return null if none set
     dictionary@ GetRoleUnitLimitOverlayFor(AiRole role) {

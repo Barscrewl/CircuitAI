@@ -142,6 +142,9 @@ public:
 private:
 	void ReadConfig();
 	void Init();
+	void RefillCompletedFactory(CCircuitUnit::Id id, unsigned long long ticket);
+	std::unordered_map<CCircuitUnit::Id, unsigned long long> completionRefills;
+	unsigned long long nextRefillTicket = 0;
 
 public:
 	virtual int UnitCreated(CCircuitUnit* unit, CCircuitUnit* builder) override;

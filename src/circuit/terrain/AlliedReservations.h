@@ -27,19 +27,23 @@ class Reservations {
 public:
     enum Kind { SLOT, ZONE };
     using Key = std::tuple<int, int, int>; // owner team, kind, local ID
+    uint64_t Revision() const { return revision; }
     void Put(int owner, Kind kind, int id, const Rect& rect) {
+        ++revision;
         Erase(owner, kind, id);
         if (!rect.Valid()) return;
         entries.emplace(Key(owner, kind, id), rect);
         ChangeCells(owner, rect, true);
     }
     void Erase(int owner, Kind kind, int id) {
+        ++revision;
         const auto it = entries.find(Key(owner, kind, id));
         if (it == entries.end()) return;
         ChangeCells(owner, it->second, false);
         entries.erase(it);
     }
     void RemoveOwner(int owner) {
+        ++revision;
         // Owner is the leading key: unrelated teams need not be scanned.
         auto it = entries.lower_bound(Key(owner, SLOT, std::numeric_limits<int>::min()));
         while (it != entries.end() && std::get<0>(it->first) == owner) {
@@ -80,6 +84,7 @@ public:
     }
     size_t Size() const { return entries.size(); }
 private:
+    uint64_t revision = 0;
     static constexpr int pageCells = 32;
     struct Cell {
         uint32_t owners = 0;

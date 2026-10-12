@@ -8,6 +8,9 @@
 #include "script/EconomyScript.h"
 #include "script/ScriptManager.h"
 #include "module/EconomyManager.h"
+#include "module/BuilderManager.h"
+#include "resource/EnergyManager.h"
+#include "spring/SpringMap.h"
 #include "task/builder/BuilderTask.h"
 #include "CircuitAI.h"
 #include "terrain/TerrainManager.h"
@@ -22,6 +25,52 @@
 namespace circuit {
 
 using namespace springai;
+
+// Explicit script opt-in. BAR permits an advanced geo over an owned T1 geo;
+// its upgrade gadget retires/refunds the old unit on completion. Never reclaim
+// the source here. Scan immutable vent positions, then only local occupants.
+static IUnitTask* EnqueueLocalGeo(CEconomyManager* economy, CCircuitUnit* builder,
+        CCircuitDef* definition, const AIFloat3& center, float radius)
+{
+    if (!builder || !definition || radius <= 0.f || !definition->GetDef()->IsNeedGeo()
+        || !builder->GetCircuitDef()->CanBuild(definition)) return nullptr;
+    auto* circuit = economy->GetCircuit();
+    auto* manager = circuit->GetBuilderManager();
+    auto* terrain = circuit->GetTerrainManager();
+    const int frame = circuit->GetLastFrame();
+    if (!definition->IsAvailable(frame)) return nullptr;
+    const auto& sites = circuit->GetEnergyManager()->GetSpots();
+    int chosen = -1;
+    float best = radius * radius;
+    for (size_t index = 0; index < sites.size(); ++index) {
+        const auto& position = sites[index];
+        const float distance = position.SqDistance2D(center);
+        if (distance > best || terrain->IsZoneAlly(position)
+            || !terrain->CanReachAtSafe(builder, position, builder->GetCircuitDef()->GetBuildDistance())
+            || !terrain->CanBeBuiltAtSafe(definition, position)
+            || terrain->IsAllyLayoutBlocked(definition, position, UNIT_NO_FACING)) continue;
+        bool occupied = false;
+        for (auto* task : manager->GetTasks(IBuilderTask::BuildType::GEO)) {
+            if (task->GetPosition().SqDistance2D(position) < 64.f) { occupied = true; break; }
+        }
+        if (occupied) continue;
+        for (int id : circuit->GetCallback()->GetFriendlyUnitIdsIn(position, 32.f, false)) {
+            auto* friendly = circuit->GetFriendlyUnit(id);
+            if (!friendly || !friendly->GetCircuitDef()->GetDef()->IsNeedGeo()) continue;
+            auto* owned = circuit->GetTeamUnit(id);
+            if (!owned || !owned->IsFinished()
+                || economy->GetEnergyMake(owned->GetCircuitDef()) >= economy->GetEnergyMake(definition)) {
+                occupied = true; break;
+            }
+        }
+        if (occupied || !circuit->GetMap()->IsPossibleToBuildAt(definition->GetDef(), position, UNIT_NO_FACING)) continue;
+        best = distance;
+        chosen = static_cast<int>(index);
+    }
+    if (chosen < 0) return nullptr;
+    return manager->Enqueue(TaskB::Spot(IBuilderTask::BuildType::GEO,
+        IBuilderTask::Priority::HIGH, definition, sites[chosen], chosen));
+}
 
 static void CEconomyManager_SetEnergyCondition(CEconomyManager* mgr, const CCircuitDef* cdef, int limit, float mi, float ei)
 {
@@ -102,6 +151,7 @@ CEconomyScript::CEconomyScript(CScriptManager* scr, CEconomyManager* mgr)
 
 	r = engine->RegisterObjectType("CEconomyManager", 0, asOBJ_REF | asOBJ_NOHANDLE); ASSERT(r >= 0);
 	r = engine->RegisterGlobalProperty("CEconomyManager aiEconomyMgr", manager); ASSERT(r >= 0);
+	r = engine->RegisterObjectMethod("CEconomyManager", "IUnitTask@+ EnqueueLocalGeo(CCircuitUnit@, CCircuitDef@, const AIFloat3& in, float)", asFUNCTION(EnqueueLocalGeo), asCALL_CDECL_OBJFIRST); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CEconomyManager", "bool IsMetalMap() const", asMETHOD(CEconomyManager, IsMetalMap), asCALL_THISCALL); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CEconomyManager", "int GetEffectiveUnitLimit() const", asMETHOD(CEconomyManager, GetEffectiveUnitLimit), asCALL_THISCALL); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CEconomyManager", "int GetFieldMexCount(const AIFloat3& in, float) const", asMETHOD(CEconomyManager, GetFieldMexCount), asCALL_THISCALL); ASSERT(r >= 0);

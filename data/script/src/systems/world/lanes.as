@@ -89,12 +89,7 @@ namespace Lanes {
         Global::RoleSettings::Tech::LaneRecalcSeconds = aiSetupMgr.ConfigFloat("lanes/recalc_seconds", Global::RoleSettings::Tech::LaneRecalcSeconds);
         Global::RoleSettings::Tech::LaneRecalcShift = aiSetupMgr.ConfigFloat("lanes/recalc_shift", Global::RoleSettings::Tech::LaneRecalcShift);
         Global::RoleSettings::Tech::LaneRecalcMinSeconds = aiSetupMgr.ConfigFloat("lanes/recalc_min_seconds", Global::RoleSettings::Tech::LaneRecalcMinSeconds);
-        Global::RoleSettings::Tech::LaneDraw = aiSetupMgr.ConfigBool("lanes/draw", Global::RoleSettings::Tech::LaneDraw);
         Global::RoleSettings::Tech::LaneDrawSeconds = aiSetupMgr.ConfigInt("lanes/draw_seconds", Global::RoleSettings::Tech::LaneDrawSeconds);
-        Global::RoleSettings::Tech::LaneDrawFallbackSeconds = aiSetupMgr.ConfigInt("lanes/draw_fallback_seconds", Global::RoleSettings::Tech::LaneDrawFallbackSeconds);
-        Global::RoleSettings::Tech::LaneSymbolSpacing = aiSetupMgr.ConfigFloat("lanes/symbol_spacing", Global::RoleSettings::Tech::LaneSymbolSpacing);
-        Global::RoleSettings::Tech::LaneSymbolSize = aiSetupMgr.ConfigFloat("lanes/symbol_size", Global::RoleSettings::Tech::LaneSymbolSize);
-        Global::RoleSettings::Tech::LaneLabelSize = aiSetupMgr.ConfigFloat("lanes/label_size", Global::RoleSettings::Tech::LaneLabelSize);
     }
 
     bool Enabled()
@@ -103,8 +98,6 @@ namespace Lanes {
             && ((Global::RoleSettings::Tech::ExperimentalBuild && Global::AISettings::Role == AiRole::TECH)
             || (Global::RoleSettings::Air::ExperimentalBuild && Global::AISettings::Role == AiRole::AIR));
     }
-
-    // ---------------------------------------------------------------- the calculation (cached)
 
     int calcs = 0;
     int lastCalc = -100000;
@@ -278,15 +271,7 @@ namespace Lanes {
         }
         return best;
     }
-    // waypoints down a lane, from `share` on (0 our end, 1 theirs), `step` elmos apart
-    array<AIFloat3> Waypoints(int lane, float fromShare, float step)
-    {
-        array<AIFloat3> r;
-        const float len = aiBattle.GetLaneLength(lane);
-        if (lane < 0 || len <= 0.0f) return r;
-        for (float s = fromShare; s <= 1.0f; s += step / len) r.insertLast(aiBattle.GetLanePoint(lane, s));
-        return r;
-    }
+
     void LogAttackPlan()
     {
         string plan = "";

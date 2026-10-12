@@ -1,8 +1,14 @@
 import unittest
-from sea_arena import scenario_label, frozen_actor_condition
+from sea_arena import scenario_label, frozen_actor_condition, audit_transit
 
 
 class ScenarioLabelTests(unittest.TestCase):
+    def test_transit_ignores_non_state_boat_messages(self):
+        case={'groups':[{'team':0,'unit':'armroy','count':1}],
+              'native_transit':{'unit':'armroy','points':[[10,20]]}}
+        text=(' [SeaArena] frame=3000 boat id=2 unit=armroy x=10 z=20 health=100 maxhealth=100 queue=0\n'
+              ' [SeaArena] frame=3001 boat id=2 unit=armroy x=10 z=20 health=100\n')
+        self.assertEqual(audit_transit(text,case),[])
     def test_repair_fixture_freezes_production_not_static_assistance(self):
         self.assertEqual(frozen_actor_condition('factory',True), 'SeaEconomy::SupportedFactory(u.circuitDef)')
         self.assertIn('ConstructorDef', frozen_actor_condition('builder',True))

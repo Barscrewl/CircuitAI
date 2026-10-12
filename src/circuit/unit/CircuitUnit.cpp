@@ -13,15 +13,19 @@
 #include "setup/SetupManager.h"
 #include "terrain/TerrainManager.h"  // Only for CorrectPosition
 #include "spring/SpringMap.h"
+#include "spring/SpringUnit.h"
 #include "spring/CustomCommand.h"
 #include "CircuitAI.h"
 #include "util/Utils.h"
 #include "task/UnitTask.h"
+#include "task/fighter/FighterTask.h"
+#include <cstdlib>
 
 #include "AISCommands.h"
 #include "Sim/Units/CommandAI/Command.h"
 #include "WrappCurrentCommand.h"
 #include "Weapon.h"
+#include "Log.h"
 #include "WrappWeaponMount.h"
 
 namespace circuit {
@@ -97,6 +101,9 @@ CCircuitUnit::CCircuitUnit(CCircuitAI* circuit, Id unitId, Unit* unit, CCircuitD
 
 CCircuitUnit::~CCircuitUnit()
 {
+	// The script-visible task property must remain valid for the full unit
+	// lifetime, including after its manager removes a dead task from its list.
+	AssignOwnedReference(task, static_cast<IUnitTask*>(nullptr));
 	delete command;
 	delete dgun;
 	delete weapon;
@@ -105,7 +112,9 @@ CCircuitUnit::~CCircuitUnit()
 
 void CCircuitUnit::SetTask(IUnitTask* task)
 {
-	this->task = task;
+	// Acquire before releasing: assignment to the same task is legal. Task
+	// assignee sets borrow units, so this strong edge introduces no cycle.
+	AssignOwnedReference(this->task, task);
 	SetTaskFrame(manager->GetCircuit()->GetLastFrame());
 	taskState = ETaskState::NONE;
 }
@@ -287,6 +296,24 @@ void CCircuitUnit::CmdRemove(std::vector<float>&& params, short options)
 void CCircuitUnit::CmdMoveTo(const AIFloat3& pos, short options, int timeout)
 {
 	assert(geom::is_in_map(pos));
+    // Optional provenance for command storms outside RouteTask too. IDs only,
+    // bounded by AI/unit IDs for this process; no allocation/query in normal
+    // play. Sampling limits logs, never commands or threat response.
+    static const bool trace=std::getenv("CIRCUIT_TRACE_MOVE")!=nullptr;
+    if(trace && manager && task) {
+        struct Sample { int frame=-1, count=0, logged=-30; };
+        static std::map<std::pair<int,int>,Sample> samples;
+        auto* circuit=manager->GetCircuit(); const int now=circuit->GetLastFrame();
+        auto& sample=samples[{unit->GetSkirmishAIId(),id}];
+        if(sample.frame<0 || now-sample.frame>=FRAMES_PER_SEC) {sample.frame=now;sample.count=0;}
+        if(++sample.count>=6 && now-sample.logged>=FRAMES_PER_SEC) {
+            sample.logged=now;
+            const auto here=GetPos(now);
+            const int fighter=task->GetType()==IUnitTask::Type::FIGHTER ? int(static_cast<IFighterTask*>(task)->GetFightType()) : -1;
+            circuit->LOG("[MoveBurst] frame=%d unit=%d def=%s type=%d fighter=%d count=%d pos=%.1f,%.1f goal=%.1f,%.1f options=%d timeout=%d",
+                now,id,circuitDef->GetDef()->GetName(),int(task->GetType()),fighter,sample.count,here.x,here.z,pos.x,pos.z,int(options),timeout);
+        }
+    }
 	unit->MoveTo(pos, options, timeout);
 //	unit->ExecuteCustomCommand(CMD_RAW_MOVE, {pos.x, pos.y, pos.z}, options, timeout);
 }
@@ -453,7 +480,8 @@ void CCircuitUnit::CmdWait(bool state)
 
 void CCircuitUnit::RemoveWait()
 {
-	CmdRemove({CMD_WAIT}, UNIT_COMMAND_OPTION_ALT_KEY | UNIT_COMMAND_OPTION_CONTROL_KEY);
+    if (manager->GetCircuit()->GetUnitAPI()->HasQueuedCommand(id, CMD_WAIT))
+        CmdRemove({CMD_WAIT}, UNIT_COMMAND_OPTION_ALT_KEY | UNIT_COMMAND_OPTION_CONTROL_KEY);
 }
 
 bool CCircuitUnit::IsWaiting() const
@@ -506,6 +534,9 @@ void CCircuitUnit::CmdRepair(CAllyUnit* target, short options, int timeout)
 
 void CCircuitUnit::CmdBuild(CCircuitDef* buildDef, const AIFloat3& buildPos, int facing, short options, int timeout)
 {
+	// Role policy closes this gate before stopping a retired factory. A task
+	// selected before that transition must not restart it on a later idle event.
+	if (!productionEnabled) return;
 	unit->Build(buildDef->GetDef(), buildPos, facing, options, timeout);
 	taskState = ETaskState::EXECUTE;
 }

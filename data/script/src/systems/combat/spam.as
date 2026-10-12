@@ -586,22 +586,6 @@ namespace Spam {
         return AIFloat3(-1,0,-1);
     }
 
-    // D-111: a role fixes a factory's lane (TECH: the lab's place in its row)
-    void SetFactoryLane(CCircuitUnit@ factory, int lane)
-    {
-        if (factory is null) return;
-        const string key = "" + factory.id;
-        int cur = 0;
-        if (laneByFactory.get(key, cur) && cur == lane) return;
-        laneByFactory.set(key, lane);
-        CRouteTask@ task = null;
-        if (routeByFactory.get(key, @task) && task !is null) {
-            array<AIFloat3> points = _RouteOfKey(key, factory.GetPos(ai.frame));
-            if (points.length() > 0) task.SetRoute(points);
-            ++routesVersion;
-        }
-        GenericHelpers::LogUtil("[Spam] factory " + factory.id + " runs lane " + lane + " (D-111)", 1);
-    }
     // D-111: the waypoints of a factory's lane, for its factory route
     array<AIFloat3> RouteOf(CCircuitUnit@ factory)
     {

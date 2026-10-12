@@ -3,6 +3,7 @@
 
 #include "terrain/RangedGeometry.h"
 #include "terrain/GroundCohort.h"
+#include "terrain/LocalRush.h"
 #include "AIFloat3.h"
 #include <map>
 #include <memory>
@@ -84,6 +85,9 @@ public:
     bool Escort(CCircuitUnit* sensor, springai::AIFloat3& position);
     bool HasMembers() const { return !slots.empty(); }
     struct CohortPlan {
+        int formationFrame=-1, formationPartner=-1;
+        bool formationRear=false;
+        float formationScreenOffset=0.f;
         int frame=-1, target=-1, regroupUntil=0, nextRegroup=0, nextMerge=0;
         springai::AIFloat3 center, back, focus;
         float radius=0.f;
@@ -99,9 +103,12 @@ public:
         int protectedTarget=-1; // last legally seen commander/reclaimer; losing LOS is not a kill
         springai::AIFloat3 strategic;
         bool committed=false, supporting=false;
+        bool sustainedRush=false, rushFallback=false;
+        int rushFrame=-1;
         float screenDepth=0.f;
     };
     const CohortPlan& PlanCohort(CCircuitUnit* unit);
+    bool IsSustainedRush(int id) const { return rushes.Active(id); }
     bool CohortSafe(CCircuitUnit* unit,const springai::AIFloat3& from,
                     const springai::AIFloat3& to,float margin,bool escaping);
     void ReleaseEscort(int id) { escorts.erase(id); }
@@ -119,10 +126,17 @@ private:
     std::unordered_map<int,Capabilities> capabilities;
     std::vector<Contact> contacts;
     std::vector<Friend> friends;
+    // Per-observation definition prototypes. Unit IDs/positions are never
+    // cached; mutable policy flags are reread on every Refresh publication.
+    std::vector<Friend> friendlyDefinitions;
+    std::vector<int> friendlyDefinitionFrames;
     std::vector<int> friendlyIds;
     ranged::OrderedIds friendlyOrder;
     std::vector<int> objectives;
-    ranged::SpatialIndex enemies, staticHazards, allies, formations;
+    ranged::SpatialIndex enemies, staticHazards, formations;
+    mutable ranged::SpatialIndex allies;
+    mutable bool alliesDirty = true;
+    void EnsureAllies() const;
     ranged::CellStore<float> clusterValues;
     std::map<int,Slot> slots;
     struct Shot { int target, until; float damage; };
@@ -138,7 +152,12 @@ private:
     std::map<int,CohortPlan> cohorts;
     std::unordered_map<int,int> membership;
     int nextCohort=0;
+    rush::Registry rushes;
+    std::vector<rush::Registry::Member> rushCandidates;
+    void ApplyRush(CCircuitUnit* unit, CohortPlan& group);
     void JoinCohort(CCircuitUnit* unit);
+    const CohortPlan& PlanIndependentCohort(CCircuitUnit* unit);
+    void InvalidateCohortPlans(CohortPlan& group);
     float EffectiveDps(CCircuitDef* def,int armor,int category,
                        const springai::AIFloat3& from,const springai::AIFloat3& to,
                        float horizon,bool advancing);

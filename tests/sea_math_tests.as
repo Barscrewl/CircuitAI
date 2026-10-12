@@ -1,3 +1,21 @@
+void test_scout_raids_reject_hidden_submerged_allied_and_outmatching_targets() {
+    Check(SeaMath::ScoutRaidTarget(32,true,false,300,0,96));
+    Check(SeaMath::ScoutRaidTarget(0,true,true,650,300,96));
+    Check(!SeaMath::ScoutRaidTarget(0,true,true,300,650,96));
+    Check(!SeaMath::ScoutRaidTarget(0,false,false,650,0,96));
+    Check(!SeaMath::ScoutRaidTarget(128,true,false,650,0,96));
+    Check(!SeaMath::ScoutRaidTarget(2,true,false,650,0,96));
+    Check(!SeaMath::ScoutRaidTarget(1,true,false,650,0,96));
+    Check(!SeaMath::ScoutRaidTarget(16,false,false,650,0,96));
+    Check(!SeaMath::ScoutRaidTarget(0,true,true,396,300,96));
+}
+void test_scout_assembly_does_not_release_understrength_suicide_wave() {
+    Check(SeaMath::ScoutRaidExpired(10,30,90,2,2,3,false));
+    Check(!SeaMath::ScoutRaidExpired(10,30,90,3,2,3,false));
+    Check(SeaMath::ScoutRaidExpired(31,30,90,3,2,3,false));
+    Check(!SeaMath::ScoutRaidExpired(31,30,90,3,3,3,true));
+    Check(SeaMath::ScoutRaidExpired(91,30,90,3,3,3,true));
+}
 void test_invasion_replans_only_uncommitted_or_dead_slots() {
     Check(SeaMath::ReplanInvasionSlot(-1,false,false));
     Check(SeaMath::ReplanInvasionSlot(4,true,true));
@@ -71,44 +89,7 @@ void test_seaplane_uses_actual_faction_and_modified_costs() {
     Check(!SeaMath::SeaplaneEconomyReady(true,80,1500,1950,6000,-1,5000,80,1500,500,1000));
     Check(!SeaMath::SeaplaneEconomyReady(true,80,1500,1950,6000,1450,5000,80,1500,-1,1000));
 }
-void test_sea_policy_boundaries() {
-    Check(!SeaMath::SeaplaneNext(false,true,0,0));
-    Check(!SeaMath::SeaplaneNext(true,false,0,0));
-    Check(SeaMath::SeaplaneNext(true,true,0,0));
-    Check(!SeaMath::SeaplaneNext(true,true,1,0));
-    Check(!SeaMath::SeaplaneNext(true,true,0,1));
-    Check(SeaMath::RememberThreat(1000,800,0,900)==800);
-    Check(SeaMath::RememberThreat(1000,0,899,900)==1000);
-    Check(SeaMath::RememberThreat(1000,0,900,900)==0);
-    Check(SeaMath::RememberThreat(1000,0,0,0)==0);
-    Check(!SeaMath::ReleaseFleet(0,9999,7,1800));
-    Check(SeaMath::ReleaseFleet(7,0,7,1800));
-    Check(!SeaMath::ReleaseFleet(6,1799,7,1800));
-    Check(SeaMath::ReleaseFleet(1,1800,7,1800));
-    Check(!SeaMath::NeedsScreen(0,0,1.2f));
-    Check(SeaMath::NeedsScreen(1000,1199,1.2f));
-    Check(!SeaMath::NeedsScreen(1000,1200,1.2f));
-    Check(SeaMath::NewObjective(1,2,0,0,600));
-    Check(!SeaMath::NewObjective(1,1,0,599,600));
-    Check(SeaMath::NewObjective(1,1,0,600,600));
-    Check(SeaMath::Deficit(1000,400,600)==0);
-    Check(SeaMath::Deficit(1000,400,200)==400);
-    Check(SeaMath::CounterScore(1000,1000,20,false)==0);
-    Check(SeaMath::CounterScore(100,1000,20,true)==5);
-    Check(SeaMath::CounterScore(1000,1000,10,true)>SeaMath::CounterScore(1000,1000,20,true));
-    Check(SeaMath::Missing(5,4,1,5)==0);
-    Check(SeaMath::Missing(5,4,0,5)==1);
-    Check(SeaMath::Missing(5,8,0,5)==0);
-    Check(!SeaMath::TechReady(39,800,1200,2000,40,800,800,4400,22000,150,.65));
-    Check(SeaMath::TechReady(40,800,1200,2000,40,800,800,4400,22000,150,.65));
-    Check(!SeaMath::TechReady(75,800,799,2000,40,800,800,4400,22000,150,.65));
-    Check(!SeaMath::RetireReady(true,false,true,true,false,5000,2900));
-    Check(!SeaMath::RetireReady(true,true,true,true,true,5000,2900));
-    Check(!SeaMath::RetireReady(true,true,false,true,false,5000,2900));
-    Check(SeaMath::RetireReady(true,true,true,true,false,5000,2900));
-    Check(!SeaMath::ForwardWorthwhile(4000,3500,700,60,30));
-    Check(SeaMath::ForwardWorthwhile(4000,3000,700,60,30));
-}
+
 void test_rear_fusion_footprint_keeps_protected_margin() {
     Check(SeaMath::RearFootprint(-160,96,64));
     Check(!SeaMath::RearFootprint(-159,96,64));
@@ -164,13 +145,7 @@ void test_yard_whole_footprint_stays_forward_of_economy() {
     Check(!SeaMath::ForwardFootprint(300,-1,72,128));
     Check(!SeaMath::ForwardFootprint(300,100,72,-1));
 }
-void test_opening_exception_does_not_return_after_factory_loss() {
-    Check(SeaMath::OpeningFactory(true,true,true,true));
-    Check(!SeaMath::OpeningFactory(false,true,true,true));
-    Check(!SeaMath::OpeningFactory(true,false,true,true));
-    Check(!SeaMath::OpeningFactory(true,true,false,true));
-    Check(!SeaMath::OpeningFactory(true,true,true,false));
-}
+
 void test_aa_screen_slots_stay_separate_and_overlap() {
     // Reinforcements/losses do not move survivors' slots. Fixed six columns
     // form as many rows as necessary rather than collapsing to a centre.
@@ -298,4 +273,72 @@ void test_asw_arc_is_symmetric_and_uses_all_slots() {
     Check(SeaMath::AntiSubAngle(0,3,2.4f)==-1.2f);
     Check(SeaMath::AntiSubAngle(1,3,2.4f)==0);
     Check(SeaMath::AntiSubAngle(2,3,2.4f)==1.2f);
+}
+void test_submarine_priority_includes_antisub_and_naval_infrastructure() {
+    const int flagship=SeaMath::SubmarineTargetRank(true,false,false,false);
+    const int ship=SeaMath::SubmarineTargetRank(false,false,false,false);
+    const int factory=SeaMath::SubmarineTargetRank(false,true,false,true);
+    Check(flagship>ship && ship>factory && factory>0);
+    const int antiSubmarine=SeaMath::SubmarineTargetRank(false,false,false,false,true);
+    Check(flagship>antiSubmarine && antiSubmarine>ship);
+    Check(SeaMath::SubmarineTargetRank(false,true,false,false)>0);
+    Check(SeaMath::SubmarineTargetRank(false,true,false,false)<factory);
+    Check(SeaMath::SubmarineTargetRank(false,false,true,false)==ship);
+}
+void test_shore_deadlines_prioritize_access_without_starving_interior() {
+    // A nearby coast just reaching its revisit deadline must not suppress
+    // the first survey of a distant construction-accessible enemy coast.
+    Check(SeaMath::SurveyPriority(2,true,0,90,12000,12000)>SeaMath::SurveyPriority(2,false,90,90,0,12000));
+    Check(SeaMath::SurveyPriority(2,true,0,90,0,12000)>SeaMath::SurveyPriority(1,true,0,180,0,12000));
+    Check(SeaMath::SurveyPriority(1,true,0,180,0,12000)>SeaMath::SurveyPriority(0,true,0,300,0,12000));
+    Check(SeaMath::SurveyPriority(0,false,1500,300,0,12000)>SeaMath::SurveyPriority(2,false,90,90,0,12000));
+    Check(SeaMath::SurveyPriority(2,false,90,90,0,12000)>SeaMath::SurveyPriority(2,false,90,90,6000,12000));
+}
+void test_fleet_ratio_counts_pending_and_disables_zero_weights() {
+    Check(SeaMath::CompositionDeficit(3,1)>SeaMath::CompositionDeficit(6,1));
+    Check(SeaMath::CompositionDeficit(6,2)==SeaMath::CompositionDeficit(3,1));
+    Check(SeaMath::CompositionDeficit(0,0)<SeaMath::CompositionDeficit(100,1));
+}
+void test_scout_retention_never_delays_threat_or_task_recovery() {
+    Check(SeaMath::RetainScoutTravel(true,true,true,true,false));
+    Check(!SeaMath::RetainScoutTravel(false,true,true,true,false));
+    Check(!SeaMath::RetainScoutTravel(true,false,true,true,false));
+    Check(!SeaMath::RetainScoutTravel(true,true,false,true,false));
+    Check(!SeaMath::RetainScoutTravel(true,true,true,false,false));
+    Check(!SeaMath::RetainScoutTravel(true,true,true,true,true));
+}
+
+void test_guardable_land_excludes_rocks_and_narrow_fragments() {
+    Check(!SeaMath::GuardableLand(20,8,64,16));
+    Check(!SeaMath::GuardableLand(100,4,64,16));
+    Check(SeaMath::GuardableLand(64,16,64,16));
+    Check(SeaMath::GuardableLand(10000,9000,64,16));
+}
+void test_capacity_projects_are_bounded_per_factory_not_globally_serialized() {
+    Check(SeaMath::SupportProjectAvailable(1,4,false));
+    Check(!SeaMath::SupportProjectAvailable(1,4,true));
+    Check(!SeaMath::SupportProjectAvailable(4,4,false));
+    Check(!SeaMath::SupportProjectAvailable(0,0,false));
+}
+void test_amphibious_interception_requires_fresh_local_known_contact() {
+    Check(SeaMath::AmphibiousIntercept(256|2,970,1000000,500,5000)); // Marauder is below 1000 metal
+    Check(SeaMath::AmphibiousIntercept(256|2,2000,1000000,1000,5000));
+    Check(!SeaMath::AmphibiousIntercept(256|2|1,2000,1000000,1000,5000));
+    Check(!SeaMath::AmphibiousIntercept(256|2|128,2000,1000000,1000,5000));
+    Check(!SeaMath::AmphibiousIntercept(2,2000,1000000,1000,5000));
+    Check(!SeaMath::AmphibiousIntercept(256|2,500,1000000,1000,5000));
+    Check(!SeaMath::AmphibiousIntercept(256|2,2000,26000000,1000,5000));
+}
+void test_unplanned_invasion_slots_never_own_overflow_factory_tasks() {
+    Check(!SeaMath::MatchesFactoryReservation(-1,-1,-1));
+    Check(!SeaMath::MatchesFactoryReservation(-1,25,-1));
+    Check(!SeaMath::MatchesFactoryReservation(33,25,26));
+    Check(SeaMath::MatchesFactoryReservation(25,25,-1));
+    Check(SeaMath::MatchesFactoryReservation(26,25,26));
+}
+void test_replacement_line_requires_numbers_and_health_adjusted_power() {
+    Check(!SeaMath::ReplacementReady(2,4000,1000,3,1.15f));
+    Check(!SeaMath::ReplacementReady(6,900,1000,3,1.15f));
+    Check(SeaMath::ReplacementReady(3,1200,1000,3,1.15f));
+    Check(SeaMath::ReplacementReady(4,1600,0,3,1.15f));
 }

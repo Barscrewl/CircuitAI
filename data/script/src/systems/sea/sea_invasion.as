@@ -447,7 +447,10 @@ namespace SeaInvasion {
             for (uint i=0;i<work.length();++i) {
                 IBuilderTask@ t=cast<IBuilderTask>(work[i]);
                 if (t is null || t.IsDead() || t.target !is null || !Factory(t.buildDef)) continue;
-                if (AiTaskReservationId(t)==labSlot || AiTaskReservationId(t)==gantrySlot) aiBuilderMgr.AbortTask(t);
+                // Overflow factories belong to their own harbor berth. During
+                // travel the native served reservation can still be -1; it
+                // must not match an unplanned invasion lab/gantry's -1 ID.
+                if (SeaMath::MatchesFactoryReservation(AiTaskReservationId(t),labSlot,gantrySlot)) aiBuilderMgr.AbortTask(t);
             }
         }
         Plan(); PlanGantry();

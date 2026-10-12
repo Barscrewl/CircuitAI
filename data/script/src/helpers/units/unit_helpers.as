@@ -254,7 +254,6 @@ namespace UnitHelpers {
         return ids;
     }
 
-
     array<string> GetLegionT1WaterLabs() {
         array<string> ids = {
             "legsy", // Legion T1 Shipyard
@@ -598,7 +597,6 @@ namespace UnitHelpers {
         return "armch";
     }
 
-
     // Returns fast-assist builders for a given side
     array<string> GetFastAssistBots(const string &in side) {
         array<string> ids;
@@ -831,22 +829,6 @@ namespace UnitHelpers {
         array<string> ids;
         ids = { "armlab", "corlab", "leglab" };
         return ids;
-    }
-
-    // Any T2 production lab, land or sea, every faction. Used by the transport
-    // ferry to spot the moment a TECH player commits to T2 (manager/ferry.as).
-    // Aircraft plants are included: a role that techs air is still teching.
-    bool IsT2Lab(const string &in name) {
-        if (name.length() == 0) return false;
-        array<array<string>> lists = {
-            GetAllT2BotLabs(), GetAllT2VehicleLabs(), GetAllT2AircraftPlants(), GetAllT2Shipyards()
-        };
-        for (uint i = 0; i < lists.length(); ++i) {
-            for (uint j = 0; j < lists[i].length(); ++j) {
-                if (lists[i][j] == name) return true;
-            }
-        }
-        return false;
     }
 
     array<string> GetAllT2BotLabs() {
@@ -1271,8 +1253,6 @@ namespace UnitHelpers {
         return "armnanotcplat"; // default
     }
 
-    // Note: DesiredNanoCountFromEnergy moved to EconomyHelpers
-
     // Return the T1 bot lab unit name for a given side (armada, cortex, legion).
     // Defaults to armada when side is unknown.
     string GetT1BotLabForSide(const string &in side)
@@ -1337,13 +1317,6 @@ namespace UnitHelpers {
         if (side == "cortex") return "cormstor";
         if (side == "legion") return "legmstor";
         return "armmstor";
-    }
-
-    string GetGeoNameForSide(const string &in side)
-    {
-        if (side == "cortex") return "corgeo";
-        if (side == "legion") return "leggeo";
-        return "armgeo";
     }
 
     string GetEnergyConverterNameForSide(const string &in side)
@@ -1420,17 +1393,6 @@ namespace UnitHelpers {
 
         GenericHelpers::LogUtil("[UnitHelpers] GetAdvFusionNameForSide: no matching side '" + side + "', defaulting to armada", 2);
         return "armafus";
-    }
-
-    // Side-specific T2 bomber (advanced strategic bomber) name
-    string GetT2BomberNameForSide(const string &in side)
-    {
-        // BAR canonical T2 bombers per faction
-        if (side == "armada") return "armpnix";     // Strategic Bomber
-        if (side == "cortex") return "corhurc";     // Heavy Strategic Bomber
-        if (side == "legion") return "legphoenix";  // Heavy Assault Heatray Bomber (Legion)
-        // Fallback to armada variant
-        return "armpnix";
     }
 
     // Naval/underwater fusion reactor (sea-capable energy structure)
@@ -1593,15 +1555,6 @@ namespace UnitHelpers {
         return "armfrt";
     }
 
-    // Longer-range floating AA (missile battery). Legion lacks a distinct variant; fall back to light AA
-    string GetFloatingAARangeNameForSide(const string &in side)
-    {
-        if (side == "armada") return "armfrock"; // Floating AA missile battery
-        if (side == "cortex") return "corfrock"; // Floating AA missile battery
-        if (side == "legion") return "legfrl";   // Fallback until a Legion long-range floating AA is confirmed
-        return "armfrock";
-    }
-
     // Floating heavy laser turret (basic floating gun tower)
     string GetFloatingHeavyLaserNameForSide(const string &in side)
     {
@@ -1609,15 +1562,6 @@ namespace UnitHelpers {
         if (side == "cortex") return "corfhlt";  // Floating Heavy Laser Tower
         if (side == "legion") return "legfmg";   // Legion floating gatling turret (closest analogue)
         return "armfhlt";
-    }
-
-    // Heavier floating plasma/multi-weapon towers
-    string GetFloatingHeavyTurretNameForSide(const string &in side)
-    {
-        if (side == "armada") return "armkraken"; // Floating rapid-fire plasma
-        if (side == "cortex") return "corfdoom";  // Floating multi-weapon platform
-        if (side == "legion") return "legfmg";    // Legion floating gatling turret
-        return "armkraken";
     }
 
     // --- Additional side-aware mappings for new objective types ---
@@ -1628,15 +1572,6 @@ namespace UnitHelpers {
         if (side == "cortex") return "cortl"; // TODO: verify upstream id
         if (side == "legion") return "legtl"; // Stheno
         return "armtl";
-    }
-
-    string GetStaticT2TorpNameForSide(const string &in side)
-    {
-        // T2 static torpedo launchers
-        if (side == "armada") return "armatl"; // TODO: verify upstream id
-        if (side == "cortex") return "coratl"; // TODO: verify upstream id
-        if (side == "legion") return "legctl"; // Euryale
-        return "armatl";
     }
 
     string GetStaticT2AAFlakNameForSide(const string &in side)
@@ -1786,8 +1721,6 @@ namespace UnitHelpers {
         if (t == Objectives::BuildingType::T2_RADAR)        return GetStaticT2RadarNameForSide(side);
         if (t == Objectives::BuildingType::T2_ENERGY)       return GetFusionNameForSide(side);
 
-
-
         // Long range
         if (t == Objectives::BuildingType::LRPC)            return GetLRPCNameForSide(side);
         if (t == Objectives::BuildingType::LRPC_HEAVY)      return GetLRPCHeavyNameForSide(side);
@@ -1831,10 +1764,6 @@ namespace UnitHelpers {
             if (labs[i] == unitName) return true;
         }
         return false;
-    }
-
-    bool IsT1Mex(const string &in name) {
-        return name == "armmex" || name == "cormex" || name == "legmex";
     }
 
     bool IsT2Mex(const string &in name) {
@@ -1887,16 +1816,6 @@ namespace UnitHelpers {
     array<string> GetAllT2SeaConstructors()
     {
         array<string> ids = { "armacsub", "coracsub", "leganavyconsub" };
-        return ids;
-    }
-
-    array<string> GetAllT2Constructors()
-    {
-        array<string> ids;
-        { array<string> a = GetAllT2BotConstructors(); for(uint i=0;i<a.length();++i) ids.insertLast(a[i]); }
-        { array<string> a = GetAllT2VehicleConstructors(); for(uint i=0;i<a.length();++i) ids.insertLast(a[i]); }
-        { array<string> a = GetAllT2AirConstructors(); for(uint i=0;i<a.length();++i) ids.insertLast(a[i]); }
-        { array<string> a = GetAllT2SeaConstructors(); for(uint i=0;i<a.length();++i) ids.insertLast(a[i]); }
         return ids;
     }
 
@@ -2080,25 +1999,6 @@ namespace UnitHelpers {
         return "";
     }
 
-    // 
-    bool IsT1LandBuilders(const string &in unitName)
-    {
-        array<string> ids = GetAllT1LandBuilders();
-        for (uint i = 0; i < ids.length(); ++i) {
-            if (ids[i] == unitName) return true;
-        }
-        return false;
-    }
-
-    bool IsT2LandBuilder(const string &in unitName)
-    {
-        array<string> ids = GetAllT2LandBuilders();
-        for (uint i = 0; i < ids.length(); ++i) {
-            if (ids[i] == unitName) return true;
-        }
-        return false;
-    }
-
     // Helper: return true if the given unit name is a T1 bot constructor (exclude vehicles/air/sea)
     bool IsT1BotConstructor(const string &in unitName)
     {
@@ -2140,30 +2040,6 @@ namespace UnitHelpers {
         }
         return "armada";
     }
-
-    // Simple, fast side inference by unitdef name prefix.
-    // BAR: arm..., cor...; Legion: leg...
-    bool IsArmadaDef(const CCircuitDef@ d) {
-        if (d is null) return false;
-        const string n = d.GetName();
-        return n.length() >= 3 && n.substr(0, 3) == "arm";
-    }
-
-    bool IsCortexDef(const CCircuitDef@ d) {
-        if (d is null) return false;
-        const string n = d.GetName();
-        return n.length() >= 3 && n.substr(0, 3) == "cor";
-    }
-
-    bool IsLegionDef(const CCircuitDef@ d) {
-        if (d is null) return false;
-        const string n = d.GetName();
-        return n.length() >= 3 && n.substr(0, 3) == "leg";
-    }
-
-    bool IsArmadaUnit(const CCircuitUnit@ u) { return u !is null && IsArmadaDef(u.circuitDef); }
-    bool IsCortexUnit(const CCircuitUnit@ u) { return u !is null && IsCortexDef(u.circuitDef); }
-    bool IsLegionUnit(const CCircuitUnit@ u) { return u !is null && IsLegionDef(u.circuitDef); }
 
     // Combined list of all experimental gantries (land + water)
     array<string> GetAllGantries() {

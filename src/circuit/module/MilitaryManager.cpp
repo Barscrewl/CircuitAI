@@ -19,6 +19,7 @@
 #include "task/NilTask.h"
 #include "task/IdleTask.h"
 #include "task/common/ExternalControlTask.h"
+#include "task/common/WaitTask.h"
 #include "task/RetreatTask.h"
 #include "task/builder/DefenceTask.h"
 #include "task/fighter/RallyTask.h"
@@ -56,10 +57,20 @@
 #include "Log.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <map>
 
 namespace circuit {
+
+void CMilitaryManager::SetAggressionDelta(float value)
+{
+    if(std::isfinite(value)) aggressionDelta=std::clamp(value,-1.f,1.f);
+}
+void CMilitaryManager::SetAutomaticAggression(float value)
+{
+    if(std::isfinite(value)) automaticAggression=std::clamp(value,-1.f,1.f);
+}
 
 using namespace springai;
 using namespace terrain;
@@ -103,6 +114,7 @@ void CMilitaryManager::InitHandlers()
 		idleTask->AssignTo(unit);
 
 		army.insert(unit);
+        if (externalOwnerDefinitions.count(unit->GetCircuitDef()->GetId())) externalOwnerCandidates.insert(unit->GetId());
 		AddArmyCost(unit);
 
 		TRY_UNIT(this->circuit, unit,
@@ -143,6 +155,7 @@ void CMilitaryManager::InitHandlers()
 
 		DelArmyCost(unit);
 		army.erase(unit);
+        externalOwnerCandidates.erase(unit->GetId());
 
 		if (unit->GetCircuitDef()->IsAttrStock()) {
 			stockpilers.erase(unit);
@@ -329,6 +342,20 @@ void CMilitaryManager::ReadConfig()
 	CCircuitDef::RoleName& roleNames = CCircuitDef::GetRoleNames();
 
 	const Json::Value& responses = root["response"];
+    // Content policy is explicit JSON, not a faction/unit-name fork. The tag
+    // narrows recurring work to possible gadget children; the live rule is
+    // still the authority, so an independent drone remains AI-controlled.
+    externalOwnerRule = responses.get("_external_owner_rule", "").asString();
+    const std::string externalTag = responses.get("_external_owner_tag", "").asString();
+    if (!externalOwnerRule.empty() && !externalTag.empty()) {
+        for (auto& definition : circuit->GetCircuitDefs()) {
+            if (!definition.IsMobile() || definition.GetBuildSpeed() > 0.f) continue;
+            const auto& parameters = definition.GetDef()->GetCustomParams();
+            const auto found = parameters.find(externalTag);
+            if (found != parameters.end() && utils::string_to_int(found->second) == 1)
+                externalOwnerDefinitions.insert(definition.GetId());
+        }
+    }
 	const float reImpMod = responses.get("_importance_mod_", 1.f).asFloat();
 	const float teamSize = circuit->GetAllyTeam()->GetSize();
 	roleInfos.resize(roleNames.size(), {.0f});
@@ -718,7 +745,10 @@ void CMilitaryManager::Init()
 		CScheduler* scheduler = circuit->GetScheduler().get();
 		const int interval = 4;
 		const int offset = circuit->GetSkirmishAIId() % interval;
-		scheduler->RunJobEvery(CScheduler::GameJob(&CMilitaryManager::UpdateIdle, this), interval, offset + 0);
+        scheduler->RunJobEvery(CScheduler::GameJob([this]() {
+            UpdateExternalControl();
+            UpdateIdle();
+        }), interval, offset + 0);
 		scheduler->RunJobEvery(CScheduler::GameJob(&CMilitaryManager::Update, this), 1/*interval / 2*/, offset + 1);
 		scheduler->RunJobEvery(CScheduler::GameJob(&CMilitaryManager::UpdateDefenceTasks, this), FRAMES_PER_SEC * 5, offset + 2);
 		scheduler->RunJobEvery(CScheduler::GameJob(&CMilitaryManager::UpdateSensorGuards, this), FRAMES_PER_SEC * 5, offset + 3);
@@ -867,6 +897,33 @@ IFighterTask* CMilitaryManager::Enqueue(const TaskF::SFightTask& ti)
 	updateTasks.push_back(task);
 	TaskAdded(task);
 	return task;
+}
+
+// A transport owns this hold, not a builder manager or a combat squad. One
+// constant-time owner lookup per existing task update; no repeated STOP orders.
+// Carrier destruction, transfer and Reset all release the hold on that update.
+class CTransportCargoHold final : public IWaitTask {
+public:
+    CTransportCargoHold(ITaskModule* owner, int carrier)
+        : IWaitTask(owner, false, 0), transportId(carrier) {}
+    void OnUnitDamaged(CCircuitUnit*, CEnemyInfo*) override {}
+    void OnUnitMoveFailed(CCircuitUnit*) override {}
+    void Update() override {
+        auto* transport = manager->GetCircuit()->GetTeamUnit(transportId);
+        auto* ferry = transport == nullptr ? nullptr : dynamic_cast<CFerryTask*>(transport->GetTask());
+        if (units.empty() || ferry == nullptr || ferry->IsDead()
+            || ferry->GetCargoId() != (*units.begin())->GetId()) manager->AbortTask(this);
+    }
+private:
+    int transportId;
+};
+
+IUnitTask* CMilitaryManager::EnqueueCargoHold(int transportId)
+{
+    IUnitTask* task = new CTransportCargoHold(this, transportId);
+    updateTasks.push_back(task);
+    TaskAdded(task);
+    return task;
 }
 
 IUnitTask* CMilitaryManager::EnqueueExternalControl(const std::string& ownerRule)
@@ -1091,6 +1148,7 @@ void CMilitaryManager::DefaultMakeDefence(int cluster, const AIFloat3& pos)
 	CEnemyManager* enemyMgr = circuit->GetEnemyManager();
 	for (unsigned i = 0; i < num; ++i) {
 		CCircuitDef* defDef = defenders[i];
+		if (!builderMgr->IsBuildPositionAllowed(defDef, pos)) continue;
 		if (!defDef->IsAvailable(frame) || (defDef->IsRoleAA() && (enemyMgr->GetEnemyCost(ROLE_TYPE(AIR)) < 1.f))) {
 			continue;
 		}
@@ -2159,6 +2217,37 @@ IUnitTask* CMilitaryManager::TryMakeRangedTask(CCircuitUnit* unit)
 	if (!def->IsAttrRanged() || !def->IsMobile() || !def->IsLander()
 			|| def->IsAbleToFly() || def->IsRoleTrans()) return nullptr;
 	return Enqueue(TaskF::Common(IFighterTask::FightType::ARTY));
+}
+
+IUnitTask* CMilitaryManager::MakeTask(CCircuitUnit* unit)
+{
+    if (!externalOwnerRule.empty() && externalOwnerCandidates.count(unit->GetId())
+        && unit->GetUnit()->GetRulesParamFloat(externalOwnerRule.c_str(),-1.f) >= 0.f)
+        return EnqueueExternalControl(externalOwnerRule);
+    return ITaskModule::MakeTask(unit);
+}
+
+void CMilitaryManager::UpdateExternalControl()
+{
+    if (externalOwnerRule.empty()) return;
+    // Lifecycle membership avoids an army census. Creation can precede BAR's
+    // attachment RulesParam, so inspect these few candidates at the EXISTING
+    // idle-dispatch cadence. O(candidate drones), no per-army wrappers/orders.
+    // Reacquire IDs; capture/destruction clears membership. External tasks
+    // release themselves when the gadget clears its owner, including death.
+    // AssignTask invokes script hooks; those may destroy another candidate.
+    // Retain an ID snapshot (capacity reused), never a set iterator across it.
+    externalOwnerSnapshot.assign(externalOwnerCandidates.begin(),externalOwnerCandidates.end());
+    for (const int id : externalOwnerSnapshot) {
+        auto* unit=circuit->GetTeamUnit(id);
+        if (!unit || unit->IsDead()) { externalOwnerCandidates.erase(id); continue; }
+        auto* task=unit->GetTask();
+        if (!task || task->GetManager()!=this || task->IsExternalControlled()
+            || task->GetType()==IUnitTask::Type::PLAYER) continue;
+        if (unit->GetUnit()->GetRulesParamFloat(externalOwnerRule.c_str(),-1.f) < 0.f) continue;
+        auto* external=EnqueueExternalControl(externalOwnerRule);
+        AssignTask(unit,external); // external AssignTo/Start never alter gadget commands
+    }
 }
 
 IUnitTask* CMilitaryManager::DefaultMakeTask(CCircuitUnit* unit)

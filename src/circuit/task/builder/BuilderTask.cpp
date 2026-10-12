@@ -6,6 +6,8 @@
  */
 
 #include "task/builder/BuilderTask.h"
+#include "task/DormantTaskChain.h"
+#include "terrain/ReservationClaim.h"
 #include "task/builder/BuildChain.h"
 #include "task/builder/DefenceTask.h"  // Only for static_cast<CBDefenceTask*>
 #include "task/RetreatTask.h"
@@ -115,7 +117,7 @@ IBuilderTask::IBuilderTask(ITaskModule* mgr, Type type, BuildType buildType)
 
 IBuilderTask::~IBuilderTask()
 {
-	delete nextTask;
+	ReleaseDormantTaskChain(nextTask);
 }
 
 bool IBuilderTask::CanAssignTo(CCircuitUnit* unit) const
@@ -365,6 +367,7 @@ bool IBuilderTask::TryBuildCachedSite(CCircuitUnit* unit)
 {
     CCircuitAI* circuit = manager->GetCircuit();
     if (!geom::is_valid(buildPos)
+        || !circuit->GetBuilderManager()->IsBuildPositionAllowed(buildDef, buildPos)
         || circuit->GetTerrainManager()->IsAllyLayoutBlocked(buildDef, buildPos, facing)
         || !circuit->GetMap()->IsPossibleToBuildAt(buildDef->GetDef(), buildPos, facing)) return false;
     TRY_UNIT(circuit, unit,
@@ -1010,8 +1013,9 @@ void IBuilderTask::FindBuildSite(CCircuitUnit* builder, const AIFloat3& pos, flo
 	FindFacing(pos);
 
 	CTerrainManager* terrainMgr = manager->GetCircuit()->GetTerrainManager();
-	CTerrainManager::TerrainPredicate predicate = [terrainMgr, builder](const AIFloat3& p) {
-		return terrainMgr->CanReachAtSafe(builder, p, builder->GetCircuitDef()->GetBuildDistance());
+	CTerrainManager::TerrainPredicate predicate = [this, terrainMgr, builder](const AIFloat3& p) {
+		return manager->GetCircuit()->GetBuilderManager()->IsBuildPositionAllowed(buildDef, p)
+            && terrainMgr->CanReachAtSafe(builder, p, builder->GetCircuitDef()->GetBuildDistance());
 	};
 	if (reservationId >= 0) {
 		// A retry: the slot served before is handed back before another search,
@@ -1047,11 +1051,12 @@ bool IBuilderTask::PinReservation(int id)
 	}
 	pinRequired = true;
 	layoutOwned = true;
-	pinnedReservation = id;
-	pinFailed = (id < 0) || !terrainMgr->ClaimReservation(id);
-    // A rejected claim belongs to somebody else (or does not exist). Cancel
-    // must not unclaim it merely because this failed task remembers its ID.
-    if (pinFailed) pinnedReservation = -1;
+	// Factory activation may already have claimed a default site before the
+	// script pins its chosen site. Preserve ownership on failure; release the
+	// previous claim on successful replacement, and accept re-pinning our own ID.
+	pinFailed = !reservation::ReplaceClaim(pinnedReservation, id,
+		[terrainMgr](int slot) { return terrainMgr->ClaimReservation(slot); },
+		[terrainMgr](int slot) { terrainMgr->UnclaimReservation(slot); });
 	return !pinFailed;
 }
 

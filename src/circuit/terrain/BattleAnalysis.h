@@ -30,6 +30,7 @@
 #include <string>
 #include <chrono>
 #include <memory>
+#include "terrain/RangedGeometry.h"
 
 namespace circuit {
 
@@ -110,6 +111,7 @@ public:
     // SEA-only extension: legal unidentified sonar contacts (flags 16|2) and
     // visible water statics. AIR retains its original snapshot and cadence.
     int GetSeaForceCount();
+    bool OutsideStaticWaterWeapons(const springai::AIFloat3& position, float padding, float formationRadius);
     int GetSeaForceId(int i) const { return i>=0 && i<int(seaForces.size()) ? seaForces[i].id : -1; }
     int GetSeaForceDefId(int i) const { return i>=0 && i<int(seaForces.size()) ? seaForces[i].defId : -1; }
     int GetSeaForceFlags(int i) const { return i>=0 && i<int(seaForces.size()) ? seaForces[i].flags : 0; }
@@ -201,6 +203,13 @@ private:
     std::vector<NavalForce> navalForces;
     std::vector<NavalForce> seaForces;
     int seaForceFrame = -100000;
+    unsigned int groundPublication = 0, waterWeaponPublication = ~0u;
+    int waterWeaponFrame = -100000;
+    struct WaterWeapon { springai::AIFloat3 position; float range; };
+    std::vector<WaterWeapon> staticWaterWeapons;
+    ranged::SpatialIndex staticWaterWeaponIndex;
+    bool staticWaterWeaponIndexValid = true;
+    float maximumWaterWeaponRange = 0.f;
     int navalForceFrame = -100000;
     // Lazily requested by the AIR safety query only. Real weapon envelopes
     // remain hazardous when a role profile intentionally assigns zero threat.
@@ -278,8 +287,18 @@ private:
 	int gw, gh;
 	Grid height, maxHeight;   // per cell: mean and highest point
 	Grid surfaceSlope;   // mean engine slope: catches sideways travel along a cliff
-    struct UnitTerrain { lane::Terrain grid; Grid slope; int frame = -100000; };
+    struct UnitTerrain {
+        lane::Terrain grid;
+        Grid slope;
+        std::uint64_t heightRevision = 0;
+        int frame = -100000;
+    };
     std::unordered_map<int, UnitTerrain> unitTerrain;
+    // One callback-thread scratch set per AI, shared across definition/dry keys.
+    // Retain allocations, never route results or live obstacle observations.
+    Grid unitRouteSlope, unitRouteThreat;
+    std::vector<char> unitRouteObstacles;
+    lane::PointWorkspace unitRouteWorkspace;
 	std::vector<springai::AIFloat3> sources;
 	Grid routeHeat, routeShare;
 	std::vector<char> lane;

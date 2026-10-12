@@ -96,6 +96,12 @@ void test_project_arrivals_and_queued_support_count_once() {
     Check(BuildPowerMath::ProjectShortage(600, 700, 6000, 6, 1000, 0) == 0);
     Check(BuildPowerMath::ProjectShortage(600, 700, 300000, 0, 1000, 0) == 0);
 }
+void test_converter_headroom_counts_inactive_and_committed_capacity() {
+    Check(BuildPowerMath::ConversionHeadroom(12000,9000,6000,6000,100)==2900);
+    Check(BuildPowerMath::ConversionHeadroom(12000,9000,6000,12000,100)==-3100);
+    Check(BuildPowerMath::ConversionHeadroom(12000,9000,6000,9000,100)==-100);
+    Check(BuildPowerMath::ConversionHeadroom(12000,1000,2000,6000,100)==5900);
+}
 void test_seaplane_reserve_blocks_a_deficit_that_old_funding_admitted() {
     Check(BuildPowerMath::Funded(1950,0,80,90,0,1450,60,0,45));
     Check(!BuildPowerMath::Funded(1950,500,80,90,0,1450,60,0,45));

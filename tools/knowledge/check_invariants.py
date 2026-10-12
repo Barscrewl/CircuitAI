@@ -62,7 +62,7 @@ def main():
             findings.append("%s: no forbid entry for [INVARIANT]" % os.path.relpath(path, ROOT))
 
     # 3. every TECH rule row is in the actor matrix
-    rules_path = os.path.join(ROOT, "data", "script", "src", "roles", "tech_rules.as")
+    rules_path = os.path.join(ROOT, "data", "script", "src", "roles", "tech", "tech_rules.as")
     matrix_path = document("actor-matrix.md")
     if os.path.exists(rules_path):
         keys = re.findall(r'Rule\("([a-z0-9.]+)"', read(rules_path))

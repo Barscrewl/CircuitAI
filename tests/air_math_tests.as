@@ -47,18 +47,10 @@ void test_air_wave_is_metal_limited() { Check(AirMath::WaveTarget(10,8,4,80,0,24
 void test_air_wave_is_factory_limited() { Check(AirMath::WaveTarget(10,8,4,80,0,240,.05f,1000,100000,310,18500)==12); }
 void test_air_held_fleet_counts_toward_reachable_size() { Check(AirMath::WaveTarget(10,8,4,80,10,240,.05f,1000,100000,310,18500)==22); }
 void test_air_wave_never_exceeds_cap() { Check(AirMath::WaveTarget(100,8,4,80,200,240,1,1000,100000,310,18500)==80); }
-void test_air_timeout_waives_schedule_not_minimum() { Check(AirMath::LaunchDue(8,40,8,240,240,true,false)); }
-void test_air_timeout_does_not_waive_escort() { Check(!AirMath::LaunchDue(8,40,8,240,240,false,false)); }
-void test_air_launch_does_not_replace_active_cohort() { Check(!AirMath::LaunchDue(40,40,8,240,240,true,true)); }
-void test_air_small_pool_waits() { Check(!AirMath::LaunchDue(7,40,8,1000,240,true,false)); }
-void test_air_reserve_does_not_inflate_sortie_escort() { Check(AirMath::SortieSize(58,12,8,10,.5f)==12); }
-void test_air_escort_shortage_uses_smaller_feasible_sortie() { Check(AirMath::SortieSize(58,28,8,5,.5f)==10); }
-void test_air_escort_below_minimum_stays_home() { Check(AirMath::SortieSize(58,28,8,3,.5f)==0); }
-void test_air_no_enemy_air_does_not_require_escorts() { Check(AirMath::SortieSize(58,28,8,0,0)==28); }
+
 void test_air_extreme_deficit_saturates_before_conversion() { Check(AirMath::Missing(1.0e11f,0,0.001f)==2147483647); }
 void test_air_extreme_wave_schedule_remains_capped() { Check(AirMath::WaveTarget(2147483647,8,2147483647,80,0,1.0e11f,1.0e11f,1.0e11f,1.0e11f,1,1)==80); }
-void test_air_large_reserve_does_not_require_linear_search() { Check(AirMath::SortieSize(2147483647,2147483647,8,5,.5f)==10); }
-void test_air_fractional_escort_capacity_rounds_down() { Check(AirMath::SortieSize(20,20,8,7,.8f)==8); }
+
 void test_air_unlimited_campus_keeps_expanding() { Check(AirMath::BayAllowed(50,0) && AirMath::PlannedBays(50,6)==51); }
 void test_air_explicit_factory_limit_is_respected() { Check(!AirMath::BayAllowed(6,6)); }
 void test_air_campus_reserves_minimum_before_growth() { Check(AirMath::PlannedBays(0,6)==6 && AirMath::PlannedBays(5,6)==6); }
@@ -81,8 +73,7 @@ void test_air_bad_opening_settings_are_bounded() { Check(AirMath::OpeningWave(20
 void test_air_shared_economy_retires_small_energy() { Check(!AirMath::EnergyEraAllows(true,false,true,false) && !AirMath::EnergyEraAllows(true,false,false,true)); }
 void test_air_shared_economy_keeps_reactors_and_converters() { Check(AirMath::EnergyEraAllows(false,false,true,true)); }
 void test_air_first_afus_retires_advanced_solar() { Check(AirMath::EnergyEraAllows(false,true,true,false) && !AirMath::EnergyEraAllows(false,true,true,true)); }
-void test_air_campus_tiles_touch_only_at_configured_clearance() { Check(AirMath::BayPitch(216,16)==448 && AirMath::BayPitch(168,16)==352); }
-void test_air_campus_negative_clearance_cannot_overlap() { Check(AirMath::BayPitch(216,-100)==432); }
+
 void test_air_campus_growth_cannot_overflow() { Check(AirMath::PlannedBays(2147483647,6)==2147483647); }
 void test_air_wipeout_increases_next_resistance() { Check(AirMath::RaidResistance(1,0,.3f,.8f,1.5f,.9f,3)==1.5f); }
 void test_air_repeated_losses_have_bounded_resistance() { Check(AirMath::RaidResistance(2.5f,0,.3f,.8f,1.5f,.9f,3)==3); }
@@ -139,6 +130,27 @@ void test_gunship_births_do_not_release_unassembled_group() { Check(!AirMath::De
 void test_gunship_ready_group_releases_immediately() { Check(AirMath::DefenceRelease(10,9,9,1,45)); }
 void test_gunship_deadline_releases_stalled_small_group() { Check(AirMath::DefenceRelease(2,1,9,45,45)); }
 void test_gunship_empty_group_never_releases() { Check(!AirMath::DefenceRelease(0,0,9,100,45)); }
+void test_gunship_aa_preempts_heavy_incumbent_in_either_scan_order() {
+    Check(AirMath::PreferDefensiveGunshipTarget(true, 100125, false, 225000));
+    Check(!AirMath::PreferDefensiveGunshipTarget(false, 225000, true, 100125));
+}
+void test_gunship_same_tier_retains_incumbent_and_stable_ties() {
+    Check(!AirMath::PreferDefensiveGunshipTarget(true, 100650, true, 125125));
+    Check(!AirMath::PreferDefensiveGunshipTarget(true, 100125, true, 100125));
+    Check(AirMath::PreferDefensiveGunshipTarget(false, 100650, false, -1));
+}
+void test_gunship_dedicated_mobile_aa_includes_advanced_bots() {
+    Check(AirMath::DefensiveGunshipPriority(true,true,true,true,750,400));
+    Check(!AirMath::DefensiveGunshipPriority(true,true,false,true,125,400));
+    Check(!AirMath::DefensiveGunshipPriority(true,false,true,true,125,400));
+}
+void test_gunship_static_aa_boundary_and_profile_disable() {
+    Check(AirMath::DefensiveGunshipPriority(true,true,true,false,400,400));
+    Check(!AirMath::DefensiveGunshipPriority(true,true,true,false,401,400));
+    Check(!AirMath::DefensiveGunshipPriority(true,true,true,false,100,0));
+    Check(!AirMath::DefensiveGunshipPriority(true,true,true,false,-1,400));
+    Check(!AirMath::DefensiveGunshipPriority(false,true,true,true,125,400));
+}
 void test_defense_counts_frames_and_orders_once() { Check(AirMath::DefenceDeficit(20,7,5,3)==5); }
 void test_defense_stops_at_shared_target() { Check(AirMath::DefenceDeficit(20,18,2,1)==0); }
 void test_advanced_defense_bombers_skip_t1_mobiles() { Check(!AirMath::DefensiveBomberTarget(true,true,false)); }

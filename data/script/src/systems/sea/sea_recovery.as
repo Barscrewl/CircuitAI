@@ -39,18 +39,19 @@ namespace SeaRecovery {
         if (Protected(u)) return u is null ? null : u.task;
         const float radius=Global::RoleSettings::Sea::RecoverySearchRadius;
         IUnitTask@ t=null;
+        // Safe fleet repairs precede resource recovery. Native admission checks
+        // current sensor contacts and reach; no repair job follows a fighting
+        // ship into a combat zone simply because it used to be safe.
+        @t=aiBuilderMgr.FindRecoveryTask(u,1,radius,null,1,false,
+            Global::RoleSettings::Sea::RecoveryRepairCombatClearance);
+        if (t !is null) return t;
         if (lowMetal) @t=aiBuilderMgr.FindRecoveryTask(u,0,radius,null);
         if (t !is null) return t;
-        const array<string> flagships={"armepoch","corblackhy","leganavyflagship"};
-        for (uint i=0;i<flagships.length();++i) {
-            CCircuitDef@ d=ai.GetCircuitDef(flagships[i]);
-            if (d is null) continue;
-            @t=aiBuilderMgr.FindRecoveryTask(u,1,radius,d);
-            if (t !is null) return t;
-        }
-        @t=aiBuilderMgr.FindRecoveryTask(u,2,radius,null);
-        if (t !is null) return t;
-        @t=aiBuilderMgr.FindRecoveryTask(u,1,radius,null);
+        // Each wreck has one native task shared by a bounded crew, so subs
+        // focus their resurrection power without GUARD chains or repeated MOVE.
+        // Rank by full vessel cost, not its partially reclaimed scrap value.
+        @t=aiBuilderMgr.FindRecoveryTask(u,2,radius,null,
+            AiMax(1,Global::RoleSettings::Sea::RecoveryResurrectionGroupSize),true);
         if (t !is null) return t;
         // A short wait is recovery standby, never factory assistance (these
         // subs cannot assist construction). New opportunities interrupt it.
@@ -97,6 +98,14 @@ namespace SeaRecovery {
                 IBuilderTask@ b=cast<IBuilderTask>(selected);
                 if (b !is null) {
                     const int kind=b.GetBuildType();
+                    if (kind==int(Task::BuildType::RESURRECT)) {
+                        // Inspect only on a new assignment, not every update.
+                        array<CCircuitUnit@>@ crew=selected.GetUnits();
+                        if (crew.length()>uint(AiMax(1,Global::RoleSettings::Sea::RecoveryResurrectionGroupSize)))
+                            Invariants::Violation("INV-182",""+u.id,"SEA resurrection crew exceeds configured group size");
+                        GenericHelpers::LogUtil("[SEA][RecoveryGroup] sub="+u.id+" crew="+crew.length()
+                            +" x="+b.GetBuildPos().x+" z="+b.GetBuildPos().z,1);
+                    }
                     GenericHelpers::LogUtil("[SEA][Recovery] sub="+u.id+" task="+kind+" lowMetal="+lowMetal,1);
                     if (kind!=int(Task::BuildType::RECLAIM) && kind!=int(Task::BuildType::RESURRECT)
                         && kind!=int(Task::BuildType::REPAIR) && kind!=int(Task::BuildType::WAIT))

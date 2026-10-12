@@ -31,6 +31,7 @@
 #include <limits>
 #include <queue>
 #include <string>
+#include <cstdlib>
 
 namespace circuit {
 
@@ -538,6 +539,7 @@ void CBattleAnalysis::OnEnemyLost(const AIFloat3& pos, float c)
 
 void CBattleAnalysis::Update(int frame)
 {
+	++groundPublication;
 	EnsureGrid();
 	airContacts.clear();
     groundContacts.clear();
@@ -828,6 +830,77 @@ int CBattleAnalysis::GetNavalForceCount() {
     return int(navalForces.size());
 }
 int CBattleAnalysis::GetNavalForceId(int i) const { return i>=0 && i<int(navalForces.size()) ? navalForces[i].id : -1; }
+bool CBattleAnalysis::OutsideStaticWaterWeapons(const AIFloat3& position, float padding, float formationRadius)
+{
+    GetSeaForceCount();
+    // Derived from the exact snapshots used by the old script loops, not a
+    // timed observation cache. Ground can republish within the same frame.
+    if (waterWeaponFrame != seaForceFrame || waterWeaponPublication != groundPublication) {
+        waterWeaponFrame = seaForceFrame; waterWeaponPublication = groundPublication;
+        staticWaterWeapons.clear(); staticWaterWeaponIndex.Clear(); maximumWaterWeaponRange = 0.f;
+        staticWaterWeaponIndexValid = true;
+        const auto add = [&](const AIFloat3& point, const CCircuitDef* definition) {
+            const float range = definition->GetMaxRange(CCircuitDef::RangeType::WATER);
+            if (staticWaterWeaponIndex.CanQuery({point.x,point.z},0.f) && std::isfinite(range) && range>=0.f)
+                staticWaterWeaponIndex.Add({point.x, point.z}, int(staticWaterWeapons.size()));
+            else staticWaterWeaponIndexValid = false;
+            staticWaterWeapons.push_back({point, range});
+            maximumWaterWeaponRange = std::max(maximumWaterWeaponRange, range);
+        };
+        for (int i = 0; i < GetGroundContactCount(); ++i) {
+            const int id = GetGroundContactDefId(i);
+            const auto* definition = id >= 0 ? circuit->GetCircuitDef(id) : nullptr;
+            if (definition && !definition->IsMobile() && (definition->HasSurfToWater() || definition->HasSubToWater()))
+                add(GetGroundContactPos(i), definition);
+        }
+        for (const auto& force : seaForces) {
+            if ((force.flags & 1) || !(force.flags & 8) || !(force.flags & 4)) continue;
+            const auto* definition = force.defId >= 0 ? circuit->GetCircuitDef(force.defId) : nullptr;
+            if (definition) add(force.pos, definition);
+        }
+    }
+    const auto inside = [&](int index) {
+        const auto& weapon = staticWaterWeapons[index];
+        const float radius = (weapon.range + padding) + formationRadius;
+        return position.SqDistance2D(weapon.position) < radius * radius;
+    };
+    // Broad phase is conservative even for an unusual negative policy margin.
+    // Exact squared-radius test and the strict boundary remain unchanged.
+    const float queryRadius=(maximumWaterWeaponRange + std::fabs(padding)) + std::fabs(formationRadius);
+    bool safe = true;
+    if (staticWaterWeaponIndexValid && staticWaterWeaponIndex.CanQuery({position.x,position.z},queryRadius))
+        safe = !staticWaterWeaponIndex.Any({position.x, position.z},queryRadius,inside);
+    else {
+        // Preserve the original scan for exceptional policy/contact values;
+        // never feed NaN, infinity or overflowing coordinates to grid indexing.
+        for (size_t index=0; index<staticWaterWeapons.size(); ++index)
+            if (inside(int(index))) { safe=false; break; }
+    }
+    static const bool verify = std::getenv("CIRCUIT_VERIFY_SEA_STATIC_INDEX") != nullptr;
+    if (verify) {
+        // Independent legacy traversal also verifies snapshot membership, not
+        // merely the broad-phase arithmetic. Validation only, never timings.
+        bool legacy = true;
+        const auto threatens = [&](const AIFloat3& point, const CCircuitDef* definition) {
+            const float radius = (definition->GetMaxRange(CCircuitDef::RangeType::WATER) + padding) + formationRadius;
+            return position.SqDistance2D(point) < radius * radius;
+        };
+        for (int index = 0; index < GetGroundContactCount(); ++index) {
+            const int definitionId = GetGroundContactDefId(index);
+            const auto* definition = definitionId >= 0 ? circuit->GetCircuitDef(definitionId) : nullptr;
+            if (definition && !definition->IsMobile() && (definition->HasSurfToWater() || definition->HasSubToWater())
+                && threatens(GetGroundContactPos(index), definition)) legacy = false;
+        }
+        for (const auto& force : seaForces) {
+            if ((force.flags & 1) || !(force.flags & 8) || !(force.flags & 4)) continue;
+            const auto* definition = force.defId >= 0 ? circuit->GetCircuitDef(force.defId) : nullptr;
+            if (definition && threatens(force.pos, definition)) legacy = false;
+        }
+        if (safe != legacy) circuit->LOG("[INVARIANT] SEA static weapon index diverged");
+    }
+    return safe;
+}
+
 int CBattleAnalysis::GetSeaForceCount() {
     const int frame=circuit->GetLastFrame();
     if (frame==seaForceFrame) return int(seaForces.size());
@@ -870,7 +943,8 @@ int CBattleAnalysis::GetSeaForceCount() {
         // Unfinished yards and mobile constructors are denial targets too.
         const int flags=(submerged?2:0)|(antiSub?4:0)|(!d->IsMobile()?8:0)
             |(!d->IsMobile() && !d->GetBuildOptions().empty()?32:0)
-            |(d->IsMex()?64:0)|(!observed?128:0);
+            |(d->IsMex()?64:0)|(!observed?128:0)
+            |(d->IsMobile() && d->IsAmphibious() && submerged?256:0);
         seaForces.push_back({p,d->GetCostM(),e->GetId(),d->GetId(),flags,body});
     }
     std::sort(seaForces.begin(),seaForces.end(),[](const NavalForce& a,const NavalForce& b){return a.id<b.id;});

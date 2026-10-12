@@ -86,8 +86,20 @@ bool CFactoryScript::Init()
 	InitModule(mod);
 	factoryInfo.isSwitchTime = script->GetFunc(mod, "bool AiIsSwitchTime(int)");
 	factoryInfo.isSwitchAllowed = script->GetFunc(mod, "bool AiIsSwitchAllowed(CCircuitDef@)");
+	factoryInfo.canRefillImmediately = mod->GetFunctionByDecl("bool AiCanRefillImmediately(CCircuitUnit@)");
 	factoryInfo.getFactoryToBuild = script->GetFunc(mod, "CCircuitDef@ AiGetFactoryToBuild(const AIFloat3& in, bool, bool)");
 	return true;
+}
+
+bool CFactoryScript::CanRefillImmediately(CCircuitUnit* unit)
+{
+	// Optional completion policy: legacy profiles retain their idle scheduling.
+	if (factoryInfo.canRefillImmediately == nullptr) return false;
+	asIScriptContext* ctx = script->PrepareContext(factoryInfo.canRefillImmediately);
+	ctx->SetArgObject(0, unit);
+	const bool result = script->Exec(ctx) && ctx->GetReturnByte();
+	script->ReturnContext(ctx);
+	return result;
 }
 
 bool CFactoryScript::IsSwitchTime(int lastSwitchFrame)

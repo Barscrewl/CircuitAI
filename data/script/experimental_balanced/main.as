@@ -10,9 +10,10 @@ namespace Main {
 	// Values are likelihoods in [0.0, 1.0] for enabling a given strategy.
 	// Adjust these to tune how often a strategy is chosen at game start.
 	namespace StrategyWeights {
-		float Tech_T2_RUSH = 0.85f;   // 85% chance
+		float Tech_Spam_Rush = 0.85f;   // 85% chance
 		float Tech_T3_RUSH = 0.35f;   // 35% chance
 		float Tech_NUKE_RUSH = 0.25f; // 25% chance
+		float Tech_T2_RUSH = 0.25f; // Independent finite heavy-delivery rush
 	}
 
 	// Decide a boolean from a probability using AiDice with two weights: off vs on.
@@ -31,14 +32,19 @@ namespace Main {
 		// Start fresh (no strategies), then enable per dice outcome
 		Global::RoleSettings::Tech::StrategyMask = 0;
 
-		if (DecideEnabled(StrategyWeights::Tech_T2_RUSH)) {
-			Global::RoleSettings::Tech::EnableStrategy(Strategy::T2_RUSH);
+		if (DecideEnabled(StrategyWeights::Tech_Spam_Rush)) {
+			Global::RoleSettings::Tech::EnableStrategy(Strategy::SPAM_RUSH);
 		}
 		if (DecideEnabled(StrategyWeights::Tech_T3_RUSH)) {
 			Global::RoleSettings::Tech::EnableStrategy(Strategy::T3_RUSH);
 		}
 		if (DecideEnabled(StrategyWeights::Tech_NUKE_RUSH)) {
 			Global::RoleSettings::Tech::EnableStrategy(Strategy::NUKE_RUSH);
+		}
+
+		// Append the new draw: preserve the order of the three established rolls.
+		if (DecideEnabled(StrategyWeights::Tech_T2_RUSH)) {
+			Global::RoleSettings::Tech::EnableStrategy(Strategy::T2_RUSH);
 		}
 
 		GenericHelpers::LogUtil(
@@ -106,6 +112,7 @@ namespace Main {
 		//if ((ai.frame % (10 * SECOND)) == 0) {
 		Military::UpdateEnemyThreatCache();
 		Military::UpdateEnemyCostCache();
+        Aggression::Update();
 
 		if (Global::profileController !is null) {
 			Global::profileController.MainUpdate();
@@ -133,6 +140,7 @@ namespace Main {
 	//Use this to modify global.as and apply difficulty/profile settings
 	void ApplyProfileSettings()
 	{
+        Global::RoleSettings::Tech::EarlyGantryEnabled = true;
 	}
 
 }  // namespace Main

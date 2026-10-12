@@ -3,6 +3,9 @@ import argparse,json,re,statistics
 from pathlib import Path
 
 def analyze(path):
+    roster={}
+    def unit_row(team,name):
+        return roster.setdefault(str(team),{}).setdefault(name,{'spawned':0,'produced':0,'lost':0,'raw_damage':0.0})
     units={}; detected={}; first_order={}; damage=[0.,0.]; lost=[0.,0.]; kills=[0.,0.]
     apm=[[],[]]; repeats=[[],[]]; errors=[]; responses=[]; produced=[]; samples=[]; timings=[]; mismatches=[]; finished=[]; threats=[]; decisions=[]; sources=[]; carriers=[]
     event=re.compile(r'\[SeaArena\] frame=(\d+) (\w+)\s*(.*)')
@@ -35,18 +38,24 @@ def analyze(path):
             elif kind=='carrier_owner':carriers.append({'frame':frame,**v})
             elif kind in ('spawn','produced','child'):
                 units[int(v['id'])]={'team':int(v['team']),'unit':v['unit']}
+                unit_row(int(v['team']),v['unit'])['produced' if kind=='produced' else 'spawned']+=1
                 if kind=='produced':produced.append({'frame':frame,**v})
             elif kind=='detected':detected.setdefault(int(v['id']),frame)
             elif kind=='attack' and units.get(int(v['id']),{}).get('team')==0:first_order.setdefault(int(v['target']),frame)
-            elif kind=='damage' and int(v['team']) in (0,1):damage[int(v['team'])]+=float(v['amount'])
+            elif kind=='damage' and int(v['team']) in (0,1):
+                damage[int(v['team'])]+=float(v['amount'])
+                attacker=units.get(int(v['attacker']))
+                if attacker:unit_row(attacker['team'],attacker['unit'])['raw_damage']+=float(v['amount'])
             elif kind=='death':
                 team=int(v['team']);lost[team]+=float(v['cost'])
+                victim=units.get(int(v['id']))
+                if victim:unit_row(team,victim['unit'])['lost']+=1
                 if v.get('attackerTeam') in ('0','1'):kills[int(v['attackerTeam'])]+=float(v['cost'])
             elif kind=='orders' and int(v['team']) in (0,1):
                 team=int(v['team']);apm[team].append(int(v['apm']));repeats[team].append(int(v['repeated']))
             elif kind=='sample':samples.append({'frame':frame,**{k:float(x) for k,x in v.items()}})
     latency=[(f-detected[target])/30 for target,f in first_order.items() if target in detected and f>=detected[target]]
-    return {'schema':2,'log':str(Path(path).resolve()),'fixture_errors':errors,'order_sources':sources,'carrier_ownership':carriers,
+    return {'schema':3,'log':str(Path(path).resolve()),'unit_roster':roster,'fixture_errors':errors,'order_sources':sources,'carrier_ownership':carriers,
         'raw_weapon_damage_by_team':damage,'metal_lost_by_team':lost,'last_hit_kill_metal_by_team':kills,
         'minute_apm_by_team':apm,'minute_identical_order_signatures_by_team':repeats,
         'peak_apm_by_team':[max(x,default=0) for x in apm],

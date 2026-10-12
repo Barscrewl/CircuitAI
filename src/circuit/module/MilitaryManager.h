@@ -114,6 +114,7 @@ public:
 
 	IFighterTask* Enqueue(const TaskF::SFightTask& ti);
 	IUnitTask* EnqueueExternalControl(const std::string& ownerRule);
+	IUnitTask* EnqueueCargoHold(int transportId);
 	virtual CRetreatTask* EnqueueRetreat() override;
 
 	/*
@@ -329,6 +330,11 @@ public:
 	void AddResponse(CCircuitUnit* unit);
 	void DelResponse(CCircuitUnit* unit);
 	float GetArmyCost() const { return armyCost; }
+    void SetAggressionDelta(float value);
+    float GetAggressionDelta() const { return aggressionDelta; }
+    void SetAutomaticAggression(float value);
+    float GetAutomaticAggression() const { return automaticAggression; }
+    float GetAggression() const { return automaticAggression + aggressionDelta; }
 	float RoleProbability(const CCircuitDef* cdef) const;
 	bool IsNeedBigGun(const CCircuitDef* cdef) const;
 	springai::AIFloat3 GetBigGunPos(CCircuitDef* bigDef) const;
@@ -384,6 +390,13 @@ public:
 
 private:
 	std::shared_ptr<CRangedWorld> rangedWorld;
+    float aggressionDelta=0.f, automaticAggression=0.f;
+    IUnitTask* MakeTask(CCircuitUnit* unit) override;
+    void UpdateExternalControl();
+    std::string externalOwnerRule;
+    std::unordered_set<int> externalOwnerDefinitions;
+    std::set<int> externalOwnerCandidates;
+    std::vector<int> externalOwnerSnapshot;
 	virtual IUnitTask* DefaultMakeTask(CCircuitUnit* unit) override;
 
 	void Watchdog();

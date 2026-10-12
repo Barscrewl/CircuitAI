@@ -1,8 +1,9 @@
 #include "air_economy.as"
+#include "air_perimeter.as"
 #include "../team/roster.as"
 #include "../world/lanes.as"
 namespace AirScreen {
-    dictionary routes, cellByUnit;
+    dictionary routes, cellByUnit, registeredFrames;
     array<CRouteTask@> groups;
     array<int> interceptIds;
     int updated=-100000, screenLog=-100000;
@@ -53,25 +54,27 @@ namespace AirScreen {
         return enemy;
     }
     void Tick() {
+        if (!changed && ai.frame-updated<Global::RoleSettings::Air::InterceptUpdateSeconds*SECOND) return;
         array<string>@ ids=routes.getKeys();
         for (uint i=0;i<ids.length();++i) {
             CRouteTask@ task=null;
-            if (ai.GetTeamUnit(parseInt(ids[i])) is null || !routes.get(ids[i],@task) || task is null || task.IsDead()) { routes.delete(ids[i]); cellByUnit.delete(ids[i]); changed=true; }
+            CCircuitUnit@ unit=ai.GetTeamUnit(parseInt(ids[i]));
+            int registered=-1;
+            const bool arriving=registeredFrames.get(ids[i],registered) && registered==ai.frame;
+            // TaskFor is called before native assignment. Only that same-frame
+            // handoff may temporarily differ; subsequent ownership changes prune
+            // the ledger instead of leaving phantom fighters in the screen.
+            if (unit is null || !routes.get(ids[i],@task) || task is null || task.IsDead()
+                || (!arriving && unit.task !is task)) {
+                routes.delete(ids[i]); cellByUnit.delete(ids[i]); registeredFrames.delete(ids[i]);
+            }
         }
-        if (!changed && ai.frame-updated<Global::RoleSettings::Air::InterceptUpdateSeconds*SECOND) return;
         updated=ai.frame; changed=false; @ids=routes.getKeys(); if (ids.length()==0) return;
         const int cells=AiMax(1,Global::RoleSettings::Air::ScreenCells);
         const AIFloat3 anchor=Anchor(), enemy=Enemy(anchor);
-        float dx=enemy.x-anchor.x,dz=enemy.z-anchor.z;
-        const float distance=sqrt(dx*dx+dz*dz);
-        if (distance<1) { dx=0; dz=1; } else { dx/=distance; dz/=distance; }
-        // Four-aircraft geometry steps avoid re-forming the entire wall on every birth.
-        const int strength=AiMin(Global::RoleSettings::Air::ScreenFullFighters,int(ids.length())/4*4);
-        const float progress=ProductionMath::Progress(strength,4,Global::RoleSettings::Air::ScreenFullFighters);
-        const float limit=AiMax(0.0f,distance*.5f-Global::RoleSettings::Air::ScreenFrontSetback);
-        const float advance=ProductionMath::BoundedBlend(AiMin(limit,Global::RoleSettings::Air::ScreenRearAdvance),limit,progress);
-        const float width=ProductionMath::BoundedBlend(Global::RoleSettings::Air::ScreenRearWidth,Global::RoleSettings::Air::ScreenFrontWidth,progress);
-        const AIFloat3 centre=Clamp(AIFloat3(anchor.x+dx*advance,0,anchor.z+dz*advance));
+        AirPerimeter::Plan(anchor,enemy,int(ids.length()),cells);
+        const float width=AirPerimeter::span;
+        const AIFloat3 centre=AirPerimeter::vertices[cells/2];
         array<float> value(cells,0);
         for (uint i=0;i<ids.length();++i) { int c=0; cellByUnit.get(ids[i],c); CCircuitUnit@ u=ai.GetTeamUnit(parseInt(ids[i])); if (u !is null && c>=0 && c<cells) value[c]+=u.circuitDef.costM; }
         array<float> remaining; array<int> contacts, contactIds;
@@ -92,8 +95,7 @@ namespace AirScreen {
         responding=false;
         for (int c=0;c<cells && c<int(groups.length());++c) {
             CRouteTask@ task=groups[c]; if (task is null || task.IsDead() || value[c]<=0) continue;
-            const float left=width*(float(c)/cells-.5f), right=width*(float(c+1)/cells-.5f);
-            array<AIFloat3> points={Clamp(AIFloat3(centre.x-dz*left,0,centre.z+dx*left)),Clamp(AIFloat3(centre.x-dz*right,0,centre.z+dx*right))};
+            array<AIFloat3> points={AirPerimeter::vertices[c],AirPerimeter::vertices[c+1]};
             for (uint p=0;p<points.length();++p)
                 if (!ProductionMath::Inside(points[p].x,points[p].z,float(AiTerrainWidth()),float(AiTerrainHeight()),0))
                     Invariants::Violation("INV-080","AIR","fighter wall endpoint outside map");
@@ -114,12 +116,15 @@ namespace AirScreen {
         }
         if (ai.frame-screenLog>=10*SECOND) {
             screenLog=ai.frame;
-            GenericHelpers::LogUtil("[AIR][Screen] fighters="+ids.length()+" cells="+cells+" centre="+int(centre.x)+","+int(centre.z)+" width="+int(width)+" advance="+int(advance)+" responding="+responding,1);
+            GenericHelpers::LogUtil("[AIR][Screen] fighters="+ids.length()+" cells="+cells+" centre="+int(centre.x)+","+int(centre.z)+" width="+int(width)+" maturity="+AirPerimeter::lastProgress+" responding="+responding,1);
         }
     }
     IUnitTask@ TaskFor(CCircuitUnit@ u) {
         const string key=""+u.id; CRouteTask@ task=null;
-        if (routes.get(key,@task) && task !is null && !task.IsDead()) return task;
+        int registered=-1;
+        if (routes.get(key,@task) && task !is null && !task.IsDead()
+            && (u.task is task || (registeredFrames.get(key,registered) && registered==ai.frame))) return task;
+        Removed(u.id);
         const int cells=AiMax(1,Global::RoleSettings::Air::ScreenCells);
         if (int(groups.length())!=cells) groups.resize(cells);
         array<int> count(cells,0); array<string>@ ids=cellByUnit.getKeys();
@@ -130,8 +135,8 @@ namespace AirScreen {
             groups[cell].SetAirControl(true); groups[cell].SetPatrol(true);
         }
         u.SetIdleMode(0); u.SetFireState(2); @task=groups[cell];
-        routes.set(key,@task); cellByUnit.set(key,cell); changed=true; Tick(); return task;
+        routes.set(key,@task); cellByUnit.set(key,cell); registeredFrames.set(key,ai.frame); changed=true; Tick(); return task;
     }
-    void Removed(int id) { routes.delete(""+id); cellByUnit.delete(""+id); changed=true; }
-    void Reset() { routes.deleteAll(); cellByUnit.deleteAll(); groups.resize(0); interceptIds.resize(0); updated=-100000; screenLog=-100000; responding=false; changed=true; }
+    void Removed(int id) { routes.delete(""+id); cellByUnit.delete(""+id); registeredFrames.delete(""+id); changed=true; }
+    void Reset() { routes.deleteAll(); cellByUnit.deleteAll(); registeredFrames.deleteAll(); AirPerimeter::Reset(); groups.resize(0); interceptIds.resize(0); updated=-100000; screenLog=-100000; responding=false; changed=true; }
 }

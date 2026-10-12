@@ -65,7 +65,9 @@ namespace Military {
 			return aiMilitaryMgr.DefaultMakeTask(u);
 		}
 
-		IUnitTask@ t = AmphibiousOps::MilitaryTask(u);
+		IUnitTask@ t = TechHeavyDelivery::MilitaryTask(u);
+        if (t !is null) return t;
+        @t = AmphibiousOps::MilitaryTask(u);
         if (t !is null) return t;
         @t = TechFlank::MilitaryTask(u);
 		if (t !is null) return t;
@@ -118,6 +120,7 @@ namespace Military {
 
 	void AiUnitRemoved(CCircuitUnit@ unit, Unit::UseAs usage)
 	{
+        TechHeavyDelivery::Removed(unit);
 		Team::Ferry::OnUnitRemoved(unit);
 		TechFlank::UnitRemoved(unit);
         AmphibiousOps::UnitRemoved(unit);

@@ -12,6 +12,40 @@ import playtest
 
 
 class DeadlineTests(unittest.TestCase):
+    def test_invalid_directory_fails_before_staging(self):
+        for directory in ("", " ", str(playtest.REPO), str(playtest.REPO.parent)):
+            with self.subTest(directory=directory), patch.object(playtest.shutil, "copy2") as copy:
+                with self.assertRaises(SystemExit):
+                    playtest.stage(argparse.Namespace(dir=directory))
+                copy.assert_not_called()
+
+    def test_missing_exact_map_fails_before_team_selection(self):
+        args = argparse.Namespace(game="BAR test", map="Tundra Continents v1.1")
+        with patch.object(playtest, "read_prod_script", return_value=({}, {})), \
+                patch.object(playtest, "map_archive_present", return_value=False), \
+                patch.object(playtest, "map_spots") as spots, \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                playtest.write_script(args, Path("unused"))
+            spots.assert_not_called()
+
+    def test_zero_frame_exit_fails_without_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "infolog.txt").write_text("engine setup failed\n")
+            checks = root / "checks.json"
+            checks.write_text('{"expect": []}')
+            args = argparse.Namespace(dir=directory, checks=str(checks), role="TECH",
+                minutes=3, wall_minutes=1, keep_going=True, no_stop=True,
+                poll=0, print_report=False, timeline_lines=10)
+            with patch.object(playtest, "running_pids", return_value=[]), \
+                    patch.object(playtest.time, "sleep") as sleep, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(playtest.watch(args), 1)
+                sleep.assert_not_called()
+            self.assertIn("engine exited before the game started",
+                (root / "report.md").read_text(encoding="utf-8"))
+
     def judge(self, event_frame, deadline=20, prefix=""):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

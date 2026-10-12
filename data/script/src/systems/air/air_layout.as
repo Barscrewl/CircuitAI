@@ -208,7 +208,7 @@ namespace AirLayout {
     }
     Bay@ Activate(Bay@ bay)
     {
-        if (bay is null || bay.started) return bay;
+        if (bay is null) return bay;
         array<Bay@> members;
         array<int> slots;
         for (uint i = 0; i < bays.length(); ++i) {
@@ -216,8 +216,25 @@ namespace AirLayout {
             members.insertLast(bays[i]); slots.insertLast(bays[i].slot);
             for (uint n = 0; n < bays[i].nanos.length(); ++n) slots.insertLast(bays[i].nanos[n]);
         }
+        // Claims protect in-flight tasks, but only a frame commits the campus.
+        // Recompute this after a failed task instead of latching at enqueue.
+        bool claimed = false, framed = false;
+        for (uint i = 0; i < slots.length(); ++i) {
+            const int slotState = aiTerrainMgr.GetReservationState(slots[i]);
+            claimed = claimed || slotState == 1;
+            framed = framed || slotState == 2 || slotState == 3;
+        }
+        if (framed) {
+            for (uint i = 0; i < members.length(); ++i) {
+                if (!members[i].started) { members[i].started = true; Save(members[i]); }
+            }
+            return bay;
+        }
+        if (claimed) return bay;
+        for (uint i = 0; i < members.length(); ++i) {
+            if (members[i].started) { members[i].started = false; Save(members[i]); }
+        }
         const int state = LayoutHelpers::ActivationState(slots);
-        if (state == 2) { for (uint i = 0; i < members.length(); ++i) { members[i].started = true; Save(members[i]); } return bay; }
         if (state == 0) return bay;
         GenericHelpers::LogUtil("[AIR][Layout] relocate blocked unused cluster=" + bay.cluster, 1);
         for (uint i = 0; i < slots.length(); ++i) aiTerrainMgr.ReleasePersistentBuilding(slots[i]);

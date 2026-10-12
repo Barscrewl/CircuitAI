@@ -24,6 +24,7 @@
 #include "util/Utils.h"
 
 #include "AISCommands.h"
+#include <cmath>
 
 namespace circuit {
 
@@ -131,7 +132,28 @@ void CRetreatTask::Start(CCircuitUnit* unit)
 	}
 
 	bool isNoEndPos = true;
-	if (repairer != nullptr) {
+    // D-268: a script may nominate a short withdrawal stage, not replace the
+    // repair destination. Constant work per route request; no fleet scan here.
+    // Expiry, anchor ownership/movement, reachability and current threat are
+    // checked on the engine thread. Arrival consumes the stage permanently
+    // until policy publishes a new one after this retreat has finished.
+    if (unit->GetRetreatAnchor() >= 0) {
+        CCircuitUnit* anchor = circuit->GetTeamUnit(unit->GetRetreatAnchor());
+        const AIFloat3& waypoint = unit->GetRetreatWaypoint();
+        constexpr float arrivalRadius = 128.f;
+        constexpr float maximumAnchorMovement = 512.f;
+        const bool valid = frame < unit->GetRetreatWaypointUntil() && anchor != nullptr
+            && geom::is_valid(waypoint) && std::isfinite(waypoint.x) && std::isfinite(waypoint.z)
+            && waypoint.x >= 0.f && waypoint.z >= 0.f
+            && waypoint.x < CTerrainManager::GetTerrainWidth() && waypoint.z < CTerrainManager::GetTerrainHeight()
+            && anchor->GetPos(frame).SqDistance2D(waypoint) <= SQUARE(maximumAnchorMovement)
+            && startPos.SqDistance2D(waypoint) > SQUARE(arrivalRadius)
+            && circuit->GetTerrainManager()->CanReachAt(unit, waypoint, arrivalRadius)
+            && circuit->GetThreatMap()->GetThreatAt(unit, waypoint) <= circuit->GetThreatMap()->GetThreatAt(unit, startPos);
+        if (valid) { endPos = waypoint; range = arrivalRadius; isNoEndPos = false; }
+        else unit->ClearRetreatWaypoint();
+    }
+	if (isNoEndPos && repairer != nullptr) {
 		endPos = repairer->GetPos(frame);
 		isNoEndPos = circuit->GetInflMap()->GetInfluenceAt(endPos) < INFL_EPS;
 		if (!isNoEndPos) {
@@ -207,6 +229,18 @@ void CRetreatTask::OnUnitIdle(CCircuitUnit* unit)
 {
 	CCircuitAI* circuit = manager->GetCircuit();
 	const int frame = circuit->GetLastFrame();
+    // Idle can arrive while the first asynchronous route is pending. Preserve
+    // that request; only arrival/expiry/failed validation consumes the stage.
+    if (unit->GetRetreatAnchor() >= 0) {
+        constexpr float arrivalRadius = 128.f;
+        if (unit->GetTravelAct() != nullptr && !unit->GetTravelAct()->IsFinished()
+            && frame < unit->GetRetreatWaypointUntil()
+            && unit->GetPos(frame).SqDistance2D(unit->GetRetreatWaypoint()) > SQUARE(arrivalRadius)) {
+            Start(unit);
+            if (unit->GetRetreatAnchor() >= 0) return;
+        }
+        unit->ClearRetreatWaypoint();
+    }
 
 	CCircuitDef* cdef = unit->GetCircuitDef();
 	if (cdef->IsAbleToFly()) {

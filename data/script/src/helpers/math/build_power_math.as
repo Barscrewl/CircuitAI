@@ -10,6 +10,15 @@ namespace BuildPowerMath {
     const int One = 1;
     const int RequiredRefillCount = 2;
 
+    // Conversion expenditure is already in usage. Remove it once, then charge
+    // all installed/framed/queued converter capacity, including switched-off
+    // converters. Storage percentage alone cannot represent sustained supply.
+    float ConversionHeadroom(float energyIncome, float energyUsage,
+        float conversionUsage, float conversionCapacity, float energyReserve) {
+        return energyIncome - Max(ZeroValue, energyUsage - conversionUsage)
+            - conversionCapacity - energyReserve;
+    }
+
     bool Valid(float value) { return value >= ZeroValue && value < MaximumValidScalarValue; }
     float Max(float firstValue, float secondValue) { return firstValue > secondValue ? firstValue : secondValue; }
     float Min(float firstValue, float secondValue) { return firstValue < secondValue ? firstValue : secondValue; }

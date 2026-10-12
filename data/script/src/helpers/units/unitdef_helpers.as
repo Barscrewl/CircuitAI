@@ -119,12 +119,6 @@ namespace UnitDefHelpers {
         ApplyAttrFor(names, attrName, true);
     }
 
-    // Ensure the attribute is absent on each named unitdef
-    void RemoveNoAttrFor(const array<string>@ names, const string &in attrName)
-    {
-        ApplyAttrFor(names, attrName, false);
-    }
-    
     void SetMainRoleFor(const array<string>@ names, const string &in roleName) {
         Type roleType = aiRoleMasker.GetTypeMask(roleName).type;
         for (uint i = 0; i < names.length(); ++i) {

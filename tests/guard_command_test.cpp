@@ -1,4 +1,5 @@
 #include "circuit/spring/GuardCommand.h"
+#include "circuit/task/builder/GuardIntent.h"
 #include <cassert>
 #include <climits>
 #include <iostream>
@@ -10,6 +11,12 @@ using Kind = Command::Kind;
 
 int main()
 {
+	assert(circuit::guard::LeaseAlive(-1, 15, 100000));
+	assert(circuit::guard::LeaseAlive(100, 0, 100000));
+	assert(circuit::guard::LeaseAlive(100, 15, 114));
+	assert(!circuit::guard::LeaseAlive(100, 15, 115));
+	assert(!circuit::guard::LeaseAlive(100, 15, 116));
+	assert(circuit::guard::LeaseAlive(INT_MAX-10, 15, INT_MAX));
 	int checks = 0;
 	auto check = [&](std::vector<Command> queue, bool expected, int target = 42, int frame = 100) {
 		const bool got = circuit::guard::HasIntent(static_cast<int>(queue.size()), target, frame,

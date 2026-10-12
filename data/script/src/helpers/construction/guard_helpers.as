@@ -46,9 +46,11 @@ namespace GuardHelpers {
             return null;
         }
 
-        IUnitTask@ task = aiBuilderMgr.Enqueue(
-            TaskB::Guard(prio, target, interrupt, timeout)
-        );
+        // Policy still runs on every reevaluation. Retain the exact healthy
+        // task before allocating a replacement that native would discard.
+        IUnitTask@ task = aiBuilderMgr.FindMatchingGuard(guard, TaskB::Guard(prio, target, interrupt, timeout));
+        if (task !is null) return task;
+        @task = aiBuilderMgr.Enqueue(TaskB::Guard(prio, target, interrupt, timeout));
         if (task is null) {
             GenericHelpers::LogUtil("[Guard] failed to enqueue guard task for guard id=" + guard.id + " -> target id=" + target.id, 2);
             return null;

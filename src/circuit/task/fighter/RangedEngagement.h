@@ -13,9 +13,10 @@ public:
     ~CRangedEngagement();
     void Update(CCircuitUnit* unit);
     void Idle() { nextFrame=0; }
-    void MoveFailed() { query.reset(); moving=false; orientUntil=0; nextFrame=0; ++failures; }
+    void MoveFailed() { query.reset(); moving=false; completedMove=false; orientUntil=0; nextFrame=0; ++failures; }
     void Release(CCircuitUnit* unit, bool commands=true);
     int Target() const { return target; }
+    bool IsSustainedRush() const { return world.IsSustainedRush(id); }
 private:
     void SelectTarget(CCircuitUnit* unit,int id,int weapon,float damage);
     bool Move(CCircuitUnit* unit,const springai::AIFloat3& destination,bool escape);
@@ -43,6 +44,7 @@ private:
     std::shared_ptr<int> lifetime=std::make_shared<int>(0);
     unsigned generation=0;
     bool urgentMove=false;
+    bool completedMove=false;
     int moveObjective=-1, moveMode=-1;
     bool moving=false, issuing=false, released=false, cloakWanted=false, reorient=false;
     float reservedDamage=0.f;

@@ -247,7 +247,7 @@ namespace SeaEconomy {
             }
             // Re-associate completed yards after reload, transfer or frame creation.
             int64 berthIndex=-1;
-            if ((Yard(d) || UnitHelpers::IsSeaplanePlatform(name)) && berthSites.get(SiteKey(name,u.GetPos(ai.frame)),berthIndex)) {
+            if (SupportedFactory(d) && berthSites.get(SiteKey(name,u.GetPos(ai.frame)),berthIndex)) {
                 SeaLayout::Berth@ berth=SeaLayout::berths[uint(berthIndex)];
                 if (berth.unit!=u.id) { berth.unit=u.id; berth.active=true; SeaLayout::Save(berth); }
                 berthProducers.set(""+u.id,berthIndex);
@@ -345,15 +345,21 @@ namespace SeaEconomy {
             d.costM,d.costE,Global::RoleSettings::Sea::SeaplaneMinimumMetalIncome,Global::RoleSettings::Sea::SeaplaneMinimumEnergyIncome,
             Global::RoleSettings::Sea::SeaplaneMetalReserve,Global::RoleSettings::Sea::SeaplaneEnergyReserve);
     }
-    bool Fund(CCircuitDef@ d, float buildPower, float extraM=0, float extraE=0, float reserveM=0, float reserveE=0, float horizon=0, float redirectM=0, float redirectE=0) {
+    bool Fund(CCircuitDef@ d, float buildPower, float extraM=0, float extraE=0, float reserveM=0, float reserveE=0, float horizon=0, float redirectM=0, float redirectE=0, bool useConversionEnergy=false) {
         fundedFrame=-1; fundedName="";
         if (d is null || buildPower<=0) return false;
         const float seconds=AiMax(1.0f,d.GetBuildTime()/buildPower);
         const float budgetHorizon=horizon>0 ? horizon : Global::RoleSettings::Sea::WorkforceHorizon;
         float queuedM=0, queuedE=0; UnframedCosts(queuedM,queuedE);
-        const bool funded=BuildPowerMath::Funded(aiEconomyMgr.metal.current,reserveM,aiEconomyMgr.metal.income,SeaMath::GrowthUsage(TeamEconomy::OwnMetal(TeamEconomy::USAGE),redirectM),
+        // Conversion is discretionary expenditure. For funded capacity only,
+        // price the conservative case where it ALL stops: remove its energy
+        // use and the corresponding metal income together. Gifts are already
+        // in the bank, never added as predicted future income. O(1) callbacks.
+        const float conversionEnergy=useConversionEnergy ? AiMax(0.0f,ai.GetTeamRulesParam("mmUse",0.0f)) : 0.0f;
+        const float conversionMetal=conversionEnergy>0 ? conversionEnergy*AiMax(0.0f,ai.GetTeamRulesParam("mmAvgEffi",0.0f)) : 0.0f;
+        const bool funded=BuildPowerMath::Funded(aiEconomyMgr.metal.current,reserveM,AiMax(0.0f,aiEconomyMgr.metal.income-conversionMetal),SeaMath::GrowthUsage(TeamEconomy::OwnMetal(TeamEconomy::USAGE),redirectM),
             queuedM+recruitAdmittedM,d.costM,seconds,extraM,budgetHorizon)
-            && BuildPowerMath::Funded(aiEconomyMgr.energy.current,reserveE,aiEconomyMgr.energy.income,SeaMath::GrowthUsage(TeamEconomy::OwnEnergy(TeamEconomy::USAGE),redirectE),
+            && BuildPowerMath::Funded(aiEconomyMgr.energy.current,reserveE,aiEconomyMgr.energy.income,SeaMath::GrowthUsage(TeamEconomy::OwnEnergy(TeamEconomy::USAGE),redirectE+conversionEnergy),
             queuedE+recruitAdmittedE,d.costE,seconds,extraE,Global::RoleSettings::Sea::WorkforceHorizon);
         if (funded) { fundedFrame=ai.frame; fundedName=d.GetName(); }
         return funded;

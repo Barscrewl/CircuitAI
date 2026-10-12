@@ -1,7 +1,6 @@
 #include "../define.as"
 #include "../unit.as"
 #include "../task.as"
-#include "../types/opener.as"
 #include "../types/map_config.as"
 #include "../global.as"
 #include "../types/role_config.as"
@@ -106,17 +105,34 @@ namespace Factory {
 
     ******************************************************************************/
 
+	// Called only at recruit completion; no per-frame scan or speculative queue.
+	// Recheck role/retirement because task hooks may change either at handover.
+	bool AiCanRefillImmediately(CCircuitUnit@ u)
+	{
+		return Global::AISettings::Role == AiRole::AIR
+			&& Global::RoleSettings::Air::ContinuousFactoryProduction
+			&& u !is null && u.circuitDef !is null && !Lifecycle::IsRetiring(u)
+			&& (UnitHelpers::IsT1AircraftPlant(u.circuitDef.GetName())
+				|| UnitHelpers::IsT2AircraftPlant(u.circuitDef.GetName()));
+	}
+
 	IUnitTask@ AiMakeTask(CCircuitUnit@ u)
 	{
+		// Retirement owns the factory before every production provider, including
+		// constructor donations/recovery and spam. Checking only in the TECH
+		// delegate allowed these earlier providers to restart a retired lab.
+		if (Lifecycle::IsRetiring(u)) return null;
 		IUnitTask@ recovery = Team::Recovery::FactoryMakeTask(u);
 		if (recovery !is null) return recovery;
 		if (SeaFactories::Hold(u)) return aiFactoryMgr.Enqueue(TaskS::Wait(true, SECOND));
 		// Only AIR changes ordering: transport obligations precede optional spam and combat.
-		if (Global::AISettings::Role == AiRole::AIR) {
+		if (Global::AISettings::Role == AiRole::AIR || Global::AISettings::Role == AiRole::TECH) {
 			IUnitTask@ ferry = Team::Ferry::FactoryMakeTask(u);
 			if (ferry !is null) return ferry;
 		}
-		IUnitTask@ t = TechFlank::Produce(u);
+        IUnitTask@ t = Team::HeavyTransport::FactoryTask(u);
+        if (t !is null) return t;
+        @t = TechFlank::Produce(u);
 		if (t !is null) return t;
 		// Emergency AIR production must reach its role before optional spam.
 		if (AirBaseResponse::Emergency() && (UnitHelpers::IsT1AircraftPlant(u.circuitDef.GetName())
@@ -142,8 +158,6 @@ namespace Factory {
 		return t;
 	}
 
-
-
 	void AiTaskAdded(IUnitTask@ task)
 	{
 		RoleConfig@ cfg = (Global::profileController is null) ? null : Global::profileController.RoleCfg;
@@ -165,9 +179,6 @@ namespace Factory {
 		// 	cfg.AiTaskRemovedHandler(task, done);
 	}
 
-	// CCircuitUnit@ energizer1 = null;
-	// CCircuitUnit@ energizer2 = null;
-	
 	void AiUnitAdded(CCircuitUnit@ unit, Unit::UseAs usage)
 	{
 		if (unit is null) {
@@ -200,7 +211,6 @@ namespace Factory {
                 2
             );
         }
-
 
 		// Track primary lab references centrally
 		// Minimal guard: only assign when this unit is registered as a FACTORY
@@ -364,8 +374,7 @@ namespace Factory {
 		if (cfg !is null && cfg.FactoryAiUnitAdded !is null) {
 			cfg.FactoryAiUnitAdded(unit, usage);
 		}
-		
-		
+
 	}
 
 	void AiUnitRemoved(CCircuitUnit@ unit, Unit::UseAs usage)
@@ -495,26 +504,9 @@ namespace Factory {
 		return (Factory::primaryT2BotLab is null) ? _CommanderPosOrSentinel() : Factory::primaryT2BotLab.GetPos(ai.frame);
 	}
 
-
-
-	AIFloat3 GetT1VehPlantPos()
-	{
-		return (Factory::primaryT1VehPlant is null) ? _CommanderPosOrSentinel() : Factory::primaryT1VehPlant.GetPos(ai.frame);
-	}
-
-	AIFloat3 GetT2VehPlantPos()
-	{
-		return (Factory::primaryT2VehPlant is null) ? _CommanderPosOrSentinel() : Factory::primaryT2VehPlant.GetPos(ai.frame);
-	}
-
 	AIFloat3 GetT1AirPlantPos()
 	{
 		return (Factory::primaryT1AirPlant is null) ? _CommanderPosOrSentinel() : Factory::primaryT1AirPlant.GetPos(ai.frame);
-	}
-
-	AIFloat3 GetT2AirPlantPos()
-	{
-		return (Factory::primaryT2AirPlant is null) ? _CommanderPosOrSentinel() : Factory::primaryT2AirPlant.GetPos(ai.frame);
 	}
 
 	AIFloat3 GetT1ShipyardPos()
@@ -525,31 +517,6 @@ namespace Factory {
 	AIFloat3 GetT2ShipyardPos()
 	{
 		return (Factory::primaryT2Shipyard is null) ? _CommanderPosOrSentinel() : Factory::primaryT2Shipyard.GetPos(ai.frame);
-	}
-
-	AIFloat3 GetT1HoverPlantPos()
-	{
-		return (Factory::primaryT1HoverPlant is null) ? _CommanderPosOrSentinel() : Factory::primaryT1HoverPlant.GetPos(ai.frame);
-	}
-
-	AIFloat3 GetFloatingHoverPlantPos()
-	{
-		return (Factory::primaryFloatingHoverPlant is null) ? _CommanderPosOrSentinel() : Factory::primaryFloatingHoverPlant.GetPos(ai.frame);
-	}
-
-	AIFloat3 GetSeaplanePlatformPos()
-	{
-		return (Factory::primarySeaplanePlatform is null) ? _CommanderPosOrSentinel() : Factory::primarySeaplanePlatform.GetPos(ai.frame);
-	}
-
-	AIFloat3 GetLandGantryPos()
-	{
-		return (Factory::primaryLandGantry is null) ? _CommanderPosOrSentinel() : Factory::primaryLandGantry.GetPos(ai.frame);
-	}
-
-	AIFloat3 GetWaterGantryPos()
-	{
-		return (Factory::primaryWaterGantry is null) ? _CommanderPosOrSentinel() : Factory::primaryWaterGantry.GetPos(ai.frame);
 	}
 
 	// Master: return the first available factory position in priority order.
@@ -783,7 +750,5 @@ namespace Factory {
 		GenericHelpers::LogUtil("[FACTORY] Gantry enqueued x" + n + " '" + chosen + "' from " + facDef.GetName(), 2);
 		return last;
 	}
-
-
 
 }  // namespace Factory

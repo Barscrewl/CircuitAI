@@ -48,6 +48,12 @@ namespace AirProduction {
         const string name = u.circuitDef.GetName();
         const bool advanced = UnitHelpers::IsT2AircraftPlant(name);
         const bool basic = UnitHelpers::IsT1AircraftPlant(name);
+        // Read the live bank at each completion: the one-second economy snapshot
+        // can miss donations or depletion between several fast factory births.
+        // Keep all existing unit-choice priorities; only discretionary holds
+        // below may be bypassed. Native energy starvation still pauses work.
+        const bool fundedProduction = advanced && Global::RoleSettings::Air::ContinuousFactoryProduction
+            && aiEconomyMgr.metal.current > 0.0f;
         if (!advanced && !basic) {
             if (AirEcoLayout::Owns(u.GetPos(ai.frame))) {
                 CCircuitUnit@ frame = AirBuild::FindAssistTarget(u, false, null, true);
@@ -167,7 +173,7 @@ namespace AirProduction {
         }
         @t = AirBaseResponse::Produce(u);
         if (t !is null) return t;
-        if (!affordable || AirEconomy::recovery) return aiFactoryMgr.Enqueue(TaskS::Wait(false, 3 * SECOND));
+        if (!fundedProduction && (!affordable || AirEconomy::recovery)) return aiFactoryMgr.Enqueue(TaskS::Wait(false, 3 * SECOND));
         @t = AirNavalSupport::Produce(u);
         if (t !is null) return t;
         if (openingReady) {
@@ -185,7 +191,7 @@ namespace AirProduction {
             }
         }
         if (basic && AirBuild::StarterReadyToRetire(u)) return aiFactoryMgr.Enqueue(TaskS::Wait(false, SECOND));
-        if (saving) return aiFactoryMgr.Enqueue(TaskS::Wait(false, 3 * SECOND));
+        if (saving && !fundedProduction) return aiFactoryMgr.Enqueue(TaskS::Wait(false, 3 * SECOND));
         // A lost scout gets another route. Utility never consumes a strike slot.
         if (basic && side != "legion" && ai.frame >= aiTerrainMgr.GetLayoutInt("air.scout.next", 0)) {
             @t = Recruit(u, UnitHelpers::GetT1AirScoutForSide(side), 1, "recon.replace", Task::Priority::NORMAL, true);
@@ -252,14 +258,14 @@ namespace AirProduction {
             if (t !is null) return t;
         }
         // A sustainable production share leaves resources for growth. Emergency floor above bypasses this.
-        if (AirEconomy::bankM < 80.0f && aiEconomyMgr.metal.pull > AirEconomy::metal * 1.2f)
+        if (!fundedProduction && AirEconomy::bankM < 80.0f && aiEconomyMgr.metal.pull > AirEconomy::metal * 1.2f)
             return aiFactoryMgr.Enqueue(TaskS::Wait(false, 3 * SECOND));
         // Keep the old lab available for economic crews and finite land support;
         // sustained advanced fighter production belongs to the advanced bays.
         if (basic && AirEconomy::t2 > 0 && AirEconomy::metal >= Global::RoleSettings::Air::TransitionMinMetal) {
             return aiFactoryMgr.Enqueue(TaskS::Wait(false, 3 * SECOND));
         }
-        if (advanced && AirEconomy::TechGrowth() && !AirEconomy::MassBombers()
+        if (advanced && !fundedProduction && AirEconomy::TechGrowth() && !AirEconomy::MassBombers()
             && homeValue + futureValue >= AirEconomy::HomeValueTarget())
             return aiFactoryMgr.Enqueue(TaskS::Wait(false, 3 * SECOND));
         if (Global::RoleSettings::Air::UseDynamicFactoryProduction && (!advanced || AirEconomy::MassBombers())) {
@@ -268,6 +274,8 @@ namespace AirProduction {
         }
         CCircuitDef@ fd = ai.GetCircuitDef(fighter);
         @t = Recruit(u, fighter, Projected(fd) + 1, "air.control", Task::Priority::NORMAL);
+        if (fundedProduction && t is null && fd !is null && fd.IsAvailable(ai.frame) && u.circuitDef.CanBuild(fd))
+            Invariants::Violation("INV-187", "" + u.id, "funded T2 AIR factory failed to queue its available fallback fighter");
         return t is null ? aiFactoryMgr.Enqueue(TaskS::Wait(false, 3 * SECOND)) : t;
     }
     void Reset() { home.deleteAll(); AirScreen::Reset(); countLog = -100000; }

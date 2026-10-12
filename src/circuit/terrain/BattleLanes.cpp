@@ -32,6 +32,7 @@
 #include "map/ThreatMap.h"
 #include "CircuitAI.h"
 #include "util/Utils.h"
+#include "util/Performance.h"
 #include "spring/SpringMap.h"
 
 #include "Log.h"
@@ -367,6 +368,7 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
         const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
         float waterCost, float threatWeight, float maxWaterThreat)
 {
+    performance::Scope routeScope(circuit, performance::UNIT_ROUTE);
     EnsureGrid();
     auto inside = [this](const AIFloat3& p) {
         return std::isfinite(p.x) && std::isfinite(p.z) && p.x>=0 && p.z>=0
@@ -393,34 +395,68 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
     };
     auto& t=cache.grid;
     const int frame=circuit->GetLastFrame();
-    if (t.height.empty() || frame-cache.frame>=60*FRAMES_PER_SEC) {
+    static const bool verify = std::getenv("CIRCUIT_VERIFY_UNIT_ROUTES") != nullptr;
+    bool rebuild = t.height.empty();
+    const bool refresh = rebuild || frame < cache.frame || frame-cache.frame>=60*FRAMES_PER_SEC;
+    if (refresh) {
+        performance::Scope refreshScope(circuit, performance::UNIT_TERRAIN_REFRESH);
         cache.frame=frame;
-        circuit->GetMap()->GetSlopeMap(cache.slope);
-        t.gw=gw; t.gh=gh; t.cellSize=cellSize;
-        t.height.resize(height.size()); t.surfaceSlope=surfaceSlope; t.body8.assign(height.size(),0);
-        t.edges.assign(height.size(),0);
-        for (auto& p:t.pass) p.assign(height.size(),0);
+        circuit->GetMap()->GetSlopeMap(unitRouteSlope);
+        // Preserve the old sixty-second freshness boundary. Only reuse exact
+        // immutable inputs: fine height publication, fine slopes and coarse
+        // shelf slopes. O(S+G) comparison replaces O(G*8*K) corridor sampling
+        // on unchanged terrain; no per-definition fine-height copies. Fresh
+        // endpoints below still read the current height publication.
+        rebuild = rebuild || area->heightRevision == 0
+            || cache.heightRevision != area->heightRevision
+            || cache.slope != unitRouteSlope || t.surfaceSlope != surfaceSlope
+            || t.gw != gw || t.gh != gh || t.cellSize != cellSize;
+        cache.slope.swap(unitRouteSlope);
+        cache.heightRevision = area->heightRevision;
+    }
+    const auto buildTerrain = [&](lane::Terrain& built) {
+        built.gw=gw; built.gh=gh; built.cellSize=cellSize;
+        built.height.resize(height.size()); built.surfaceSlope=surfaceSlope; built.body8.assign(height.size(),0);
+        built.edges.assign(height.size(),0);
+        for (auto& p:built.pass) p.assign(height.size(),0);
         for (int c=0;c<gw*gh;++c) {
             const auto p=CellPos(c);
-            t.height[c]=elevation(p.x,p.z);
-            t.pass[L_AMPH][c]=corridor(p,p);
+            built.height[c]=elevation(p.x,p.z);
+            built.pass[L_AMPH][c]=corridor(p,p);
         }
-        for (int c=0;c<gw*gh;++c) if (t.pass[L_AMPH][c]) {
+        for (int c=0;c<gw*gh;++c) if (built.pass[L_AMPH][c]) {
             for (int d=0;d<8;++d) {
                 const int x=c%gw+NB[d][0],z=c/gw+NB[d][1];
                 if (x<0 || z<0 || x>=gw || z>=gh) continue;
                 const int n=z*gw+x;
-                if (t.pass[L_AMPH][n] && corridor(CellPos(c),CellPos(n))) t.edges[c]|=1u<<d;
+                if (built.pass[L_AMPH][n] && corridor(CellPos(c),CellPos(n))) built.edges[c]|=1u<<d;
             }
         }
+    };
+    if (rebuild) {
+        performance::Scope buildScope(circuit, performance::UNIT_TERRAIN_BUILD);
+        buildTerrain(t);
         circuit->LOG("UNIT_TERRAIN def=%s dry=%i cells=%i",def->GetDef()->GetName(),int(dry),gw*gh);
+    } else if (refresh && verify) {
+        lane::Terrain fresh;
+        buildTerrain(fresh);
+        if (fresh.height != t.height || fresh.surfaceSlope != t.surfaceSlope
+            || fresh.pass != t.pass || fresh.edges != t.edges)
+            circuit->LOG("[INVARIANT] INV-176 retained unit terrain differs from refresh");
     }
     // Endpoints must connect to their grid centres; never snap over a cliff.
     if (!corridor(from,CellPos(Cell(from))) || !corridor(CellPos(Cell(to)),to)) return {};
-    Grid threat(height.size());
+    auto& threat = unitRouteThreat;
+    {
+    performance::Scope threatScope(circuit, performance::UNIT_ROUTE_THREAT);
+    threat.resize(height.size());
     for (size_t c=0;c<threat.size();++c) threat[c]=dry ? SurfThreat(CellPos(c)) : AmphThreat(CellPos(c));
+    }
     // Exclude allied structures; the engine still resolves mobile traffic.
-    std::vector<char> obstacles(height.size(),0);
+    auto& obstacles = unitRouteObstacles;
+    {
+    performance::Scope obstacleScope(circuit, performance::UNIT_ROUTE_OBSTACLES);
+    obstacles.assign(height.size(),0);
     circuit->UpdateFriendlyUnits();
     for (const auto& kv:circuit->GetFriendlyUnits()) {
         const auto* building=circuit->GetCircuitDefSafe(circuit->GetCallback()->Unit_GetDefId(kv.first));
@@ -431,8 +467,19 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
             for (int x=std::max(0,int((p.x-r)/cellSize));x<=std::min(gw-1,int((p.x+r)/cellSize));++x)
                 obstacles[z*gw+x]=1;
     }
-    const auto cells=lane::Solver(t,laneSettings).PointRoute({from.x,from.y,from.z},{to.x,to.y,to.z},
-        L_AMPH,threat,landCost,waterCost,threatWeight,maxWaterThreat,&obstacles);
+    }
+    std::vector<int> cells;
+    {
+        performance::Scope searchScope(circuit, performance::UNIT_ROUTE_SEARCH);
+        cells=lane::Solver(t,laneSettings).PointRoute({from.x,from.y,from.z},{to.x,to.y,to.z},
+            L_AMPH,threat,landCost,waterCost,threatWeight,maxWaterThreat,&obstacles,&unitRouteWorkspace,0);
+    }
+    // Same inputs and ordered route oracle; deliberately excluded from timing.
+    if (verify) {
+        const auto expected=lane::Solver(t,laneSettings).PointRoute({from.x,from.y,from.z},{to.x,to.y,to.z},
+            L_AMPH,threat,landCost,waterCost,threatWeight,maxWaterThreat,&obstacles);
+        if (cells!=expected) circuit->LOG("[INVARIANT] INV-176 unit route scratch differs from fresh search");
+    }
     if (cells.empty()) return {};
     std::vector<AIFloat3> result;
     result.reserve(cells.size()+2);

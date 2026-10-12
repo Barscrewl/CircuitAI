@@ -164,6 +164,7 @@ void CFactoryManager::InitHandlers()
 		unit->GetTask()->OnUnitIdle(unit);
 	};
 	auto factoryDestroyedHandler = [this](CCircuitUnit* unit, CEnemyInfo* attacker) {
+		completionRefills.erase(unit->GetId()); // includes transfers and ID reuse
 		IUnitTask* task = unit->GetTask();
 		task->OnUnitDestroyed(unit, attacker);  // can change task
 		unit->GetTask()->RemoveAssignee(unit);  // Remove unit from IdleTask
@@ -512,14 +513,25 @@ void CFactoryManager::ReadConfig()
 			boolean("prefer_screen", policy.preferScreen);
 			boolean("allow_radar", policy.allowRadar);
 			boolean("advance_unknown_radar", policy.advanceUnknownRadar);
+			boolean("hold_fireline", policy.holdFireline);
 			boolean("stage_when_blocked", policy.stageWhenBlocked);
 			boolean("coordinated", policy.coordinated);
+            // Fireline holding is an individual forward-arc doctrine. Reject
+            // unsupported cohort ownership instead of silently allowing retreats.
+            if (policy.holdFireline && policy.coordinated) valid = false;
 			number("cohort_size", policy.cohortSize, 1.f, 12.f);
 			number("cohort_radius", policy.cohortRadius, 128.f, 1600.f);
 			number("regroup_seconds", policy.regroupSeconds, 0.f, 20.f);
 			number("rush_ratio", policy.rushRatio, 1.f, 5.f);
 			number("catch_seconds", policy.catchSeconds, 0.f, 15.f);
 			number("engagement_seconds", policy.engagementSeconds, 0.f, 30.f);
+            boolean("sustained_rush", policy.sustainedRush);
+            number("sustained_rush_ratio", policy.sustainedRushRatio, 1.f, 10.f);
+            number("sustained_rush_radius", policy.sustainedRushRadius, 128.f, 1600.f);
+            number("sustained_rush_min_front", policy.sustainedRushMinFront, 1.f, 256.f);
+            number("sustained_rush_remaining", policy.sustainedRushRemaining, .01f, 1.f);
+            number("sustained_rush_cooldown", policy.sustainedRushCooldown, 1.f, 120.f);
+            number("sustained_rush_range", policy.sustainedRushRange, .25f, 1.f);
 			number("advantage_enter", policy.advantageEnter, 1.f, 5.f);
 			number("advantage_exit", policy.advantageExit, 1.f, 5.f);
 			number("loss_fraction", policy.lossFraction, 0.f, .9f);
@@ -527,6 +539,33 @@ void CFactoryManager::ReadConfig()
             boolean("support_allies", policy.supportAllies);
             number("support_loss_fraction", policy.supportLossFraction, 0.f, .9f);
             number("intent_gain", policy.intentGain, 0.f, .5f);
+            const auto& formation = settings["formation"];
+            if (!formation.isNull()) {
+                if (!formation.isObject() || !formation["family"].isString()
+                    || !formation["position"].isString()) valid = false;
+                else {
+                    policy.formationFamily = formation["family"].asString();
+                    const auto position = formation["position"].asString();
+                    if (position == "front") policy.formationPosition = RangedPolicy::FormationPosition::FRONT;
+                    else if (position == "rear") policy.formationPosition = RangedPolicy::FormationPosition::REAR;
+                    else valid = false;
+                    if (policy.formationFamily.empty() || !policy.coordinated) valid = false;
+                    const auto readFormationNumber = [&](const char* name, float& value, float minimum, float maximum) {
+                        const auto& setting = formation[name];
+                        if (setting.isNull()) return;
+                        if (!setting.isNumeric()) { valid = false; return; }
+                        const float candidate = setting.asFloat();
+                        if (!std::isfinite(candidate) || candidate < minimum || candidate > maximum) valid = false;
+                        else value = candidate;
+                    };
+                    readFormationNumber("separation_minimum", policy.formationSeparationMinimum, 16.f, 512.f);
+                    readFormationNumber("separation_maximum", policy.formationSeparationMaximum, 16.f, 1024.f);
+                    readFormationNumber("withdrawal_lead_seconds", policy.withdrawalLeadSeconds, 0.f, 5.f);
+                    if (policy.formationSeparationMinimum > policy.formationSeparationMaximum) valid = false;
+                }
+            }
+            if (policy.sustainedRush && (!policy.coordinated || policy.engagementSeconds <= 0.f
+                || policy.formationPosition == RangedPolicy::FormationPosition::NONE)) valid = false;
 			if (policy.advantageExit > policy.advantageEnter) valid = false;
 			if (valid) cdef->SetRangedPolicy(policy);
 			else {
@@ -920,7 +959,30 @@ int CFactoryManager::UnitFinished(CCircuitUnit* unit)
 			unfinishedUnits.erase(iter);
 			task->SetTarget(nullptr);
 		} else {
+			// Completion is the earliest safe point to select the next product:
+			// after DoneTask, pending counts and script removal hooks are current.
+			// Opted-in factories bypass IdleTask's 20-frame quarantine and sliced
+			// backlog, without polling armies or queuing stale future priorities.
+			// O(assignees), normally one. IDs, not borrowed pointers, cross hooks
+			// which can donate, retire or otherwise reassign a factory. See the
+			// supplied air factory-throughput regression and D-276.
+			std::vector<CCircuitUnit::Id> refill;
+			auto* factoryScript = static_cast<CFactoryScript*>(script);
+			for (CCircuitUnit* factory : task->GetAssignees()) {
+				if (factoryScript->CanRefillImmediately(factory)) refill.push_back(factory->GetId());
+			}
+			if (!refill.empty()) task->SetCompletionRefill(true);
 			DoneTask(task);
+			for (const auto id : refill) {
+				CCircuitUnit* factory = circuit->GetTeamUnit(id);
+				if (factory == nullptr || factory->IsDead() || factory->GetManager() != this
+					|| factory->GetTask() != idleTask || !factory->IsProductionEnabled()
+					|| !factoryScript->CanRefillImmediately(factory)) continue;
+				const auto ticket = ++nextRefillTicket;
+				completionRefills[id] = ticket;
+				circuit->GetScheduler()->RunJobAfter(CScheduler::GameJob(
+					&CFactoryManager::RefillCompletedFactory, this, id, ticket), 1);
+			}
 		}
 	}
 	auto itre = repairUnits.find(unit->GetId());
@@ -934,6 +996,29 @@ int CFactoryManager::UnitFinished(CCircuitUnit* unit)
 	}
 
 	return 0; //signaling: OK
+}
+
+void CFactoryManager::RefillCompletedFactory(CCircuitUnit::Id id, unsigned long long ticket)
+{
+	const auto pending = completionRefills.find(id);
+	if (pending == completionRefills.end() || pending->second != ticket) return;
+	completionRefills.erase(pending);
+	CCircuitUnit* factory = circuit->GetTeamUnit(id);
+	if (factory == nullptr || factory->IsDead() || factory->GetManager() != this
+		|| factory->GetTask() != idleTask || !factory->IsProductionEnabled()
+		|| !static_cast<CFactoryScript*>(script)->CanRefillImmediately(factory)) return;
+	// One simulation-thread turn lets the engine finish/pop the old build and
+	// deliver its idle notification before the new owner emits a command.
+	// This is event-driven (one ticket per completion), not a periodic poll or
+	// reaction throttle. Destroy/transfer removes the ticket; current ownership
+	// and role are revalidated. No borrowed unit/task crosses the scheduler.
+	AssignTask(factory);
+	factory = circuit->GetTeamUnit(id);
+	if (factory != nullptr && !factory->IsDead() && factory->GetManager() == this
+		&& factory->GetTask() != idleTask && factory->GetTask()->GetType() != IUnitTask::Type::PLAYER) {
+		if (auto* next = dynamic_cast<CRecruitTask*>(factory->GetTask())) next->SetCompletionRefill(true);
+		factory->GetTask()->Start(factory);
+	}
 }
 
 int CFactoryManager::UnitIdle(CCircuitUnit* unit)
@@ -1709,15 +1794,20 @@ IUnitTask* CFactoryManager::CreateAssistTask(CCircuitUnit* unit)
 	float curCost = std::numeric_limits<float>::max();
 	circuit->UpdateFriendlyUnits();
 	// NOTE: OOAICallback::GetFriendlyUnitsIn depends on unit's radius
-	auto& units = circuit->GetCallback()->GetFriendlyUnitsIn(pos, radius * 0.9f);
-	for (Unit* u : units) {
-		auto [cand, isTeam] = circuit->GetTeamOrAllyUnit(u);
+    // Keep the engine quad-field order/radius (first repair wins), but borrow
+    // the already refreshed ally/owned wrapper instead of allocating one per
+    // candidate. No callbacks below mutate membership or invoke script.
+    const auto& candidates = circuit->GetCallback()->GetFriendlyUnitIdsIn(pos, radius * 0.9f);
+    for (int candidateId : candidates) {
+        const bool isTeam = circuit->GetCallback()->Unit_Team(candidateId) == circuit->GetTeamId();
+        CAllyUnit* cand = isTeam ? circuit->GetTeamUnit(candidateId) : circuit->GetFriendlyUnit(candidateId);
 		if ((cand == nullptr) || (cand == unit)
 			|| builderMgr->IsReclaimUnit(cand)
 			|| (isTeam ? static_cast<CCircuitUnit*>(cand)->IsAttrNoRepair() : cand->GetCircuitDef()->IsAttrNoRepair()))
 		{
 			continue;
 		}
+		Unit* u = cand->GetUnit();
 		if (u->IsBeingBuilt()) {
 			CCircuitDef* cdef = cand->GetCircuitDef();
 			const float maxHealth = u->GetMaxHealth();
@@ -1740,7 +1830,6 @@ IUnitTask* CFactoryManager::CreateAssistTask(CCircuitUnit* unit)
 			}
 		}
 	}
-	utils::free(units);
 	if (/*!isMetalEmpty && */(buildTarget != nullptr)) {
 		// Construction task
 		IBuilderTask::Priority priority = buildTarget->GetCircuitDef()->IsMobile() ?

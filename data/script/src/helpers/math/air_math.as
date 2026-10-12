@@ -51,6 +51,23 @@ namespace AirMath {
     bool DefensiveBomberTarget(bool advancedBomber, bool mobile, bool heavy) {
         return !advancedBomber || !mobile || heavy;
     }
+    // Dedicated AA avoids promoting every tank whose ground weapon can shoot up.
+    // Mobile AA includes advanced AA bots regardless of tier; the configurable
+    // metal ceiling applies only to static AA. Disable priority without changing
+    // the old score/tie order. Both helpers are allocation-free O(1) per contact.
+    bool DefensiveGunshipPriority(bool enabled, bool antiAirWeapon, bool antiAirRole,
+        bool mobile, float metalCost, float lightStaticMaximumMetal)
+    {
+        return enabled && antiAirWeapon && antiAirRole
+            && (mobile || (Valid(metalCost) && Valid(lightStaticMaximumMetal)
+                && lightStaticMaximumMetal > Zero && metalCost <= lightStaticMaximumMetal));
+    }
+    bool PreferDefensiveGunshipTarget(bool priority, float score, bool selectedPriority, float selectedScore)
+    {
+        // Compare tiers before scores: the incumbent bonus stabilizes targets
+        // within a tier but must never shelter a tank while nearby AA free-fires.
+        return priority != selectedPriority ? priority : score > selectedScore;
+    }
     bool T1OpeningReady(int crew, int requiredCrew, int constructionTurrets, int requiredConstructionTurrets, bool recovering)
     {
         return !recovering && requiredCrew > Zero && requiredConstructionTurrets >= Zero
@@ -143,9 +160,7 @@ namespace AirMath {
         if (completed >= MaximumIncrementableBayCount) return MaximumSignedInteger;
         return completed + One > minimum ? completed + One : minimum;
     }
-    float BayPitch(float halfEnvelope, float gap) {
-        return RadiusToDiameter * halfEnvelope + (gap > ZeroValue ? gap : ZeroValue);
-    }
+
     bool GrowthPhase(bool windowReady, float minimumIncome, float threshold) {
         return windowReady && Valid(minimumIncome) && threshold > ZeroValue && minimumIncome >= threshold;
     }
@@ -218,21 +233,6 @@ namespace AirMath {
         if (target <= float(first)) return first;
         if (target >= float(maximumCount)) return maximumCount;
         return int(target);
-    }
-    bool LaunchDue(int held, int target, int minimum, int age, int cadence, bool escortReady, bool active)
-    {
-        return !active && escortReady && minimum > Zero && target >= minimum && held >= minimum
-            && (held >= target || (cadence > Zero && age >= cadence));
-    }
-    int SortieSize(int held, int scheduled, int minimum, int escorts, float ratio)
-    {
-        if (held < minimum || minimum <= Zero || scheduled < minimum || escorts < Zero || !Valid(ratio)) return Zero;
-        int count = held < scheduled ? held : scheduled;
-        if (ratio > ZeroValue) {
-            const float supported = float(escorts) / ratio;
-            if (supported < float(count)) count = int(supported);
-        }
-        return count >= minimum ? count : Zero;
     }
 
     float NavalDeficit(float enemy, float friendly, float submerged, float antiSubmarineMetal) {

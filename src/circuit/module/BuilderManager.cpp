@@ -49,9 +49,11 @@
 #include "unit/ally/AllyTeam.h"
 #include "util/Utils.h"
 #include "util/Profiler.h"
+#include "util/GameAttribute.h"
 #include "json/json.h"
 
 #include "spring/SpringCallback.h"
+#include "spring/ResurrectionClaim.h"
 
 #include "Log.h"
 #include "Feature.h"
@@ -61,6 +63,8 @@
 #include <chrono>
 #include <limits>
 #include <cmath>
+#include <sstream>
+#include <cstring>
 
 namespace circuit {
 
@@ -1178,6 +1182,18 @@ IBuilderTask* CBuilderManager::EnqueueFactoryNano(const TaskB::SBuildTask& ti, C
 	return task;
 }
 
+IUnitTask* CBuilderManager::FindMatchingGuard(CCircuitUnit* unit, const TaskB::SServBTask& ti)
+{
+	if (unit == nullptr || ti.target == nullptr || ti.type != IBuilderTask::BuildType::GUARD
+		|| unit->IsDead() || ti.target->IsDead()) return nullptr;
+	auto* current = dynamic_cast<CBGuardTask*>(unit->GetTask());
+	// Reevaluate hides an assignee from accounting while calling policy, but
+	// retains task ownership. Compare that owner, not a global guard inventory.
+	return current && current->GetManager() == this
+		&& current->MatchesGuard(unit->GetId(), ti.target->GetId(), ti.priority, ti.isInterrupt, ti.timeout, circuit->GetLastFrame())
+		? current : nullptr;
+}
+
 IUnitTask* CBuilderManager::Enqueue(const TaskB::SServBTask& ti)
 {
 	IUnitTask* task;
@@ -1309,7 +1325,7 @@ bool CBuilderManager::IsReclaimUnit(CAllyUnit* unit) const
 	return (allyTeam != nullptr) && allyTeam->IsReclaimMarked(unit->GetId());
 }
 
-int CBuilderManager::TurretsOnReclaim(int targetId, float margin, bool apply)
+int CBuilderManager::TurretsOnReclaim(int targetId, float margin, bool apply, bool preserveReclaimPriority)
 {
 	const auto t0 = std::chrono::steady_clock::now();
 	struct SAtExit { CCircuitAI* c; std::chrono::steady_clock::time_point t0; ~SAtExit() { const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); if (ms > 20.0) c->LOG("SLOW: TurretsOnReclaim took %.0f ms", ms); } } atExit{circuit, t0};
@@ -1319,6 +1335,9 @@ int CBuilderManager::TurretsOnReclaim(int targetId, float margin, bool apply)
 	}
 	const int frame = circuit->GetLastFrame();
 	const AIFloat3& tpos = target->GetPos(frame);
+	const auto requested = reclaimUnits.find(target);
+	const auto requestedPriority = (requested != reclaimUnits.end() && requested->second != nullptr)
+		? requested->second->GetPriority() : IUnitTask::Priority::HIGH;
 	IBuilderTask* join = nullptr;
 	int off = 0;
 	for (const auto& kv : circuit->GetTeamUnits()) {
@@ -1348,13 +1367,30 @@ int CBuilderManager::TurretsOnReclaim(int targetId, float margin, bool apply)
 			if ((bt->GetBuildType() == IBuilderTask::BuildType::RECLAIM) && (bt->GetTarget() == target)) {
 				continue;  // already on it
 			}
+			// TECH supplies the task priorities (lab HIGH, obsolete energy NORMAL).
+			// Keep an equally urgent live reclaim stable instead of pulling the same
+			// turret between overlapping targets. Apply and inspection use identical
+			// eligibility; one turret cannot serve two simultaneous reclaim jobs.
+			// This adds no scan or command and leaves legacy callers unchanged.
+			if (preserveReclaimPriority && !bt->IsDead()
+					&& bt->GetBuildType() == IBuilderTask::BuildType::RECLAIM
+					&& bt->GetTarget() != nullptr && !bt->GetTarget()->IsDead()
+					&& bt->GetPriority() >= requestedPriority) continue;
 		}
 		++off;
 		if (!apply) {
 			continue;
 		}
 		if (t != nullptr) {
+			ITaskModule* previousManager = t->GetManager();
 			t->RemoveAssignee(u);
+			// Factory-owned nanos can temporarily join Builder's explicit reclaim.
+			// RemoveAssignee puts them in the OLD manager's idle set; AssignTo only
+			// clears the NEW manager's idle set. Leaving the old membership lets its
+			// next update overwrite this assignment and retain stale unit pointers.
+			// Match the existing enemy-reclaim ownership handoff, with O(1) owners
+			// and no extra engine commands.
+			if (previousManager != this) previousManager->GetIdleTask()->RemoveAssignee(u);
 		}
 		if (join == nullptr) {
 			join = Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, target, FRAMES_PER_SEC * 300));
@@ -1762,7 +1798,7 @@ void CBuilderManager::RefreshRecoveryFeatures()
             if (def->IsReclaimable() && metal > 0) {
                 const bool ship = rez != nullptr && rez->IsMobile() && !rez->IsAbleToFly()
                     && rez->GetDef()->GetMinWaterDepth() > 0;
-                recoveryFeatures.push_back({f->GetFeatureId(), f->GetPosition(), metal, ship});
+                recoveryFeatures.push_back({f->GetFeatureId(), f->GetPosition(), metal, ship, ship ? rez->GetCostM() : 0.f});
             }
             delete def;
         }
@@ -1785,10 +1821,41 @@ float CBuilderManager::GetRecoveryMetal(CCircuitUnit* worker, float radius)
     return value;
 }
 
-IBuilderTask* CBuilderManager::FindRecoveryTask(CCircuitUnit* unit, int mode, float radius, const CCircuitDef* preferred)
+bool CBuilderManager::ReceiveResurrectionClaim(const char* message)
+{
+    constexpr const char* prefix = "barb-resurrection ";
+    if (std::strncmp(message, prefix, std::strlen(prefix)) != 0) return false;
+    // Host-local observation only, not permission to command an allied unit.
+    // Bounded payload and live team/capability checks prevent stale ID reuse.
+    if (std::strlen(message) > 256) return true;
+    std::istringstream input(message + std::strlen(prefix));
+    int unitId, count;
+    if (!(input >> unitId >> count) || unitId < 0 || count < 0 || count > 5) return true;
+    auto* callback = circuit->GetCallback();
+    const int team = callback->Unit_Team(unitId);
+    const auto* definition = circuit->GetCircuitDef(callback->Unit_GetDefId(unitId));
+    if (!circuit->GetAllyTeam()->GetTeamIds().count(team) || definition == nullptr
+        || !definition->IsAbleToResurrect()) return true;
+    const int frame = circuit->GetLastFrame();
+    for (auto entry = relayedResurrections.begin(); entry != relayedResurrections.end();) {
+        if (entry->second.expires < frame) entry = relayedResurrections.erase(entry);
+        else ++entry;
+    }
+    if (count == 0) { relayedResurrections.erase(unitId); return true; }
+    float parameters[5];
+    for (int index = 0; index < count; ++index) if (!(input >> parameters[index])) return true;
+    ResurrectionClaim claim;
+    if (claim.Decode(parameters, count, callback->Unit_Maximum()))
+        relayedResurrections[unitId] = {claim, team, frame + 3 * FRAMES_PER_SEC};
+    return true;
+}
+
+IBuilderTask* CBuilderManager::FindRecoveryTask(CCircuitUnit* unit, int mode, float radius, const CCircuitDef* preferred,
+        int groupLimit, bool highestValue, float combatClearance)
 {
     if (unit == nullptr || !unit->GetCircuitDef()->IsAbleToResurrect()
-        || !std::isfinite(radius) || radius <= 0 || mode < 0 || mode > 2) return nullptr;
+        || !std::isfinite(radius) || radius <= 0 || mode < 0 || mode > 2
+        || groupLimit < 1 || !std::isfinite(combatClearance) || combatClearance < 0) return nullptr;
     IUnitTask* current = unit->GetTask();
     if (current != nullptr && (current->GetType() == IUnitTask::Type::PLAYER
         || current->GetType() == IUnitTask::Type::RETREAT || current->IsEnemyReclaim())) return nullptr;
@@ -1817,6 +1884,10 @@ IBuilderTask* CBuilderManager::FindRecoveryTask(CCircuitUnit* unit, int mode, fl
             if (ally == nullptr || IsReclaimUnit(ally)) continue;
             const AIFloat3 at = candidate->GetPos();
             const float distance = pos.SqDistance2D(at);
+            // Opt-in rear repair: use current legal sensor contacts, not global
+            // omniscient state. Safe reach also rejects weapon coverage farther
+            // away than this script-selected combat buffer. Never cache safety.
+            if (combatClearance > 0.f && !clb->GetEnemyUnitIdsIn(at, combatClearance).empty()) continue;
             const bool continuing = old != nullptr && old->GetBuildType() == type
                 && static_cast<CBRepairTask*>(old)->GetTargetId() == id;
             if (distance > radius * radius || (!continuing && distance > best)
@@ -1838,26 +1909,92 @@ IBuilderTask* CBuilderManager::FindRecoveryTask(CCircuitUnit* unit, int mode, fl
         return task;
     }
     RefreshRecoveryFeatures();
+    // Observe every friendly resurrection-capable worker, including human
+    // allies and different AI binaries. Local task claims alone cannot see
+    // them. Read once per selection, never once per wreck; no stale cross-frame
+    // claims survive STOP, death, transfer or a changed target. Existing reclaim
+    // tasks also pass this admission check on each SEA recovery update.
+    std::unordered_set<int> alliedResurrectionFeatures;
+    std::vector<ResurrectionClaim> alliedResurrectionAreas;
+    if (mode == 0) {
+        for (Unit* friendly : clb->GetFriendlyUnits()) {
+            const int id = friendly->GetUnitId();
+            if (id == unit->GetId()) continue;
+            const CCircuitDef* definition = circuit->GetCircuitDef(clb->Unit_GetDefId(id));
+            if (definition == nullptr || !definition->IsAbleToResurrect()) continue;
+            ResurrectionClaim claim;
+            COOAICallback* ownerCallback = nullptr;
+            const int team = clb->Unit_Team(id);
+            // Recoil restricts command queues to the requesting AI's own team.
+            // Same-DLL allies can read through their owning callback on this
+            // simulation thread. Human/remote/different-DLL allies use the
+            // optional host LuaUI relay, with short-lived observations.
+            for (auto* ally : circuit->GetGameAttribute()->GetCircuits()) {
+                if (ally->GetTeamId() == team && ally->GetAllyTeamId() == circuit->GetAllyTeamId()) {
+                    ownerCallback = ally->GetCallback(); break;
+                }
+            }
+            if (ownerCallback != nullptr) {
+                if (!ownerCallback->Unit_ResurrectionClaim(id, frame, claim)) continue;
+            } else {
+                const auto observation = relayedResurrections.find(id);
+                if (observation == relayedResurrections.end() || observation->second.team != team
+                    || observation->second.expires < frame) continue;
+                claim = observation->second.claim;
+            }
+            if (claim.featureId >= 0) alliedResurrectionFeatures.insert(claim.featureId);
+            else alliedResurrectionAreas.push_back(claim);
+        }
+    }
     const SRecoveryFeature* selected = nullptr;
+    IBuilderTask* selectedTask = nullptr;
+    float bestVesselMetal = -1.f;
     for (const auto& f : recoveryFeatures) {
+        // Expected O(1) for active feature claims. Unresolved area orders are
+        // uncommon and become direct feature commands on the engine update.
+        if (mode == 0 && (alliedResurrectionFeatures.count(f.id) != 0
+            || std::any_of(alliedResurrectionAreas.begin(), alliedResurrectionAreas.end(),
+                [&](const ResurrectionClaim& claim) { return claim.Contains(f.id, f.pos.x, f.pos.z); }))) continue;
         if (mode == 2 && (!f.resurrect || clb->Feature_ResurrectDef(f.id) <= 0)) continue;
         const float distance = pos.SqDistance2D(f.pos);
         const bool continuing = old != nullptr && old->GetBuildType() == type
             && old->GetPosition().SqDistance2D(f.pos) < 64.f;
-        if (distance > radius * radius || (!continuing && distance > best)) continue;
+        const bool valuePriority = mode == 2 && highestValue;
+        if (distance > radius * radius || (!continuing && (valuePriority
+            ? (f.vesselMetal < bestVesselMetal || (f.vesselMetal == bestVesselMetal && distance > best))
+            : distance > best))) continue;
         // Don't fight a different reclaim/resurrection order over one wreck.
         IBuilderTask* reclaim = GetReclaimFeatureTask(f.pos, 8.f);
         IBuilderTask* resurrect = GetResurrectTask(f.pos, 8.f);
-        if ((reclaim != nullptr && reclaim != old) || (resurrect != nullptr && resurrect != old)) continue;
+        IBuilderTask* matching = mode == 0 ? reclaim : resurrect;
+        IBuilderTask* conflicting = mode == 0 ? resurrect : reclaim;
+        // Shared native task owns the wreck and completion for the entire
+        // group. Default limit one preserves legacy exclusive claims. Only
+        // recovery-controlled tasks may be joined; never steal another policy.
+        if (conflicting != nullptr && (conflicting != old || conflicting->GetAssignees().size() > 1)) continue;
+        if (matching != nullptr && matching != old
+            && (groupLimit == 1 || !matching->recoveryControlled || matching->IsDead()
+                || matching->GetAssignees().size() >= static_cast<size_t>(groupLimit))) continue;
         if (!terrain->CanReachAtSafe2(unit, f.pos, reach)) continue;
         if (continuing) {
             old->recoveryControlled = true; // re-adopt a restored native task after load
             return old;
         }
         best = distance;
+        bestVesselMetal = f.vesselMetal;
         selected = &f;
+        selectedTask = matching;
     }
     if (selected == nullptr) return nullptr;
+    // Guard the admission invariant as this selector evolves; this is one
+    // final membership check, not a second engine scan or a new command.
+    if (mode == 0 && (alliedResurrectionFeatures.count(selected->id) != 0
+        || std::any_of(alliedResurrectionAreas.begin(), alliedResurrectionAreas.end(),
+            [&](const ResurrectionClaim& claim) { return claim.Contains(selected->id, selected->pos.x, selected->pos.z); }))) {
+        circuit->LOG("[INVARIANT] INV-183 recovery selected allied resurrection feature=%i", selected->id);
+        return nullptr;
+    }
+    if (selectedTask != nullptr) return selectedTask;
     IBuilderTask* task = mode == 0
         ? Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, selected->pos, selected->metal, FRAMES_PER_SEC * 300, 8.f))
         : Enqueue(TaskB::Resurrect(IBuilderTask::Priority::HIGH, selected->pos, selected->metal, FRAMES_PER_SEC * 300, 8.f));

@@ -46,23 +46,34 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--baseline',type=Path,required=True,help='Pin directory containing DLL and data/')
     p.add_argument('--candidate',type=Path,required=True)
+    p.add_argument('--game',default='Beyond All Reason test-31479-433a460')
+    p.add_argument('--case', default='thug-fixed-population',
+        choices=['thug-fixed-population','t1-formation-fixed-population','armada-formation-fixed-population'])
     p.add_argument('--background-pid',type=int,action='append',default=[],
         help='Explicit existing user game: measure command/population controls only; CPU acceptance remains pending. Never stops that process.')
     a=p.parse_args()
     for name in ('CIRCUIT_VERIFY_RANGED_QUERIES','CIRCUIT_VERIFY_RANGED_SNAPSHOT','CIRCUIT_RANGED_TRACE'):
         if name in os.environ:p.error('Unset diagnostic variable '+name)
     idle(a.background_pid)
-    directory=storage.allocate('shared','performance','thug-comparison','glitters','benchmark')
+    fixture=json.loads((HERE/'cases/shared/combat'/f'{a.case}.json').read_text())
+    expected={}
+    for group in fixture['groups']:
+        key=(group['team'],group['unit'])
+        expected[key]=expected.get(key,0)+group['count']
+    directory=storage.allocate('shared','performance',
+        'thug-comparison' if a.case=='thug-fixed-population' else
+        ('armada-form-comparison' if a.case=='armada-formation-fixed-population' else 'formation-comparison'),
+        fixture['map_key'],'benchmark')
     print('THUG_PERFORMANCE='+str(directory),flush=True)
     runs={}
     for label,pin in [('baseline',a.baseline),('candidate',a.candidate)]:
         runs[label]=[]
         for seed in (2071,2072,2073):
             idle(a.background_pid)
-            cmd=[sys.executable,str(HERE/'ranged_benchmark.py'),'--cases','thug-fixed-population',
+            cmd=[sys.executable,str(HERE/'ranged_benchmark.py'),'--cases',a.case,
                 '--dll',str(pin/'SkirmishAI.dll'),'--data',str(pin/'data'),
                 '--variant','baseline' if label=='baseline' else 'ranged',
-                '--seed',str(seed),'--speed','16','--minutes','3']
+                '--seed',str(seed),'--speed','16','--minutes','3','--game',a.game]
             log=directory/f'{label}-{seed}.log'
             with log.open('w') as stream:
                 code=subprocess.run(cmd,stdout=stream,stderr=subprocess.STDOUT).returncode
@@ -73,10 +84,10 @@ def main():
             raw=Path(result['directory'])/'infolog.txt'
             import re
             text=raw.read_text(errors='replace')
-            if len(re.findall(r'\[RangedArena\] frame=\d+ spawn .*team=0 unit=corthud ',text))!=120:
-                raise RuntimeError('Missing watched Thugs')
-            if len(re.findall(r'\[RangedArena\] frame=\d+ spawn .*team=1 unit=armhlt ',text))!=32:
-                raise RuntimeError('Missing fixed enemy battery')
+            for (team,unit),count in expected.items():
+                pattern=rf'\[RangedArena\] frame=\d+ spawn .*team={team} unit={re.escape(unit)} '
+                if len(re.findall(pattern,text))!=count:
+                    raise RuntimeError(f'Incorrect supplied population: team {team}, {unit}, expected {count}')
             runs[label].append(dict(seed=seed,directory=result['directory'],metrics=metrics(result)))
             print(label,seed,runs[label][-1]['metrics'],flush=True)
         if label=='baseline':

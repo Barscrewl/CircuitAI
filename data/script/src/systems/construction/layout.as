@@ -58,6 +58,8 @@ namespace Layout {
     int boxAcross = 0;   // cells
     int boxDepth = 0;    // cells
     int boxRows = 0;
+    array<int> overflowSupportGroups;
+    int overflowSupportSearchFrame = -100000;
     array<int> extraZones;      // D-072: boxes grown behind the first when it was full
     int labSlot = -1;           // D-085: the advanced lab's footprint, reserved at the seed side of the block when the box is planned
     int fwdZone = 0;            // D-081: the forward cluster's zone, its own turret group
@@ -123,8 +125,6 @@ namespace Layout {
         GenericHelpers::LogUtil("[Layout] cleared for a role switch", 1);
     }
 
-    // ---------------------------------------------------------------- geometry
-
     // Native's facing convention (ReserveGridEx): SOUTH 0 +z, EAST 1 +x, NORTH 2 -z, WEST 3 -x.
     AIFloat3 Fwd(int f)
     {
@@ -189,6 +189,10 @@ namespace Layout {
         fwdCentre = AIFloat3(float(aiTerrainMgr.GetLayoutInt(BOX + ".fwd_x", -1)), 0.0f, float(aiTerrainMgr.GetLayoutInt(BOX + ".fwd_z", -1)));
         fwdDepth = aiTerrainMgr.GetLayoutInt(BOX + ".fwd_depth", 0);
         fwdReplans = aiTerrainMgr.GetLayoutInt(BOX + ".fwd_replans", 0);
+        overflowSupportGroups.resize(0);
+        const int overflowCount = aiTerrainMgr.GetLayoutInt(BOX + ".overflow_count", 0);
+        for (int index = 0; index < overflowCount; ++index)
+            overflowSupportGroups.insertLast(aiTerrainMgr.GetLayoutInt(BOX + ".overflow_group" + index, 0));
         string box = ", no turret box";
         if (HasBox()) {
             box = ", turret box zone " + boxZone + " " + boxAcross + "x" + boxDepth + " cells, "
@@ -379,8 +383,17 @@ namespace Layout {
             if (releaseOnFail) aiTerrainMgr.ReleaseReservation(slot);
             return null;
         }
-        if (!AiPinReservation(t, slot)) GenericHelpers::LogUtil("[Layout] could not pin the advanced lab to slot " + slot, 1);
+        if (!AiPinReservation(t, slot)) {
+            GenericHelpers::LogUtil("[Layout] could not pin the advanced lab to slot " + slot, 1);
+            // Abort only this task; a failed claim may be owned by another task.
+            aiBuilderMgr.AbortTask(t);
+            return null;
+        }
         aiTerrainMgr.SetLayoutInt(BOX + ".lab_facing", aiTerrainMgr.GetReservationFacing(slot));   // D-098
+        aiTerrainMgr.SetLayoutInt(BOX + ".ordered_lab_x", int(p.x));
+        aiTerrainMgr.SetLayoutInt(BOX + ".ordered_lab_z", int(p.z));
+        aiTerrainMgr.SetLayoutInt(BOX + ".ordered_lab_gap", slot == labSlot
+            ? Global::RoleSettings::Tech::LayoutLabFrontGapCells : 1);
         Builder::MarkT2BotFactoryEnqueued();
         GenericHelpers::LogUtil("[Layout] advanced lab " + how + " (" + int(p.x) + ", " + int(p.z) + "): "
             + aiTerrainMgr.CountGroupSlotsWithin(nanoGroup, p, Global::RoleSettings::Tech::ExpLabBuildPowerReach) + " turret slots within "
@@ -588,7 +601,12 @@ namespace Layout {
             if (zone == 0) continue;
             const AIFloat3 front = fronts[bestIdx];
             int laidGroup = 0;
+            const int previousSlots = nanoGroup > 0 ? aiTerrainMgr.GetGroupCount(nanoGroup, false) : 0;
             const int rows = LayRows(zone, front, across, depth, nanoGroup, laidGroup);   // D-081 via D-094
+            if (laidGroup <= 0 || aiTerrainMgr.GetGroupCount(laidGroup, false) <= previousSlots) {
+                aiTerrainMgr.ReleaseZone(zone);
+                continue; // A reserved rectangle without support is not capacity.
+            }
             nanoGroup = laidGroup;
             extraZones.insertLast(zone);
             if (bestIdx == 0) { lastBoxCentre = bestCentre; lastBoxDepth = depth; }
@@ -616,8 +634,15 @@ namespace Layout {
     bool PlanForwardBox()
     {
         if (!HasBox() || nano is null || fwdZone != 0) return false;
-        if (fwdReplans >= Global::RoleSettings::Tech::LayoutForwardTries) return false;
-        if (ai.frame - fwdTryFrame < 60 * SECOND) return false;
+        if (fwdReplans >= Global::RoleSettings::Tech::LayoutForwardTries) {
+            // A finite search can be blocked by an allied structure or wreck.
+            // Reconsider it at a bounded interval; never retry on every builder
+            // ask or permanently give up after the original obstruction clears.
+            if (ai.frame - fwdTryFrame < int(Global::RoleSettings::Tech::LayoutForwardBlockedRetrySeconds) * SECOND) return false;
+            fwdReplans = 0;
+            aiTerrainMgr.SetLayoutInt(BOX + ".fwd_replans", 0);
+        }
+        if (ai.frame - fwdTryFrame < int(Global::RoleSettings::Tech::LayoutForwardRetrySeconds) * SECOND) return false;
         fwdTryFrame = ai.frame;
         const AIFloat3 fwd = Fwd(facing);
         const AIFloat3 sideVec = Side(facing);
@@ -649,6 +674,10 @@ namespace Layout {
             const AIFloat3 zoneFront = fronts[bestIdx] + fwd * (float(depth) * cell);
             int group = 0;
             const int rows = LayRows(zone, zoneFront, across, depth, 0, group);   // D-081 via D-094 (now honours LayoutTurretBlock)
+            if (group <= 0 || aiTerrainMgr.GetGroupCount(group, false) == 0) {
+                aiTerrainMgr.ReleaseZone(zone);
+                continue;
+            }
             fwdZone = zone; fwdGroup = group; fwdCentre = bestCentre; fwdDepth = depth;
             aiTerrainMgr.SetLayoutInt(BOX + ".fwd_zone", fwdZone);
             aiTerrainMgr.SetLayoutInt(BOX + ".fwd_group", fwdGroup);
@@ -665,7 +694,7 @@ namespace Layout {
         aiTerrainMgr.SetLayoutInt(BOX + ".fwd_replans", fwdReplans);
         GenericHelpers::LogUtil("[Layout] no clear ground for a forward cluster " + ahead + " cells ahead; attempt "
             + fwdReplans + "/" + Global::RoleSettings::Tech::LayoutForwardTries
-            + (ForwardGivenUp() ? "; candidate search exhausted" : "; next candidate in a minute"), 1);
+            + (ForwardGivenUp() ? "; state=blocked; bounded retry pending" : "; state=searching; next candidate pending"), 1);
         return false;
     }
 
@@ -698,9 +727,9 @@ namespace Layout {
     int ZoneCount() { return HasBox() ? 1 + int(extraZones.length()) : 0; }
     int ZoneAt(int i) { return (i == 0) ? boxZone : extraZones[i - 1]; }
 
-    void Plan(const string& in side)
+    void Plan(const string& in side, bool sharedSequence = false)
     {
-        if (!Global::RoleSettings::Tech::ExperimentalBuild || !Global::RoleSettings::Tech::LayoutEnabled || !Enable(true)) return;
+        if ((!sharedSequence && !Global::RoleSettings::Tech::ExperimentalBuild) || !Global::RoleSettings::Tech::LayoutEnabled || !Enable(true)) return;
         if (Adopt(side)) return;
         if (!ResolveDefs(side) || !PlanFactories(side)) {
             fallback = true;
@@ -799,13 +828,21 @@ namespace Layout {
         for (int pass = 0; pass < 2; ++pass) {
             const bool ring = (pass == 1);
             for (int i = 0; i < ZoneCount(); ++i) {
-                const int id = aiTerrainMgr.PackSet(ZoneAt(i), def, nanoGroup, facing, anchor, setSize, ring);
+                const int id = aiTerrainMgr.PackSet(ZoneAt(i), def, nanoGroup, facing, anchor, setSize, ring, Global::RoleSettings::Tech::LayoutSetMaximumTurretGapCells);
                 if (id >= 0) return id;
             }
             if (fwdZone != 0 && fwdGroup > 0) {
-                const int id = aiTerrainMgr.PackSet(fwdZone, def, fwdGroup, facing, anchor, setSize, ring);
+                const int id = aiTerrainMgr.PackSet(fwdZone, def, fwdGroup, facing, anchor, setSize, ring, Global::RoleSettings::Tech::LayoutSetMaximumTurretGapCells);
                 if (id >= 0) return id;
             }
+        }
+        // Saturated support, not only saturated turret slots, needs capacity.
+        // GrowBox keeps the existing configured limit and failed-search delay.
+        // Never extend an economy line beyond support simply to keep building.
+        if (GrowBox()) {
+            RegisterFactoryZones();
+            return aiTerrainMgr.PackSet(ZoneAt(ZoneCount() - 1), def, nanoGroup, facing, anchor, setSize, true,
+                Global::RoleSettings::Tech::LayoutSetMaximumTurretGapCells);
         }
         return -1;
     }
@@ -931,7 +968,7 @@ namespace Layout {
         if (!fallback || labSlot >= 0) return;
         CCircuitDef@ t2 = ai.GetCircuitDef(UnitHelpers::GetT2BotLabForSide(Global::AISettings::Side));
         if (t2 is null) return;
-        const int id = CrampedLabSite(t2, firstLab, Global::RoleSettings::Tech::CrampedPlaceRadius, walker, 32.0f);
+        const int id = CrampedLabSite(t2, firstLab, Global::RoleSettings::Tech::CrampedPlaceRadius, walker, 32.0f, true);
         if (id < 0) { GenericHelpers::LogUtil("[Layout] no footprint for the advanced lab beside the first lab (D-121)", 1); return; }
         labSlot = id;
         const AIFloat3 p = aiTerrainMgr.GetReservationPos(id);
@@ -948,7 +985,8 @@ namespace Layout {
 
     // D-121: a lab footprint on cramped ground: rings out from `at`, any facing,
     // the exit clear, reserved; -1 when none within `radius`
-    int CrampedLabSite(CCircuitDef@ lab, const AIFloat3 &in at, float radius, CCircuitUnit@ walker = null, float step = SQUARE_SIZE * 2)
+    int CrampedLabSite(CCircuitDef@ lab, const AIFloat3 &in at, float radius, CCircuitUnit@ walker = null, float step = SQUARE_SIZE * 2, bool reserveTechSupport = false,
+        CCircuitDef@ supportDefinition = null, const string &in supportStateKey = "")
     {
         const float clear = float(lab.GetFootprintX() > lab.GetFootprintZ() ? lab.GetFootprintX() : lab.GetFootprintZ()) * SQUARE_SIZE * 2;
         const int firstRing = int(clear / step);
@@ -965,11 +1003,49 @@ namespace Layout {
                 // played: a ridge splits Tundra's island; a site across it was
                 // "out of the builder's reach" and every order aborted
                 if (walker !is null && !aiTerrainMgr.CanReachAt(walker, p, Global::RoleSettings::Tech::CrampedReachElmos)) continue;
-                for (int f = 0; f < 4; ++f) {
+                const int preferredFacing = LabFacing();
+                const array<int> candidateFacings = { preferredFacing, (preferredFacing + 1) % 4,
+                    (preferredFacing + 3) % 4, (preferredFacing + 2) % 4 };
+                for (uint facingIndex = 0; facingIndex < candidateFacings.length(); ++facingIndex) {
+                    const int f = candidateFacings[facingIndex];
                     if (!aiTerrainMgr.CanReserveBuilding(lab, p, f)) continue;
                     if (!aiTerrainMgr.IsExitClear(lab, p, f, 320.0f, 32.0f)) continue;   // D-074
+                    CCircuitDef@ support = supportDefinition is null ? nano : supportDefinition;
+                    if (reserveTechSupport && !aiTerrainMgr.CanReserveNanoBlockAt(support, lab, p, f,
+                        Global::RoleSettings::Tech::CrampedSupportColumns,
+                        Global::RoleSettings::Tech::CrampedSupportRows, 0)) continue;
                     const int id = aiTerrainMgr.ReserveBuilding(lab, p, f, 0);
-                    if (id >= 0) return id;
+                    if (id < 0) continue;
+                    // Harbour/hover/flank callers own their distinct support
+                    // policy. Do not reserve land nanos under a shipyard or
+                    // overwrite the primary bot lab's saved facing for them.
+                    if (!reserveTechSupport) return id;
+                    // The reserved factory already contributes its actual exit to
+                    // native FactoryExitLanes. Commit reachable support with it;
+                    // footprint-only fallback sites used to strand unsupported labs.
+                    const int group = support is null ? -1 : aiTerrainMgr.ReserveNanoBlockAt(support, lab, p, f,
+                        Global::RoleSettings::Tech::CrampedSupportColumns,
+                        Global::RoleSettings::Tech::CrampedSupportRows, 0);
+                    if (group <= 0 || support is null || aiTerrainMgr.CountGroupSlotsWithin(group, p, support.GetBuildDistance()) == 0) {
+                        if (group > 0) {
+                            const int supportZone = aiTerrainMgr.GetGroupZone(group);
+                            aiTerrainMgr.ReleaseGroup(group);
+                            if (supportZone > 0) aiTerrainMgr.ReleaseZone(supportZone);
+                        }
+                        aiTerrainMgr.ReleaseReservation(id);
+                        continue;
+                    }
+                    if (supportStateKey.length() > 0) {
+                        // Harbour modules own their support and facing; never
+                        // replace the primary bot factory's metadata.
+                        aiTerrainMgr.SetLayoutInt(supportStateKey + ".support_group", group);
+                    } else {
+                        nanoGroup = group;
+                        aiTerrainMgr.SetLayoutInt(BOX + ".nano_group", group);
+                        aiTerrainMgr.SetLayoutInt(BOX + ".lab_slot", id);
+                        aiTerrainMgr.SetLayoutInt(BOX + ".lab_facing", f);
+                    }
+                    return id;
                 }
             }
         }
@@ -988,6 +1064,14 @@ namespace Layout {
         const int have = nano.count + aiBuilderMgr.GetQueuedBuildCount(int(Task::BuildType::NANO), nano);
         if (have >= allowed) return null;
         const AIFloat3 at = CrampedAnchor(unit);
+        const int supportSlot = aiTerrainMgr.NextSlotAny(nanoGroup, at);
+        if (supportSlot >= 0) {
+            IUnitTask@ supported = aiBuilderMgr.Enqueue(TaskB::Common(Task::BuildType::NANO, priority, nano,
+                aiTerrainMgr.GetReservationPos(supportSlot), 0.0f, true, 120 * SECOND));
+            if (supported is null) return null;
+            if (!AiPinReservation(supported, supportSlot)) { aiBuilderMgr.AbortTask(supported); return null; }
+            return supported;
+        }
         GenericHelpers::LogUtil("[Layout] cramped turret " + (have + 1) + " of " + allowed + " near (" + int(at.x) + ", " + int(at.z) + ") (D-121)", 1);
         return aiBuilderMgr.Enqueue(TaskB::Common(Task::BuildType::NANO, priority, nano, at, Global::RoleSettings::Tech::CrampedTurretRadius, true, 120 * SECOND));
     }
@@ -1007,13 +1091,67 @@ namespace Layout {
         const AIFloat3 p = aiTerrainMgr.GetReservationPos(id);
         IUnitTask@ t = aiBuilderMgr.Enqueue(TaskB::Factory(Task::Priority::NOW, def, p, null, 0.0f, false, true, timeout));
         if (t is null) { aiTerrainMgr.ReleaseReservation(id); return null; }
-        if (!AiPinReservation(t, id)) GenericHelpers::LogUtil("[Layout] could not pin " + def.GetName() + " to slot " + id, 1);
+        if (!AiPinReservation(t, id)) {
+            GenericHelpers::LogUtil("[Layout] could not pin " + def.GetName() + " to slot " + id, 1);
+            // Abort only this task; a failed claim may be owned by another task.
+            aiBuilderMgr.AbortTask(t);
+            return null;
+        }
         return t;
     }
 
     int noRoomSince = -1;     // D-099: INV-020
     int noRoomLog = -100000;
     string noRoomDef = "";
+
+    // A whole rectangular bank can be impossible on an island even when a
+    // small reactor/support module fits. Search a fixed number of sites only
+    // after ordinary packing fails; commit both footprints or release both.
+    int ReserveSupportedOverflow(CCircuitDef@ definition, CCircuitUnit@ builder)
+    {
+        if (nano is null || builder is null || overflowSupportGroups.length() >= uint(Global::RoleSettings::Tech::LayoutOverflowModules)) return -1;
+        if (ai.frame - overflowSupportSearchFrame < int(Global::RoleSettings::Tech::LayoutOverflowRetrySeconds) * SECOND) return -1;
+        overflowSupportSearchFrame = ai.frame;
+        const AIFloat3 home = BaseCentre();
+        const int direction = LabFacing();
+        const AIFloat3 forward = Fwd(direction);
+        const AIFloat3 sideways = Side(direction);
+        const array<AIFloat3> bearings = { forward * -1.0f, sideways, sideways * -1.0f,
+            (sideways - forward) * 0.70710678f, (sideways + forward) * -0.70710678f,
+            forward, (sideways + forward) * 0.70710678f, (forward - sideways) * 0.70710678f };
+        for (int ring = 1; ring <= Global::RoleSettings::Tech::LayoutOverflowRings; ++ring) {
+            for (uint index = 0; index < bearings.length(); ++index) {
+                const AIFloat3 position = home + bearings[index] * (float(ring) * Global::RoleSettings::Tech::LayoutOverflowStepElmos);
+                if (position.x < 0 || position.z < 0 || position.x >= AiTerrainWidth() || position.z >= AiTerrainHeight()) continue;
+                if (!aiTerrainMgr.CanReachAt(builder, position, builder.circuitDef.GetBuildDistance())) continue;
+                if (!aiTerrainMgr.CanReserveBuilding(definition, position, direction)) continue;
+                const int slot = aiTerrainMgr.ReserveBuilding(definition, position, direction, 0);
+                if (slot < 0) continue;
+                const int support = aiTerrainMgr.ReserveNanoBlockAt(nano, definition, position, direction,
+                    Global::RoleSettings::Tech::CrampedSupportColumns, Global::RoleSettings::Tech::CrampedSupportRows, 0);
+                if (support <= 0 || aiTerrainMgr.CountGroupSlotsWithin(support, position, nano.GetBuildDistance()) == 0) {
+                    if (support > 0) { const int zone = aiTerrainMgr.GetGroupZone(support); aiTerrainMgr.ReleaseGroup(support); if (zone > 0) aiTerrainMgr.ReleaseZone(zone); }
+                    aiTerrainMgr.ReleaseReservation(slot);
+                    continue;
+                }
+                aiTerrainMgr.SetLayoutInt(BOX + ".overflow_group" + overflowSupportGroups.length(), support);
+                overflowSupportGroups.insertLast(support);
+                aiTerrainMgr.SetLayoutInt(BOX + ".overflow_count", int(overflowSupportGroups.length()));
+                GenericHelpers::LogUtil("[Layout] supported overflow " + definition.GetName() + " slot=" + slot + " support=" + support, 1);
+                return slot;
+            }
+        }
+        GenericHelpers::LogUtil("[Layout] supported overflow search blocked for " + definition.GetName(), 1);
+        return -1;
+    }
+
+    bool OverflowSupports(const AIFloat3 &in position)
+    {
+        if (nano is null) return false;
+        for (uint index = 0; index < overflowSupportGroups.length(); ++index)
+            if (aiTerrainMgr.CountGroupSlotsWithin(overflowSupportGroups[index], position, nano.GetBuildDistance()) > 0) return true;
+        return false;
+    }
 
     IUnitTask@ Place(Task::BuildType type, Task::Priority priority, CCircuitDef@ def, int timeout, CCircuitUnit@ builder = null)
     {
@@ -1076,7 +1214,8 @@ namespace Layout {
                 }
                 GenericHelpers::LogUtil("[Layout] new set of " + def.GetName() + " at (" + int(sp.x) + ", " + int(sp.z) + "), " + gap + " cell(s) from a turret", 1);
                 // INV-022 (D-101): the first of a set touches a turret
-                if (gap != 0)
+                if (gap < 0 || (Global::RoleSettings::Tech::LayoutSetMaximumTurretGapCells >= 0
+                    && gap > Global::RoleSettings::Tech::LayoutSetMaximumTurretGapCells))
                     Invariants::Violation("INV-022", def.GetName(), "a new set of " + def.GetName() + " starts " + gap + " cell(s) from the turrets, not flush");
             }
         }
@@ -1090,6 +1229,11 @@ namespace Layout {
         // one, served by its own turrets.
         if (id < 0 && fwdZone != 0 && fwdGroup > 0)
             id = aiTerrainMgr.PackNearGroup(fwdZone, def, fwdGroup, facing, anchor, 0.0f, MinNanoDist(def), 0);
+        for (uint index = 0; index < overflowSupportGroups.length() && id < 0; ++index) {
+            const int group = overflowSupportGroups[index];
+            id = aiTerrainMgr.PackNearGroup(aiTerrainMgr.GetGroupZone(group), def, group, facing, anchor, 0.0f, MinNanoDist(def), 0);
+        }
+        if (id < 0) id = ReserveSupportedOverflow(def, builder);
         if (id < 0) {
             if (noRoomSince < 0) noRoomSince = ai.frame;
             // said once per def every 30 s (played: 4,139 lines in 20 minutes)
@@ -1107,7 +1251,8 @@ namespace Layout {
         const AIFloat3 pos = aiTerrainMgr.GetReservationPos(id);
         // INV-014 (D-082): every packed structure stands within a turret's reach of a slot
         if (aiTerrainMgr.CountGroupSlotsWithin(nanoGroup, pos, Global::RoleSettings::Tech::InvariantReachElmos) == 0
-            && (fwdGroup == 0 || aiTerrainMgr.CountGroupSlotsWithin(fwdGroup, pos, Global::RoleSettings::Tech::InvariantReachElmos) == 0))
+            && (fwdGroup == 0 || aiTerrainMgr.CountGroupSlotsWithin(fwdGroup, pos, Global::RoleSettings::Tech::InvariantReachElmos) == 0)
+            && !OverflowSupports(pos))
             Invariants::Violation("INV-014", def.GetName(), def.GetName() + " packed at (" + int(pos.x) + ", " + int(pos.z) + ") with no turret slot within " + int(Global::RoleSettings::Tech::InvariantReachElmos));
         IUnitTask@ t = aiBuilderMgr.Enqueue(TaskB::Common(type, priority, def, pos, 0.0f, true, timeout));
         if (t is null) {
@@ -1116,6 +1261,10 @@ namespace Layout {
         }
         if (!AiPinReservation(t, id)) {
             GenericHelpers::LogUtil("[Layout] could not pin " + def.GetName() + " to slot " + id, 1);
+            // Failed claims may belong to another task. Abort releases only
+            // this enqueue's bookkeeping; never release the shared slot here.
+            aiBuilderMgr.AbortTask(t);
+            return null;
         }
         return t;
     }
@@ -1313,8 +1462,16 @@ namespace Layout {
     // D-097: turret orders not yet started plus turret frames under construction
     int TurretsInFlight()
     {
-        if (nano is null) return 0;
-        return aiBuilderMgr.GetQueuedBuildCount(int(Task::BuildType::NANO), nano) + aiBuilderMgr.GetUnfinishedCount(nano);
+        // Constant-size roster; native lifecycle counters are O(1) per definition.
+        // Include donated faction/platform turrets: the resource budget is shared.
+        const array<string> names = UnitHelpers::GetT1NanoUnitNames();
+        int committed = 0;
+        for (uint index = 0; index < names.length(); ++index) {
+            CCircuitDef@ definition = ai.GetCircuitDef(names[index]);
+            if (definition !is null) committed += aiBuilderMgr.GetQueuedBuildCount(int(Task::BuildType::NANO), definition)
+                + aiBuilderMgr.GetUnfinishedCount(definition);
+        }
+        return committed;
     }
 
     bool TurretsCapped()
@@ -1326,10 +1483,23 @@ namespace Layout {
     int turretCapLog = -100000;
     int lastTurretAllowed = -1;
 
+    // Synchronous enqueue callbacks see the same budget that admitted the order.
+    // Restore it after the call so unrelated/native admissions use their own budget.
+    int activeTurretAdmissionBudget = -1;
     IUnitTask@ NanoTask(CCircuitUnit@ unit, Task::Priority priority, int parallelBudget = -1)
     {
-        if (fallback && aiTerrainMgr.IsLayoutEnabled()) return CrampedNanoTask(unit, priority);   // D-121
-        if (!HasComplex() || unit is null || unit.circuitDef is null || nano is null) return null;
+        const int previousBudget = activeTurretAdmissionBudget;
+        string why;
+        activeTurretAdmissionBudget = parallelBudget >= 0 ? parallelBudget : TurretsAllowed(why);
+        IUnitTask@ result = AdmitNanoTask(unit, priority, activeTurretAdmissionBudget);
+        activeTurretAdmissionBudget = previousBudget;
+        return result;
+    }
+
+    IUnitTask@ AdmitNanoTask(CCircuitUnit@ unit, Task::Priority priority, int parallelBudget)
+    {
+        const bool crampedLayout = fallback && aiTerrainMgr.IsLayoutEnabled();
+        if ((!HasComplex() && !crampedLayout) || unit is null || unit.circuitDef is null || nano is null) return null;
         if (!unit.circuitDef.CanBuild(nano)) return null;
         // D-097: every turret order passes here (the chain's nano step, the
         // power rule, the economy rows): no new one while the calculation says
@@ -1349,6 +1519,18 @@ namespace Layout {
                 return null;
             }
             GenericHelpers::LogUtil("[Layout] turrets: order " + (inFlight + 1) + " of " + allowed + " allowed (" + why + ")", 1);
+        }
+        // Cramped geometry changes where a turret fits, not whether another
+        // concurrent project is affordable. Keep its admission gate shared.
+        if (crampedLayout) return CrampedNanoTask(unit, priority);
+        for (uint index = 0; index < overflowSupportGroups.length(); ++index) {
+            const int slot = aiTerrainMgr.NextSlotAny(overflowSupportGroups[index], unit.GetPos(ai.frame));
+            if (slot < 0) continue;
+            IUnitTask@ support = aiBuilderMgr.Enqueue(TaskB::Common(Task::BuildType::NANO, priority, nano,
+                aiTerrainMgr.GetReservationPos(slot), 0.0f, true, 120 * SECOND));
+            if (support is null) return null;
+            if (!AiPinReservation(support, slot)) { aiBuilderMgr.AbortTask(support); return null; }
+            return support;
         }
         // D-088: the pair's factory-nano slots stand behind the T1 lab, the
         // throwaway (played: the first turrets and the turbines packed there, 700
@@ -1430,7 +1612,7 @@ namespace Layout {
             if (labSlot >= 0 && !aiTerrainMgr.IsSlotDead(labSlot) && aiTerrainMgr.GetReservationPos(labSlot).x >= 0.0f)
                 return OrderLabOn(t2, labSlot, timeout, false, "on its cramped slot beside the first lab (D-121)");
             const AIFloat3 at = CrampedAnchor(null);
-            const int id = CrampedLabSite(t2, at, Global::RoleSettings::Tech::CrampedPlaceRadius, CrampedWalker(t2));
+            const int id = CrampedLabSite(t2, at, Global::RoleSettings::Tech::CrampedPlaceRadius, CrampedWalker(t2), SQUARE_SIZE * 2, true);
             if (id < 0) {
                 if (ai.frame - crampedLabLog >= 60 * SECOND) {
                     crampedLabLog = ai.frame;
@@ -1536,5 +1718,5 @@ namespace Layout {
 
     // Compatibility wrappers; the shared widget service handles every role.
     void SetOverlay(bool on) { WidgetLink::SetLayoutOverlay(on); }
-    void SendOverlay() { WidgetLink::LayoutTick(); }
+
 }

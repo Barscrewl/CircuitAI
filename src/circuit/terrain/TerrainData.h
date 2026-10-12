@@ -21,6 +21,7 @@
 
 #include "map/GridAnalyzer.h"
 #include "util/Defines.h"
+#include "terrain/TerrainPublication.h"
 
 #include "AIFloat3.h"
 
@@ -171,6 +172,9 @@ struct SAreaData {
 	float percentLand;  // 0 to 100
 
 	FloatVec heightMap;
+	// Published with this buffer. Readers must not infer identity from a reused
+	// double-buffer address; initialized again when TerrainData is reconstructed.
+	std::uint64_t heightRevision = 1;
 	int heightMapXSize;  // height map width
 };
 

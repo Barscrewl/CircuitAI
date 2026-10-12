@@ -28,6 +28,7 @@ import sys
 import time
 from pathlib import Path
 import storage
+from symbol_store import stage_symbols
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -148,7 +149,11 @@ def sha16(p):
 
 
 def stage(args):
+    if not str(args.dir).strip():
+        die("empty playtest directory; benchmark allocation must succeed before staging")
     d = Path(args.dir)
+    if d.resolve() == REPO.resolve() or d.resolve() in REPO.resolve().parents:
+        die("playtest write directory cannot be the source checkout or its parent")
     d.mkdir(parents=True, exist_ok=True)
     ai_dst = d / "AI" / "Skirmish" / AI_SHORT / AI_VERSION
     ai_dst.mkdir(parents=True, exist_ok=True)
@@ -161,7 +166,7 @@ def stage(args):
     shutil.copy2(dll_src, ai_dst / "SkirmishAI.dll")
     dbg = dll_src.with_suffix(".dbg")
     if dbg.exists():
-        shutil.copy2(dbg, ai_dst / "SkirmishAI.dbg")
+        stage_symbols(dbg, ai_dst / "SkirmishAI.dbg")
 
     data_src = Path(args.data) if args.data else REPO / "data"
     for sub in ("config", "script"):
@@ -169,20 +174,14 @@ def stage(args):
             shutil.rmtree(ai_dst / sub)
         shutil.copytree(data_src / sub, ai_dst / sub, ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(data_src / "AIOptions.lua", ai_dst / "AIOptions.lua")
-    # setting overrides inside Global::RoleSettings::Tech of the STAGED global.as only
-    for kv in (args.set or []):
-        key, _, val = kv.partition("=")
-        gp = ai_dst / "script" / "src" / "global.as"
-        g = gp.read_text(encoding="utf-8")
-        a = g.index("namespace Tech {")
-        b = g.index("\n        }", a)
-        block = g[a:b]
-        pat = re.compile(r"^(\s*(?:int|float|bool|string)\s+%s\s*=\s*)([^;]+);" % re.escape(key.strip()), re.M)
-        if not pat.search(block):
-            die("--set %s: no such Tech setting" % key)
-        block = pat.sub(lambda m: m.group(1) + val.strip() + ";", block, count=1)
-        gp.write_text(g[:a] + block + g[b:], encoding="utf-8")
-        log("set Tech::%s = %s" % (key.strip(), val.strip()))
+    # Apply only to the staged copy; supports both current and pinned old layouts.
+    from script_settings import apply_override
+    for expression in (args.set or []):
+        try:
+            setting = apply_override(ai_dst / "script/src", expression)
+        except ValueError as error:
+            die(str(error))
+        log("set " + setting)
 
     info = (data_src / "AIInfo.lua").read_text(encoding="utf-8")
     info, n1 = re.subn(r"value\s*=\s*'[^']*',(\s*-- AI name - !This comment is used for parsing!)",
@@ -355,7 +354,7 @@ def write_script(args, d):
     if not map_name:
         die("no map: pass --map")
     if not map_archive_present(map_name):
-        log("WARNING: no archive for '%s' under %s/maps; the engine will fail to load it" % (map_name, BAR_DATA))
+        die("no archive for '%s' under %s/maps; install the exact map version before launching" % (map_name, BAR_DATA))
     spots = map_spots(map_name, args.map_file)
     teams = choose_teams(args, spots)
 
@@ -632,17 +631,14 @@ def watch(args):
             verdict = verdict or "PASS"
             reason = reason or "reached %.0f min" % stop_minute
             break
-        if not alive and frame > 0:
+        if not alive:
             # The engine can flush its final seconds while running_pids polls.
             # Consume that tail before deciding an accelerated run ended early.
             if info.exists() and info.stat().st_size > pos:
                 continue
             verdict = verdict or ("FAIL" if frame < stop_frame else "PASS")
-            reason = reason or "engine exited at %.1f min" % minute(frame)
-            break
-        if not alive and frame == 0 and time.time() - started > 90:
-            verdict = "FAIL"
-            reason = "engine exited before the game started"
+            reason = reason or ("engine exited before the game started" if frame == 0
+                                else "engine exited at %.1f min" % minute(frame))
             break
         if time.time() - started > wall_limit:
             verdict = verdict or "FAIL"
@@ -722,7 +718,7 @@ def add_common(p):
 def add_stage_args(p):
     p.add_argument("--dll", help="SkirmishAI.dll to test (default: the docker build's install copy)")
     p.add_argument("--data", help="AI data dir with config/ script/ AIOptions.lua AIInfo.lua (default: the repo's data/)")
-    p.add_argument("--set", action="append", help='override a Global::RoleSettings::Tech setting in the staged script, e.g. --set RushObjective=\'"afus"\'')
+    p.add_argument("--set", action="append", help='override a role setting (Key=value means Tech; Air.Key=value selects Air) in the staged script, e.g. --set RushObjective=\'"afus"\'')
     p.add_argument("--speed", default="1", help="game speed the widget sets at frame 1 (setminspeed/setmaxspeed)")
     p.add_argument("--speed-plan", help="speed changes during the game, 'minute:speed,...' (e.g. '0:20,14:1,16:20')")
     p.add_argument("--slow-near-shots", action="store_true", help="speed 1 from 0.3 min before each screenshot until just after it, --speed between")

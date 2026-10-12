@@ -1,6 +1,7 @@
 // Supplied placement/support fixture. Injected only into staged test data.
 namespace DenseProbe {
     bool seeded=false;
+    bool checkedOccupiedTidal=false;
     bool supportCase=false; // replaced by runner
     array<string> targets;
     void Tick() {
@@ -32,9 +33,21 @@ namespace DenseProbe {
             for (uint j=0; j<SeaLayout::patches.length(); ++j) if (SeaLayout::patches[j].name==targets[i]
                 && SeaLayout::patches[j].slots.length()>0) ++found;
             if (found<(i==0 ? 2 : 1)) {
-                SeaLayout::PlanPatch(ai.GetCircuitDef(targets[i]),AIFloat3(1000+float(i)*240,0,4300),6,1000);
+                // Exercise two narrow fallback rows explicitly. The normal
+                // tidal policy now reserves larger blocks regardless of count.
+                SeaLayout::PlanPatch(ai.GetCircuitDef(targets[i]),AIFloat3(1000+float(i)*240,0,4300),6,1000,AIFloat3(-1,0,-1),i==0);
                 break;
             }
+        }
+        if (!air && !supportCase && !checkedOccupiedTidal) for (uint i=0;i<SeaLayout::patches.length();++i) {
+            SeaLayout::Patch@ patch=SeaLayout::patches[i];
+            if (patch.name!="armtide" || patch.slots.length()==0 || aiTerrainMgr.GetReservationState(patch.slots[0])!=3) continue;
+            checkedOccupiedTidal=true;
+            const int duplicate=aiTerrainMgr.ReservePackedBuilding(ai.GetCircuitDef(patch.name),
+                aiTerrainMgr.GetReservationPos(patch.slots[0]),patch.facing);
+            GenericHelpers::LogUtil("[DenseFixture] "+(duplicate<0 ? "PASS" : "FAIL")+" occupied tidal rejected",1);
+            if (duplicate>=0) aiTerrainMgr.ReleasePersistentBuilding(duplicate);
+            break;
         }
         if (supportCase && ai.frame%(30*SECOND)<SECOND) {
             for (uint i=0; i<SeaEconomy::productionFactories.length(); ++i) {

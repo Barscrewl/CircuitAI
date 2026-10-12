@@ -21,29 +21,11 @@ ROOT = HERE.parents[1]
 
 
 def pool_symbols(staged):
-    """Keep immutable symbols per content hash, not ~400 MB per short trial.
-
-    Never link to the mutable build output: rebuilding it would corrupt older
-    evidence. All original run paths remain valid and retain identical bytes.
-    """
+    """Compatibility hook for callers; shared staging owns symbol retention."""
+    from symbol_store import stage_symbols
     path = staged / 'SkirmishAI.dbg'
-    if not path.exists():
-        return
-    digest = storage.file_hash(path)
-    pool = RAW_ROOT / 'ranged-rework/symbols'
-    pool.mkdir(parents=True, exist_ok=True)
-    target = pool / (digest + '.dbg')
-    if not target.exists():
-        path.replace(target)
-    else:
-        if storage.file_hash(target) != digest:
-            raise RuntimeError('Corrupt symbol pool: ' + str(target))
-        path.unlink()
-    try:
-        os.link(target, path)
-    except OSError:
-        import shutil
-        shutil.copy2(target, path)
+    if path.exists():
+        stage_symbols(path, path)
 
 
 def prepare(args):
@@ -56,7 +38,7 @@ def prepare(args):
     command = [sys.executable, str(HERE / 'playtest.py')]
     stage = command + ['stage','--dir',str(directory),'--dll',str(args.dll),'--data',str(args.data),
         '--map',case['map'],'--map-file',str(starts),'--role',role,'--roles','all','--ally-spots','1',
-        '--side',case.get('side','armada'),'--game','Beyond All Reason test-31479-433a460',
+        '--side',case.get('side','armada'),'--game',args.game,
         '--engine','recoil_2026.07.04','--speed',str(args.speed),'--minutes',str(args.minutes),
         '--shots','','--width','1280','--height','720','--lean-render','--bonus','0',
         '--ai-option','profile='+args.profile,'--ai-option','random_seed='+str(args.seed),
@@ -67,6 +49,9 @@ def prepare(args):
         '--extra-widget',str(HERE/'widgets/ranged_arena.lua'),
         '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua')]
     if args.headless: stage += ['--headless']
+    if case.get('aggression_widget_test'):
+        stage += ['--extra-widget',str(ROOT/'tools/widgets/gui_barb_team_link.lua'),
+                  '--extra-widget',str(HERE/'widgets/aggression_watch.lua')]
     subprocess.run(stage, check=True)
     script = directory/'script.txt'
     script.write_text(script.read_text().replace('[GAME]\n{','[GAME]\n{\n FixedRNGSeed='+str(args.seed)+';',1))
@@ -110,7 +95,28 @@ def prepare(args):
             route.SetTraversal(true,48,false); route.SetRoute(points); return route;
         } // production-only fixture: retain army investment without clearing opponents
 '''
-    path.write_text(source[:start]+override+source[start:])
+    if case.get('native_route'):
+        spec = case['native_route']
+        points = ','.join(f'AIFloat3({x},0,{z})' for x,z in spec['points'])
+        override += '''
+        if (ai.teamId==0 && u.circuitDef.GetName()=="'''+case['unit']+'''") {
+            if (FixtureRoute is null) {
+                @FixtureRoute=cast<CRouteTask>(aiMilitaryMgr.Enqueue(TaskF::Route()));
+                array<AIFloat3> points={'''+points+'''};
+                FixtureRoute.SetLanes('''+str(spec['lanes'])+','+str(spec['spacing'])+''',1);
+                FixtureRoute.SetTraversal(false,'''+str(spec['radius'])+''',false);
+                FixtureRoute.SetRoute(points);
+            }
+            return FixtureRoute;
+        } // supplied route: exercise ordinary spam's native arrival/idle path
+'''
+    patched = source[:start]+override+source[start:]
+    if case.get('native_route'): patched = 'CRouteTask@ FixtureRoute;\n'+patched
+    path.write_text(patched)
+    if 'aggression_delta' in case:
+        path=staged/'script'/args.profile/'main.as'
+        source=path.read_text(); start=source.index('{',source.index('void AiUpdate()'))+1
+        path.write_text(source[:start]+'\n if (ai.teamId==0) aiMilitaryMgr.SetAggressionDelta('+str(float(case['aggression_delta']))+'f); // declared fixture offset\n'+source[start:])
     if case.get('trace_spam'):
         # Supplied buildings did not come through TECH's reserved layout.
         # Its geometry/economy Tick cannot judge this isolated production
@@ -145,6 +151,23 @@ def prepare(args):
                 data=data[:match.start(2)]+block+data[match.end(2):]
             path.write_bytes(data)
     case.update(variant=args.variant,profile=args.profile,seed=args.seed,minutes=args.minutes,speed=args.speed,headless=args.headless)
+    if case.get('fireline_observer'):
+        # Read task ownership in the real host; never issue combat commands.
+        profile=staged/'script'/args.profile/'main.as'
+        source=profile.read_text()
+        start=source.index('{',source.index('void AiUpdate()'))+1
+        probe='''
+        if (ai.teamId==0) {
+            array<int>@ observed=ai.GetOwnedUnitIds();
+            for (uint i=0;i<observed.length();++i) {
+                CCircuitUnit@ unit=ai.GetTeamUnit(observed[i]);
+                if (unit is null || unit.circuitDef.GetName()!="armmanni" || unit.task is null) continue;
+                if (unit.task.GetType()==int(Task::Type::RETREAT)) AiLog("[INVARIANT] Starlight entered retreat");
+                if (unit.GetHealthPercent()<.65f) AiLog("[FirelineTest] damaged gun holds native firing owner");
+            }
+        }
+'''
+        profile.write_text(source[:start]+probe+source[start:])
     config=directory/'LuaUI/Config';config.mkdir(parents=True,exist_ok=True)
     (config/'ranged_arena.lua').write_text('return '+lua(case)+'\n')
     (directory/'ranged-arena.json').write_text(json.dumps(case,indent=2)+'\n')
@@ -164,6 +187,8 @@ def prepare(args):
         pins['overrides'] += ['TECH layout/economy invariant Tick disabled for supplied buildings; production/lifecycle and spam invariants retained', 'read-only factory task census every 10 seconds']
     if case.get('hold_friendly'):
         pins['overrides'] += ['friendly combat held for production measurement']
+    if case.get('native_route'):
+        pins['overrides'] += ['friendly ordinary native route and lane geometry supplied; arrival/idle mechanism test']
     (directory/'ranged-arena-pins.json').write_text(json.dumps(pins,indent=2)+'\n')
     subprocess.run([sys.executable,str(ROOT/'tools/knowledge/check_script_api.py'),'--dll',str(args.dll),'--scripts',str(staged/'script')],check=True)
     print('RANGED_ARENA='+str(directory),flush=True)
@@ -177,6 +202,7 @@ def main():
     parser.add_argument('--data',type=Path,default=ROOT/'data')
     parser.add_argument('--variant',choices=['baseline','siege','ranged'],default='ranged')
     parser.add_argument('--profile',default='experimental_balanced')
+    parser.add_argument('--game',default='Beyond All Reason test-31479-433a460')
     parser.add_argument('--seed',type=int,default=2071)
     parser.add_argument('--minutes',type=int,default=4)
     parser.add_argument('--speed',type=int,default=8)

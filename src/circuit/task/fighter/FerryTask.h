@@ -61,6 +61,7 @@ public:
 	// Begin a run. Fails (returns false, state unchanged) when a run is
 	// already in flight or the cargo id is not one of our units.
 	bool SetCargo(int cargoId, const springai::AIFloat3& dropPos, float surfaceThreat = -1.f, float airThreat = -1.f);
+	bool CanCarry(int cargoId) const;
 	int GetState() const { return int(state_); }
 	int GetCargoId() const { return cargoId; }
 	// Back to IDLE and home. Safe to call in any state; the cargo is released.
@@ -94,6 +95,7 @@ private:
 	int loadRetries;
 	int unloadRetries;
 	int landedTicks = 0;  // consecutive updates the cargo was seen on the ground while unloading
+	int missingUnloadTicks = 0; // empty carrier queue while cargo still follows it
 	bool OnFactoryYard(CCircuitUnit* cargo, int frame);
 	springai::AIFloat3 yardPos;
 	int groundTicks = 0;  // D-091: consecutive updates the cargo was on the ground in flight to the drop
