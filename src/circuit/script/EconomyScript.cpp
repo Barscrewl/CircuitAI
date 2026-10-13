@@ -17,6 +17,7 @@
 #include "spring/SpringCallback.h"
 #include "unit/ally/AllyUnit.h"
 #include "unit/CircuitUnit.h"
+#include "unit/CircuitDef.h"
 #include "util/Utils.h"
 #include "util/ExtAS.h"
 #include "angelscript/include/angelscript.h"
@@ -80,6 +81,16 @@ static void CEconomyManager_SetEnergyCondition(CEconomyManager* mgr, const CCirc
 static int CEconomyManager_GetEnergyLimit(CEconomyManager* mgr, const CCircuitDef* cdef)
 {
 	return mgr->GetEnergyLimit(const_cast<CCircuitDef*>(cdef));
+}
+
+// D-290: the metal storage a definition adds to the team (UnitDef metalStorage).
+// One engine definition read per call; called only when a reclaim is decided.
+static float CEconomyManager_GetMetalStorageOf(CEconomyManager* mgr, const CCircuitDef* cdef)
+{
+	if ((cdef == nullptr) || (cdef->GetDef() == nullptr) || (mgr->GetMetalRes() == nullptr)) {
+		return 0.f;
+	}
+	return std::max(0.f, cdef->GetDef()->GetStorage(mgr->GetMetalRes()));
 }
 
 static void CEconomyManager_ClearAllyStarts(CEconomyManager* mgr) { mgr->ClearAllyStarts(); }
@@ -198,6 +209,7 @@ CEconomyScript::CEconomyScript(CScriptManager* scr, CEconomyManager* mgr)
 	// Per-role energy table overrides (D-047); -1 keeps a field.
 	r = engine->RegisterObjectMethod("CEconomyManager", "void SetEnergyCondition(const CCircuitDef@, int limit, float metalIncome, float energyIncome)", asFUNCTION(CEconomyManager_SetEnergyCondition), asCALL_CDECL_OBJFIRST); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CEconomyManager", "int GetEnergyLimit(const CCircuitDef@) const", asFUNCTION(CEconomyManager_GetEnergyLimit), asCALL_CDECL_OBJFIRST); ASSERT(r >= 0);
+	r = engine->RegisterObjectMethod("CEconomyManager", "float GetMetalStorageOf(const CCircuitDef@) const", asFUNCTION(CEconomyManager_GetMetalStorageOf), asCALL_CDECL_OBJFIRST); ASSERT(r >= 0);  // D-290
 }
 
 CEconomyScript::~CEconomyScript()

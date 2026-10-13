@@ -355,6 +355,21 @@ namespace Tech {
             float ReclaimTurretMargin = 48.0f;              // D-078: a turret within its build distance plus this of a reclaim target joins the reclaim at once
             float InvariantReclaimJoinSeconds = 10.0f;      // D-078: INV-008 - a turret in range of a reclaim of ours off it this long is a violation
             float InvariantT2ReclaimSeconds = 15.0f;        // D-078: INV-007 - an advanced lab not retiring this long into an advanced fusion with bank room is a violation
+            // D-290 (owner): one reclaim gate, TechReclaim::Allowed. A reclaim of our own structure is
+            // ordered (and kept running) only while current + inflow + refund <= (storage - the target's
+            // own storage) x ReclaimBankHeadroom; energy storage is never reclaimed (script and native).
+            float ReclaimBankHeadroom = 0.95f;              // D-290: share of the post-reclaim metal storage the refund must fit under
+            float ReclaimProjectionSeconds = 0.0f;          // D-290: seconds of net metal inflow (income - pull) added to the bank before the refund lands; 0 = the bank now (the 1 s pause check covers inflow while reclaiming)
+            bool ReclaimProtectEnergyStorage = true;        // D-290 (owner): TECH marks every energy storage def reclaim-protected natively (the watchdog repairs, never reclaims, such a frame)
+            float InvariantReclaimOverflowSeconds = 5.0f;   // D-290: INV-209 - a script reclaim of ours still running this long while its refund cannot fit the bank is a violation
+            // D-289 (owner): construction turrets have one ladder: high-priority frames in reach, any
+            // frame in reach, then assisting a producing (non-spam) factory in reach, then wait.
+            float TurretFactoryReachMargin = 24.0f;         // D-289: a turret within its build distance plus this of a factory's centre assists it (a guard repairs curBuild at the yard: Recoil BuilderCAI.cpp:931)
+            int TurretFactoryGuardSeconds = 10;             // D-289: builder-side factory guard timeout; the ladder is re-run after it, so a new frame in reach pre-empts within this
+            float TurretFactoryMinBankShare = 0.05f;        // D-289: under this share of metal storage, with a dear frame of ours up, turrets do not feed unit production
+            bool TurretFactoryInNukeFunding = false;        // D-289: during the D-229 silo funding window turrets do not feed unit production
+            float TurretFrameMaxRadius = 200.0f;            // D-289: a bound on any frame's model radius: one FindUnfinishedNear at build distance plus this pre-checks the ordered frame scans
+            float InvariantTurretIdleSeconds = 20.0f;       // D-289: INV-200 - a turret waiting this long while a producing factory it may assist stands in reach is a violation
             float ChainEnergyFloatMax = 300.0f;             // D-079: ... or the bank at EcoConvertEnergyPercent with income over the pull by this now (played: the advanced fusion ordered 15 s after the fusion at +1,291)
             float ChainEnergyFloatRise = 100.0f;            // D-079: ... or the bank above half of storage, up by this over ChainEnergyFloatSeconds, with income over the pull by ChainEnergyFloatMax (the moment a fusion completes)
             int ConverterParallel = 3;                      // D-079: converters queued at once while energy floats (one at a time otherwise); the pull-inflated surplus is replaced by half the income while floating
