@@ -1,0 +1,17 @@
+{
+  "name": "escort-scout-wipe",
+  "checks": "escort-scout-wipe",
+  "description": "D-291: an escorted T2 bomber wave dies to dense target flak; surviving T1 and T2 escorts fan out beyond the enemy base, then return home",
+  "bomber_only": false,
+  "aircraft": [
+    {"unit":"$t2","count":20,"team":0,"once":true},
+    {"unit":"$fighter2","count":10,"team":0,"once":true},
+    {"unit":"$fighter1","count":10,"team":0,"once":true}
+  ],
+  "targets": [{"unit":"armafus","count":1,"position":[10600,2200],"once":true}],
+  "defenses": [
+    {"unit":"armflak","count":12,"position":[10600,2200],"once":true},
+    {"unit":"armmercury","count":3,"position":[10300,2600],"once":true}
+  ],
+  "refill_seconds": 600
+}

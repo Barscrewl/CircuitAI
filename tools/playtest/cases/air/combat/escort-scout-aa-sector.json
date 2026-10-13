@@ -1,0 +1,18 @@
+{
+  "name": "escort-scout-aa-sector",
+  "checks": "escort-scout-aa-sector",
+  "description": "D-291: as escort-scout-wipe plus visible flak covering one rear fan sector; scouts must skip or nudge away from that sector",
+  "bomber_only": false,
+  "aircraft": [
+    {"unit":"$t2","count":20,"team":0,"once":true},
+    {"unit":"$fighter2","count":10,"team":0,"once":true},
+    {"unit":"$fighter1","count":10,"team":0,"once":true}
+  ],
+  "targets": [{"unit":"armafus","count":1,"position":[10600,2200],"once":true}],
+  "defenses": [
+    {"unit":"armflak","count":12,"position":[10600,2200],"once":true},
+    {"unit":"armmercury","count":3,"position":[10300,2600],"once":true},
+    {"unit":"armflak","count":3,"position":[11400,1400],"once":true}
+  ],
+  "refill_seconds": 600
+}
