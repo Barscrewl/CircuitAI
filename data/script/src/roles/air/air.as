@@ -726,6 +726,9 @@ namespace RoleAir {
     {
         IUnitTask@ defenceTask = AirBaseResponse::TaskFor(u);
         if (defenceTask !is null) return defenceTask;
+        // D-291: survivors of a wiped bombing run scout the enemy rear, then return home.
+        IUnitTask@ scoutTask = AirEscortScout::TaskFor(u);
+        if (scoutTask !is null) return scoutTask;
         IUnitTask@ reconTask = AirRecon::MakeTask(u);
     if (reconTask !is null) return reconTask;
         IUnitTask@ navalTask = AirNavalSupport::TaskFor(u);
@@ -748,6 +751,7 @@ namespace RoleAir {
     void Air_MilitaryAiTaskRemoved(IUnitTask@ task, bool done)
     {
         AirWaves::OnTaskRemoved(task);
+        AirOperations::OnTaskRemoved(task); // D-291: plan escort scouting after a wiped bombing run
     }
 
     /******************************************************************************

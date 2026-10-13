@@ -361,6 +361,24 @@ namespace Air {
             // first figure no escort is held; at the second the full ratio is.
             float EscortMinEnemyAirCost = 300.0f;
             float EscortFullEnemyAirCost = 3000.0f;
+            // D-291: when every bomber of an offensive operation (T2 wave or T1 raid) is
+            // dead, its surviving escort fighters fan out beyond the enemy base to scout,
+            // then return to the home screen on arrival or timeout. Defensive sorties and
+            // naval escorts are excluded. EscortScoutMax is a safety bound, not a behaviour cap.
+            bool EscortScoutEnabled = true;
+            int EscortScoutMax = 32;
+            int EscortScoutPerBase = 8;            // fan slots per enemy base before the next base/layer
+            float EscortScoutFanDegrees = 140.0f;  // fan width centred on our-base -> their-base axis
+            float EscortScoutDepth = 900.0f;       // elmos beyond the enemy start
+            float EscortScoutLayerStep = 450.0f;   // extra depth per further layer of fans
+            float EscortScoutMinSpacing = 320.0f;  // scout points of one wipe are at least this far apart
+            float EscortScoutExitDistance = 700.0f; // ignore the first part of the leg (inside the umbrella that killed the bombers)
+            float EscortScoutThreatPadding = 128.0f;
+            float EscortScoutSafeThreat = 0.25f;   // first candidate at or below this is taken
+            float EscortScoutMaxThreat = 1.0f;     // at or above: a visible AA range covers the leg/point; fighter goes home
+            int EscortScoutPendingSeconds = 10;    // planned point expires if the fighter does not idle in time
+            int EscortScoutLingerSeconds = 4;      // seconds at the point before returning
+            int EscortScoutTimeoutSeconds = 75;
             // Growth applied to the previous wave size from its survival ratio, measured
             // EvaluateSeconds after launch: heavy losses mean the enemy anti-air is winning
             // and the next wave needs mass; light losses grow gently.
