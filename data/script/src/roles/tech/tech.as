@@ -2180,11 +2180,14 @@ namespace RoleTech
 	}
 
 	// D-289: the economy guard of step 4: production does not take the build
-	// power while energy stalls, or while the bank is nearly empty and a dear
-	// frame of ours is going up (that frame is starved already).
+	// power while the bank is nearly empty and a dear frame of ours is going up
+	// (that frame is starved already). Energy stalling is not a reason by
+	// default (played 20261013T234723Z: TECH's energy bank sat near zero from
+	// 8 to 14 min and the guard kept every turret idle beside a producing lab;
+	// native's static repair already pauses with CmdWait while energy is empty).
 	bool Tech_TurretFactoryGuarded(string &out why)
 	{
-		if (aiEconomyMgr.isEnergyStalling) { why = "energy stalling"; return true; }
+		if (Global::RoleSettings::Tech::TurretFactorySkipOnEnergyStall && aiEconomyMgr.isEnergyStalling) { why = "energy stalling"; return true; }
 		const float stor = aiEconomyMgr.metal.storage;
 		if (stor > 0.0f && aiEconomyMgr.metal.current < Global::RoleSettings::Tech::TurretFactoryMinBankShare * stor
 			&& aiBuilderMgr.CountUnfinishedNear(Layout::BaseCentre(), Global::RoleSettings::Tech::EcoBuildPowerRadius,
@@ -2245,7 +2248,15 @@ namespace RoleTech
 			if (MapHelpers::SqDist(u.GetPos(ai.frame), buildee.GetPos(ai.frame)) > reach * reach) return null;
 			@t = aiFactoryMgr.Enqueue(TaskS::Repair(Task::Priority::NORMAL, buildee));
 		} else {
-			@t = GuardHelpers::AssignWorkerGuard(u, fac, Task::Priority::LOW, true, Global::RoleSettings::Tech::TurretFactoryGuardSeconds * SECOND);
+			// Not GuardHelpers::AssignWorkerGuard: it refuses a guard that lacks the
+			// BUILDER role, and a construction turret has none (no build options;
+			// behaviour.json role "support"), so every builder-side factory assist
+			// was refused (played: INV-200, 20261013T234555Z). The spam-lab rule it
+			// also enforces (INV-049) is applied by Tech_TurretFactoryFor. Same
+			// reuse as the helper: an identical healthy guard sends no new command.
+			const SServBTask guard = TaskB::Guard(Task::Priority::LOW, fac, true, Global::RoleSettings::Tech::TurretFactoryGuardSeconds * SECOND);
+			@t = aiBuilderMgr.FindMatchingGuard(u, guard);
+			if (t is null) @t = aiBuilderMgr.Enqueue(guard);
 		}
 		if (t !is null) {
 			const string key = u.id + "|" + fac.id;
