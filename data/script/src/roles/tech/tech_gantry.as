@@ -248,3 +248,272 @@ namespace TechGantry {
         return Work(cluster, ai.GetCircuitDef(cluster.defName), builder);
     }
 }
+
+// D-287 (owner): Marauder-class units (armmar, corshiva, legjav) belong to the
+// early T3 window - rushes and amphibious ambushes. After a latched "late"
+// point the gantries build the terrain's heavy instead: the land heavy (Thor)
+// on a land map, the amphibious heavy (Titan) when the start is land-locked or
+// the survey found an assault beach front. TECH only; every gate is O(1) and
+// reads cached state (no unit scan, no per-ask allocation).
+namespace TechHeavyChoice {
+    const string LateKey = "tech.heavy.late";
+    const string MassOpenKey = "tech.heavy.mass.open";
+    const string MassBaseKey = "tech.heavy.mass.base";
+    const string MassClosedKey = "tech.heavy.mass.closed";
+    int lateFrame = -1;          // persisted: the frame the late latch closed the Marauder window
+    int massOpen = -1, massBase = 0, massClosed = -1;   // persisted: the optional single late mass batch
+    bool loaded = false;
+    array<string> cached;        // reused candidate list; rebuilt only when side or terrain changes
+    string cachedSide;
+    int cachedTerrain = -1;      // 0 land, 1 amphibious
+
+    bool Enabled() {
+        return Global::AISettings::Role == AiRole::TECH && Global::RoleSettings::Tech::HeavyChoiceEnabled;
+    }
+    void Load() {
+        if (loaded) return;
+        loaded = true;
+        lateFrame = aiTerrainMgr.GetLayoutInt(LateKey, -1);
+        massOpen = aiTerrainMgr.GetLayoutInt(MassOpenKey, -1);
+        massBase = aiTerrainMgr.GetLayoutInt(MassBaseKey, 0);
+        massClosed = aiTerrainMgr.GetLayoutInt(MassClosedKey, -1);
+    }
+    bool Late() {
+        if (!Enabled()) return false;
+        Load();
+        return lateFrame >= 0;
+    }
+    // StrategicSites recomputes assaultBeaches only on a lane recalculation.
+    bool Amphibious() {
+        return Global::Map::LandLocked
+            || StrategicSites::assaultBeaches >= Global::RoleSettings::Tech::HeavyAmphibiousMinBeaches;
+    }
+    string Terrain() { return Amphibious() ? "amphibious" : "land"; }
+    bool IsMarauderClass(const string& in name) {
+        return name == "armmar" || name == "corshiva" || name == "legjav";
+    }
+    // False only for a late TECH: AIR (which shares AmphibiousOps) is unchanged.
+    bool MarauderAllowed() { return !Late(); }
+
+    // 1 Hz from Tech_EconomyUpdate. O(1): one ring-buffer minimum read; does
+    // nothing once latched (the latch never re-opens).
+    void Tick() {
+        if (!Enabled() || Late()) return;
+        const bool byTime = ai.frame >= Global::RoleSettings::Tech::HeavyLateMinutes * MINUTE;
+        const float mi = Economy::GetMinMetalIncomeLast10s();
+        const bool byIncome = Economy::IncomeWindowReady() && mi >= Global::RoleSettings::Tech::HeavyLateMetalIncome;
+        if (!byTime && !byIncome) return;
+        lateFrame = ai.frame;
+        aiTerrainMgr.SetLayoutInt(LateKey, lateFrame);
+        GenericHelpers::LogUtil("[TECH][Heavy] late latched frame=" + ai.frame + " mi=" + int(mi)
+            + " reason=" + (byTime ? "time" : "income") + " terrain=" + Terrain()
+            + " assaultBeaches=" + StrategicSites::assaultBeaches + "; Marauder-class production closed", 1);
+    }
+
+    // Ordered candidates for this side and terrain: the preferred heavy, then
+    // the other. Each must still pass the gantry's CanBuild and the cap (a map
+    // cap such as armthor = 0 falls through to the next) in EnqueueGantryBatchFrom.
+    array<string>@ Candidates(const string& in side) {
+        const int terrain = Amphibious() ? 1 : 0;
+        if (terrain != cachedTerrain || side != cachedSide) {
+            cachedTerrain = terrain; cachedSide = side;
+            string land = Global::RoleSettings::Tech::HeavyLandArmada, amph = Global::RoleSettings::Tech::HeavyAmphArmada;
+            if (side == "cortex") { land = Global::RoleSettings::Tech::HeavyLandCortex; amph = Global::RoleSettings::Tech::HeavyAmphCortex; }
+            else if (side == "legion") { land = Global::RoleSettings::Tech::HeavyLandLegion; amph = Global::RoleSettings::Tech::HeavyAmphLegion; }
+            const string first = terrain == 1 ? amph : land, second = terrain == 1 ? land : amph;
+            cached.resize(0);
+            if (first.length() > 0) cached.insertLast(first);
+            if (second.length() > 0 && second != first) cached.insertLast(second);
+        }
+        return @cached;
+    }
+    // One level-1 line per batch (one batch per gantry ask, five units each).
+    IUnitTask@ LateBatch(CCircuitUnit@ gantry, const string& in side, int count) {
+        IUnitTask@ task = Factory::EnqueueGantryBatchFrom(gantry, Candidates(side), count, Task::Priority::HIGH);
+        if (task !is null)
+            GenericHelpers::LogUtil("[TECH][Heavy] batch side=" + side + " terrain=" + Terrain()
+                + " unit=" + Factory::lastGantryBatchUnit + " gantry=" + gantry.circuitDef.GetName() + " x" + count, 1);
+        return task;
+    }
+
+    // The owner's "very large numbers" exception, off by default
+    // (LateMarauderMassBatch = 0): once, on an amphibious map, a late batch of N
+    // Marauders. Returns the recruit limit for AmphibiousOps::Produce, 0 = none.
+    // Losses before the batch completes are refilled (the base is the count at
+    // opening); the window closes for good once the count reaches the limit.
+    int MassBatchLimit(CCircuitDef@ marauder) {
+        const int mass = Global::RoleSettings::Tech::LateMarauderMassBatch;
+        if (marauder is null || mass <= 0) return 0;
+        Load();
+        if (massClosed >= 0 || !Amphibious()) return 0;
+        if (massOpen < 0) {
+            massOpen = ai.frame; massBase = marauder.count;
+            aiTerrainMgr.SetLayoutInt(MassOpenKey, massOpen);
+            aiTerrainMgr.SetLayoutInt(MassBaseKey, massBase);
+            GenericHelpers::LogUtil("[TECH][Heavy] late Marauder mass batch opened n=" + mass + " base=" + massBase, 1);
+        }
+        const int limit = massBase + mass;
+        if (marauder.count >= limit) {
+            massClosed = ai.frame;
+            aiTerrainMgr.SetLayoutInt(MassClosedKey, massClosed);
+            GenericHelpers::LogUtil("[TECH][Heavy] late Marauder mass batch closed count=" + marauder.count, 1);
+            return 0;
+        }
+        return limit;
+    }
+    bool MassAdmitted(int created) {
+        return massOpen >= 0 && created >= massOpen && (massClosed < 0 || created <= massClosed);
+    }
+
+    // INV-198, event time from Invariants::OnUnitAdded: O(1) per unit added,
+    // the gantry lookup only for a Marauder-class unit after the latch.
+    void CheckProduct(CCircuitUnit@ unit) {
+        if (unit is null || unit.circuitDef is null || !Late()) return;
+        const string name = unit.circuitDef.GetName();
+        if (!IsMarauderClass(name) || unit.GetProducerId() < 0) return;   // gifts have no local producer
+        CCircuitUnit@ producer = ai.GetTeamUnit(unit.GetProducerId());
+        if (producer is null || producer.circuitDef is null || !UnitHelpers::IsGantryLab(producer.circuitDef.GetName())) return;
+        const int created = unit.GetProductionFrame();
+        // Started inside the early window, or a recruit enqueued before the
+        // latch that the factory picked up just after it (no recruit is
+        // cancelled at the latch; one factory pass is well under 30 s).
+        if (created >= 0 && created < lateFrame + 30 * SECOND) return;
+        if (MassAdmitted(created)) return;
+        Invariants::Violation("INV-198", name, "late TECH gantry " + producer.circuitDef.GetName() + " produced Marauder-class "
+            + name + " " + unit.id + " created=" + created + " late=" + lateFrame);
+    }
+}
+
+// D-288 (owner): a gantry by 500 metal per second, then one more per further
+// 500. The single owner of TECH's gantry target, cap and due flag; rule
+// gantry.scale and the legacy T2 rung only read Due(). Every other gantry path
+// (D-281 early gantry, chain steps, cluster recovery) counts toward Have().
+namespace TechGantryScale {
+    const string TargetKey = "tech.gantry.target";
+    int highWater = 0;           // persisted target: floor(income / step), capped, never lowered
+    bool loaded = false, due = false, capRaised = false;
+    int have = 0, mapCeiling = -1;
+    int dueSince = -1, progressFrame = -1, lastHave = -1, lastOpen = -1, lastTurretProgress = -1;
+    int lastLogTarget = -1, lastLogHave = -1;
+    bool lastLogDue = false;
+    string lastReason = "none";
+    CCircuitDef@ landDef;
+    CCircuitDef@ waterDef;
+
+    bool Enabled() {
+        return Global::AISettings::Role == AiRole::TECH && Global::RoleSettings::Tech::GantryScaleEnabled;
+    }
+    void Load() {
+        if (loaded) return;
+        loaded = true;
+        highWater = AiMax(0, aiTerrainMgr.GetLayoutInt(TargetKey, 0));
+        const string side = Global::AISettings::Side;
+        @landDef = ai.GetCircuitDef(UnitHelpers::GetLandGantryForSide(side));
+        @waterDef = ai.GetCircuitDef(side == "cortex" ? "corgantuw" : (side == "legion" ? "leggantuw" : "armshltxuw"));
+        // A map limit on the gantry is a ceiling this policy never raises past.
+        int cap = -1;
+        if (landDef !is null && Global::Map::MergedUnitLimits.get(landDef.GetName(), cap)) mapCeiling = cap;
+    }
+    bool Due() { return Enabled() && due; }
+
+    // Standing gantries and frames (def.count counts frames), plus land orders
+    // not framed yet. O(clusters); the cluster list is a few tiers x a few
+    // clusters (well under 20), script reads only.
+    int Have(int &out openClusters, int &out turretProgress) {
+        int n = (landDef is null ? 0 : landDef.count) + (waterDef is null ? 0 : waterDef.count);
+        int ordered = 0;
+        openClusters = 0; turretProgress = -1;
+        for (uint i = 0; i < TechFactories::clusters.length(); ++i) {
+            TechFactories::Cluster@ c = TechFactories::clusters[i];
+            if (c.ahead || c.tier < 3 || c.labRes < 0) continue;
+            ++openClusters;
+            turretProgress = AiMax(turretProgress, c.gantryProgressFrame);
+            if (c.labTask is null || c.labTask.IsDead()) continue;
+            IBuilderTask@ order = cast<IBuilderTask>(c.labTask);
+            if (order !is null && order.target is null) ++ordered;
+        }
+        // A legacy (layout off) order: Builder's flag, with no frame of it yet
+        if (ordered == 0 && Builder::LandGantryQueuedCount > 0 && landDef !is null
+            && aiBuilderMgr.GetUnfinishedCount(landDef) == 0) ordered = 1;
+        return n + ordered;
+    }
+    // Event-driven in effect: writes only when the wanted cap is above the
+    // current one (the target rose, or a load restored it). Water gantries
+    // stay TechHarbour's (D-121): counted in Have(), their cap untouched.
+    void RaiseCaps() {
+        int wanted = highWater;
+        if (mapCeiling >= 0) wanted = AiMin(wanted, mapCeiling);
+        if (landDef is null || landDef.maxThisUnit >= wanted) return;
+        if (capRaised)
+            Invariants::Violation("INV-199", "cap", landDef.GetName() + " cap " + landDef.maxThisUnit
+                + " fell below the gantry target " + wanted + " (another writer lowered it)");
+        landDef.maxThisUnit = wanted;
+        capRaised = true;
+    }
+
+    // 1 Hz from Tech_EconomyUpdate. O(clusters) + O(1) economy reads.
+    void Tick() {
+        if (!Enabled()) { due = false; return; }
+        Load();
+        if (landDef is null || !Economy::IncomeWindowReady()) { due = false; return; }
+        const float mi = Economy::GetMinMetalIncomeLast10s();   // 10 s minimum: a spike never raises the target
+        const float step = AiMax(1.0f, Global::RoleSettings::Tech::GantryScaleMetalStep);
+        const int raw = AiMin(AiMax(0, Global::RoleSettings::Tech::GantryScaleMax), int(mi / step));
+        if (raw > highWater) {
+            highWater = raw;
+            aiTerrainMgr.SetLayoutInt(TargetKey, highWater);
+        }
+        RaiseCaps();
+        int openClusters = 0, turretProgress = -1;
+        have = Have(openClusters, turretProgress);
+        // Progress for INV-199: a gantry framed/lost, a cluster opened, a turret finished
+        if (have != lastHave || openClusters != lastOpen || turretProgress > lastTurretProgress) progressFrame = ai.frame;
+        lastHave = have; lastOpen = openClusters; lastTurretProgress = AiMax(lastTurretProgress, turretProgress);
+        const bool energyOk = Global::RoleSettings::Tech::GantryScaleEnergyFloor <= 0.0f
+            || Economy::GetMinEnergyIncomeLast10s() >= Global::RoleSettings::Tech::GantryScaleEnergyFloor;
+        const bool blocked = TechChain::NukeRush() || TechChain::nukeFundingSilo >= 0 || TechHeavyRush::Pending();
+        // Hysteresis: the high-water target never cancels work; a new order also
+        // needs the income to hold (have + 1) x step x share right now.
+        // A map limit on the gantry is the ceiling of what can be due.
+        const int target = mapCeiling >= 0 ? AiMin(highWater, mapCeiling) : highWater;
+        const bool newDue = have < target && energyOk && !blocked
+            && mi >= float(have + 1) * step * Global::RoleSettings::Tech::GantryScaleDropShare;
+        if (newDue && !due) { dueSince = ai.frame; progressFrame = ai.frame; }
+        due = newDue;
+        if (highWater != lastLogTarget || have != lastLogHave || due != lastLogDue) {
+            lastLogTarget = highWater; lastLogHave = have; lastLogDue = due;
+            GenericHelpers::LogUtil("[TECH][GantryScale] target=" + highWater + " have=" + have + " mi=" + int(mi)
+                + " cap=" + landDef.maxThisUnit + " due=" + (due ? 1 : 0)
+                + (blocked ? " blocked=rush" : "") + (energyOk ? "" : " blocked=energy"), 1);
+        }
+    }
+
+    // The act of rule gantry.scale (and the legacy T2 rung): the front T3
+    // cluster through TechFactories::Route (MayPlan: cap + 120 s gantry
+    // cooldown, failed-search memo), else the legacy placement with the layout
+    // off. The cluster's turrets and order are TechGantry::Work's.
+    IUnitTask@ Work(CCircuitUnit@ builder) {
+        if (!Due() || builder is null || landDef is null) return null;
+        bool routed = false;
+        IUnitTask@ task = TechFactories::Route(landDef.GetName(), builder, routed);
+        if (routed) {
+            if (task is null) {
+                lastReason = "no site/cap/cooldown/safe worker";
+                TechGantry::Waiting("scale: " + lastReason + " (have=" + have + " target=" + highWater + ")");
+            }
+            return task;
+        }
+        @task = Builder::EnqueueLandGantry(Global::AISettings::Side);
+        if (task is null) lastReason = "legacy placement refused (cooldown/cap)";
+        return task;
+    }
+
+    // INV-199 from Invariants::Tick (1 Hz), O(1), rate-limited by Violation.
+    void Check() {
+        if (!Due()) return;
+        const int since = AiMax(dueSince, progressFrame);
+        if (ai.frame - since > Global::RoleSettings::Tech::GantryScaleGraceSeconds * SECOND)
+            Invariants::Violation("INV-199", "due", "gantry due " + ((ai.frame - since) / SECOND) + " s without progress: have="
+                + have + " target=" + highWater + " cap=" + landDef.maxThisUnit + " last=" + lastReason);
+    }
+}

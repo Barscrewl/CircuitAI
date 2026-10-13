@@ -63,6 +63,7 @@ namespace Invariants {
         }
         // INV-010: no mobile combat unit under the plan's income gate (D-080)
         const string name = u.circuitDef.GetName();
+        TechHeavyChoice::CheckProduct(u);   // D-287: INV-198, no late Marauder-class gantry product
         // Gifts have no local producer and retain normal amphibious control.
         if (name == "legamph" && !Global::Map::LandLocked && u.GetProducerId() >= 0
             && ai.GetTeamUnit(u.GetProducerId()) !is null)
@@ -209,6 +210,7 @@ namespace Invariants {
 
     void Tick()
     {
+        TechGantryScale::Check();   // D-288: INV-199, a due gantry makes progress within the grace
         // D-229: a completed silo hands builders back to ordinary economy.
         // Lost earlier recipe structures must not restart the rush.
         if (TechChain::NukeRush()) {

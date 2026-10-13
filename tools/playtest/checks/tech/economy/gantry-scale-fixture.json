@@ -1,0 +1,17 @@
+{
+  "_doc": "D-288 at the owner's real step (500) on an injected economy (gantry_income_fixture.lua: ~515 M/s at 0.5 min, ~1030 at 14 min, half of the second phase self-destructed at 24 min). Injected economy: fixture evidence, not natural evidence. Hysteresis: the target stays 2 after the drop and never reaches 3.",
+  "stop_minute": 27,
+  "expect": [
+    {"key": "fixture", "pattern": "\\[GantryIncomeFixture\\] phase 1:", "by_minute": 1, "scope": "any"},
+    {"key": "target 1", "pattern": "\\[TECH\\]\\[GantryScale\\] target=1 ", "by_minute": 2, "scope": "tech"},
+    {"key": "first gantry", "pattern": "\\[GantryIncomeFixture\\] land gantry finished n=1 ", "by_minute": 12, "scope": "any"},
+    {"key": "target 2", "pattern": "\\[TECH\\]\\[GantryScale\\] target=2 ", "by_minute": 15.5, "scope": "tech"},
+    {"key": "second gantry", "pattern": "\\[GantryIncomeFixture\\] land gantry finished n=2 ", "by_minute": 23.5, "scope": "any"},
+    {"key": "drop", "pattern": "\\[GantryIncomeFixture\\] phase 3:", "by_minute": 24.5, "scope": "any"}
+  ],
+  "forbid": [
+    {"key": "invariant", "pattern": "\\[INVARIANT\\]", "scope": "tech"},
+    {"key": "script", "pattern": ": ERR\\s+:|SCRIPT CRASH|Lib exception", "scope": "any"},
+    {"key": "no third target", "pattern": "\\[TECH\\]\\[GantryScale\\] target=3 ", "scope": "tech"}
+  ]
+}
