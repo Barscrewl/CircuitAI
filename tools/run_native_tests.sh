@@ -11,7 +11,11 @@ set -u
 REPO="$(cd "$(dirname "$0")/.." && { pwd -W 2>/dev/null || pwd; })"
 OUT="${TMPDIR:-${TEMP:-/tmp}}/circuit-native-tests"
 mkdir -p "$OUT"
-IMAGE="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep recoil-build-amd64-windows | head -1)"
+IMAGE="${CIRCUIT_TEST_IMAGE:-$(docker images --format '{{.Repository}}:{{.Tag}}' | grep recoil-build-amd64-windows | grep -v ':<none>$' | head -1)}"
+# A digest-pinned pull has no tag (<none>); fall back to the image ID.
+if [ -z "$IMAGE" ]; then
+	IMAGE="$(docker images --format '{{.Repository}} {{.ID}}' | awk '/recoil-build-amd64-windows/ {print $2; exit}')"
+fi
 if [ -z "$IMAGE" ]; then
 	echo "run_native_tests: the recoil-build-amd64-windows image is not present (run a docker build once)" >&2
 	exit 2

@@ -187,6 +187,17 @@ inline float EscapeSeconds(float speed, float turnRate, float acceleration, bool
     const float accelerate=std::min(6.f,speed/std::max(1.f,acceleration*900.f));
     return reaction+turn+accelerate*.5f;
 }
+// D-294: a slow projectile cannot hit a fast, light target. Drift during
+// flight is targetSpeed (elmo/s) * distance / (projectileSpeed elmo/frame * 30).
+// Evasive when drift exceeds limit * (splash radius + target radius). A
+// non-positive limit or projectile speed (beam/instant) is never evasive.
+// O(1); called once per candidate mount only when the policy opts in.
+inline bool Evasive(float distance, float projectileSpeed, float targetSpeed,
+                    float splash, float radius, float limit) {
+    if (!(limit>0.f) || !(projectileSpeed>0.f) || !(targetSpeed>0.f)) return false;
+    const float flight=distance/(projectileSpeed*30.f);
+    return targetSpeed*flight>limit*(std::max(0.f,splash)+std::max(0.f,radius));
+}
 inline float UsefulScore(float cost, float hp, float damage, float reserved,
                          bool precision, bool heavy, bool los, float progress) {
     const float left=std::max(0.f,hp-reserved);

@@ -155,5 +155,20 @@ int main()
             assert(waterWeapons.Any(point,(largest+std::fabs(margin))+std::fabs(formation),within)==legacy);
         }
     }
+    // D-294: Fatboy (307 elmo/s shell, 150 splash) against a Tick (132 elmo/s,
+    // radius 8) at full 700 range drifts ~301 elmos > 1.5*158: evasive.
+    assert(Evasive(700.f,307.f/30.f,132.f,150.f,8.f,1.5f));
+    // Closer shots arrive sooner: 400 elmos drifts ~172, inside the limit.
+    assert(!Evasive(400.f,307.f/30.f,132.f,150.f,8.f,1.5f));
+    // A slow assault hull (42 elmo/s) at full range is never evasive.
+    assert(!Evasive(700.f,307.f/30.f,42.f,150.f,24.f,1.5f));
+    // Stationary targets, beams/instant weapons and a disabled limit opt out.
+    assert(!Evasive(700.f,307.f/30.f,0.f,150.f,8.f,1.5f));
+    assert(!Evasive(700.f,0.f,132.f,150.f,8.f,1.5f));
+    assert(!Evasive(700.f,307.f/30.f,132.f,150.f,8.f,0.f));
+    assert(!Evasive(700.f,307.f/30.f,132.f,150.f,8.f,std::numeric_limits<float>::quiet_NaN()));
+    // The threshold is strict and monotone in distance.
+    assert(!Evasive(10.f*30.f*1.f,10.f,100.f,40.f,10.f,2.f)); // drift 100 == 2*(50)
+    assert(Evasive(10.f*30.f*1.01f,10.f,100.f,40.f,10.f,2.f));
     std::cout << "ranged geometry: ordered legacy/brute-force spatial oracle, early exits, generations, overflow, weapon envelopes and ID sort PASS\n";
 }

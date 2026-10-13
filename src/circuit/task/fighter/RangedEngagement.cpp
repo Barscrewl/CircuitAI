@@ -10,6 +10,7 @@
 #include "unit/CircuitUnit.h"
 #include "unit/CircuitWDef.h"
 #include "unit/enemy/EnemyUnit.h"
+#include "unit/enemy/EnemyManager.h"
 #include "spring/CustomCommand.h"
 #include "spring/SpringUnit.h"
 #include "util/Utils.h"
@@ -71,6 +72,18 @@ void CRangedEngagement::SelectTarget(CCircuitUnit* unit,int selected,int weapon,
         // BAR owns the actual priority target. A lost command must be repaired;
         // an unchanged live intent must not be resent each decision tick.
         if(selected<0 || frame-targetFrame<30 || int(unit->GetUnit()->GetRulesParamFloat("unitTargetID",-1.f))==selected) return;
+    }
+    const int avoid=unit->GetCircuitDef()->GetRangedPolicy().avoidCategory;
+    if(selected>=0 && avoid!=0) {
+        // INV-207: every candidate loop filters avoided categories before this
+        // call. One enemy lookup per changed intent (never per candidate).
+        auto* enemy=ai->GetEnemyManager()->GetEnemyUnit(selected);
+        if(enemy && enemy->GetCircuitDef() && (enemy->GetCircuitDef()->GetCategory()&avoid)) {
+            ai->LOG("[INVARIANT] INV-207 ranged unit %d selected avoided-category target %d (%s); refused",
+                id,selected,enemy->GetCircuitDef()->GetDef()->GetName());
+            selected=-1; weapon=-1; damage=0.f;
+            if(target<0) return;
+        }
     }
     if(selected!=target || weapon!=weaponIndex) world.ReleaseShot(id);
     TRY_UNIT(ai,unit,
@@ -351,6 +364,7 @@ void CRangedEngagement::UpdateCohort(CCircuitUnit* unit)
         // Target permissions never suppress the hazard above. Coordinated
         // movement is opt-in, but still honors existing JSON target controls.
         if(c.mobile?!policy.allowMobile:!policy.allowStatic) continue;
+        if(policy.avoidCategory & c.def->GetCategory()) continue; // D-294
         for(size_t wi=0;wi<caps.weapons.size();++wi) {
             const auto& w=caps.weapons[wi];
             if(!(w.category&c.def->GetCategory()) || (!c.los && !policy.allowRadar)) continue;
@@ -572,6 +586,9 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
     const float escapeSeconds=ranged::EscapeSeconds(caps.speed,caps.turnRate,caps.acceleration,forward,policy.reactionSeconds);
     for(int i:nearby) {
         const auto& c=contacts[i]; if(c.hazardRadius<=0.f) continue;
+        // D-294: escaping a much faster avoided contact (Tick) is futile and
+        // only spends MOVEs. It remains a hazard for Safe/DangerSign below.
+        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) continue;
         const float d=std::sqrt(pos.SqDistance2D(c.pos));
         const float closingSpeed=ranged::ClosingSpeed(P(pos),P(c.pos),P(c.velocity));
         const float reach=c.hazardRadius+policy.safetyMargin+closingSpeed*escapeSeconds;
@@ -607,6 +624,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         const auto& c=contacts[i];
         if(!c.los && !policy.allowRadar) continue;
         if((c.mobile && !policy.allowMobile)||(!c.mobile && !policy.allowStatic)) continue;
+        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) continue; // D-294: O(1)
         for(size_t wi=0;wi<caps.weapons.size();++wi) {
             const auto& w=caps.weapons[wi];
             if((c.def && !(w.category&c.def->GetCategory())) || c.pos.y< -20.f) continue;
@@ -628,6 +646,11 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
                 policy.preferHeavy && c.def->IsEnemyRoleAny(CCircuitDef::HEAVY|CCircuitDef::COMM),c.los,world.Progress(c.id,policy.repairedTargetPenalty)) : .01f/(1.f+world.Reserved(c.id,id));
             if(c.def && policy.mode!=RangedPolicy::Mode::PRECISION)
                 value+=policy.splashWeight*std::max(0.f,world.ClusterValue(c.pos,w.splash)-c.cost);
+            // D-294: opt-in hit-likelihood penalty for slow shells against fast
+            // light targets. A penalty, not an exclusion: with nothing better
+            // the shot is still taken. O(1) per candidate mount.
+            if(policy.evasionLimit>0.f && c.mobile && ranged::Evasive(std::sqrt(pos.SqDistance2D(c.pos)),w.speed,
+                std::sqrt(c.velocity.x*c.velocity.x+c.velocity.z*c.velocity.z),w.splash,c.radius,policy.evasionLimit)) value*=.05f;
             if(c.id==target) value*=policy.targetHysteresis;
             if(policy.mode==RangedPolicy::Mode::BOMBARDMENT && !c.mobile) value*=1.5f;
             if(closing && closing->id==c.id) value*=2.f;
@@ -698,6 +721,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         // a firing band around an apparently harmless unknown target.
         if(!c.def && !policy.advanceUnknownRadar) { ++unknownObjectives; return; }
         if((c.def && c.def->IsAbleToFly()) || (c.mobile?!policy.allowMobile:!policy.allowStatic)) return;
+        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) return; // D-294: never approach
         const float dist=pos.SqDistance2D(c.pos);
         if(dist<nearest && (!c.def || (c.def->GetCategory()&def->GetTargetCategory()))) { nearest=dist; objective=i; }
     };
@@ -710,6 +734,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         if (policy.holdFireline && !c.los) continue;
         if(!c.def && !policy.advanceUnknownRadar) { ++unknownObjectives; continue; }
         if((c.mobile?!policy.allowMobile:!policy.allowStatic) || (c.def && !(c.def->GetCategory()&def->GetTargetCategory()))) continue;
+        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) continue; // D-294
         const float distance=pos.SqDistance2D(c.pos);
         if(distance<nearest) { nearest=distance; objective=i; }
     }
