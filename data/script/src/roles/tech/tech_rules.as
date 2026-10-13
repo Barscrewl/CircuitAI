@@ -271,6 +271,8 @@ namespace TechRules {
     }
     IUnitTask@ DoWait(Ctx@ c)           { return TechBuild::Wait(3 * SECOND); }
     IUnitTask@ DoGantrySupport(Ctx@ c) { return TechGantry::SupportWork(c.u); }
+    bool GantryScaleDue(Ctx@ c)        { return TechGantryScale::Due(); }        // D-288: O(1), set at 1 Hz
+    IUnitTask@ DoGantryScale(Ctx@ c)   { return TechGantryScale::Work(c.u); }    // D-288
     IUnitTask@ DoKeepCurrent(Ctx@ c)    { return TechBuild::KeepCurrent(c.u); }
     IUnitTask@ DoLocalGeo(Ctx@ c) {
         // Keep the committed silo/first-stockpile budget intact. Geothermal
@@ -467,6 +469,7 @@ namespace TechRules {
         table.insertLast(Rule("keep.current",      MOBILE,       W0(), @DoKeepCurrent,  "the construction the builder is on, when native re-asks"));
         table.insertLast(Rule("gantry.support", CON_T1, W0(), @DoGantrySupport, "D-281: capable constructors carry an admitted gantry turret assignment before discretionary forward work"));
         table.insertLast(Rule("air.dedicated",     CON_T2,       W0(), @DoAirDedicated, "D-107: the first two T2 air constructors: one only advanced energy converters, the other only advanced fusions, always"));
+        table.insertLast(Rule("gantry.scale",      CON_T2,       W1(@GantryScaleDue), @DoGantryScale, "D-288 (owner): one gantry per GantryScaleMetalStep of 10 s minimum metal income: opens and feeds the front T3 cluster; lab.front and gantry.support also finish it"));
         table.insertLast(Rule("flank.factory",     CONSTRUCTORS, W0(), @DoFlankFactory, "D-136: from +200 metal a separate T2 lab feeds an accessible specialist land flank"));
         table.insertLast(Rule("air.flex",          CON_T2,       W0(), @DoAirFlexible,  "D-107: the other T2 air constructors: advanced converters while energy overflows, the advanced fusion going up when the converters cannot stay on"));
         table.insertLast(Rule("defence.fortify", CONSTRUCTORS, W0(), @DoDefence, "D-152: lane walls after base build power, or T2 resource protection, within the fortification budget"));

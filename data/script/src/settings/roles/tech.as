@@ -223,7 +223,33 @@ namespace Tech {
             int GantryAssistSeconds = 60;
             int GantryMaximumTaskBuilders = 2;
             int GantryLogIntervalSeconds = 30;
-            int FrontT3TurretsFirst = 10;                   // D-119: the gantry is ordered once this many of its turrets stand; the rest keep filling
+            // D-287 (owner): Marauder-class units (armmar, corshiva, legjav) only in
+            // the early T3 window. Late = game time OR 10 s minimum metal income,
+            // latched once (never un-latches, persisted). Late gantries build the
+            // terrain's heavy: the land heavy on a land map, the amphibious heavy
+            // when the start is land-locked or an assault beach front exists.
+            bool HeavyChoiceEnabled = true;
+            int HeavyLateMinutes = 20;
+            float HeavyLateMetalIncome = 400.0f;
+            int HeavyAmphibiousMinBeaches = 1;          // assault beach fronts (StrategicSites) that make a map "amphibious"
+            int LateMarauderMassBatch = 0;              // 0 = no late Marauders; N = one late batch of N Marauders on an amphibious map (owner's "very large numbers" exception, off)
+            string HeavyLandArmada = "armthor";
+            string HeavyAmphArmada = "armbanth";
+            string HeavyLandCortex = "corkorg";         // owner default; "corjugg" (Behemoth: land only, very slow) is the alternative
+            string HeavyAmphCortex = "corkorg";
+            string HeavyLandLegion = "legerailtank";
+            string HeavyAmphLegion = "legeheatraymech";
+            // D-288 (owner): one land gantry per GantryScaleMetalStep of 10 s minimum
+            // metal income (floor(income / step), capped at GantryScaleMax). The target
+            // is a persisted high-water mark (a dip never lowers it); a new order also
+            // needs income >= (have + 1) x step x GantryScaleDropShare right now.
+            bool GantryScaleEnabled = true;
+            float GantryScaleMetalStep = 500.0f;
+            float GantryScaleDropShare = 0.80f;
+            float GantryScaleEnergyFloor = 0.0f;        // optional absolute E/s floor (0 = metal only, the owner's rule)
+            int GantryScaleMax = 6;
+            int GantryScaleGraceSeconds = 300;          // INV-199: due this long without progress (cooldown 120 s + turrets + order)
+            int FrontT3TurretsFirst = 10;                  // D-119: the gantry is ordered once this many of its turrets stand; the rest keep filling
             int FrontReclaimAtCount = 3;                    // D-114: this many land factories on the map retire the base's land factories
             float FrontBaseRadius = 1200.0f;                // D-114: a land factory within this of the base centre is the base's
             int FrontBaseReclaimSeconds = 240;              // D-114: INV-044: a base land factory still standing this long after the count is reached
@@ -535,9 +561,8 @@ namespace Tech {
             float MinimumEnergyIncomeForAdvConverter = 1200.0f;
 
             /******************** GANTRY THRESHOLDS ********************/
-            // Income required per allowed Gantry (experimental superfactory)
-            float MetalIncomePerGantry = 250.0f;
-            float EnergyIncomePerGantry = 6000.0f;
+            // D-288: MetalIncomePerGantry (250) and EnergyIncomePerGantry (6000) are
+            // retired; TechGantryScale owns the gantry count (GantryScale* above).
 
             /******************** T2 BOT LAB THRESHOLDS (income-scaled) ********************/
             // Income required per allowed T2 Bot Lab (mirrors gantry logic). Allowed labs =

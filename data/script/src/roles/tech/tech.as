@@ -606,6 +606,8 @@ namespace RoleTech
 		TechChain::Tick();
         TechHeavyRush::Tick();
         TechGantry::SampleIncome();
+        TechHeavyChoice::Tick();   // D-287: the late latch, O(1), stops once latched
+        TechGantryScale::Tick();   // D-288: gantry target/cap/due, O(tier-3 clusters)
 		Lanes::Tick();         // D-127: lanes between both teams' starts, drawn after the intro
 		TechFlank::Tick();     // D-136: dedicated accessible-flank production
 		TechFactories::PlanAhead();
@@ -634,29 +636,9 @@ namespace RoleTech
 			}
 		}
 
-		// --- Dynamic Gantry cap: compute allowed from incomes; if >1, raise cap and clear 'support' by setting to TECH ---
-		{
-			int allowedGantry = EconomyHelpers::AllowedGantryCountFromIncome(
-				/*mi*/ metalIncome,
-				/*ei*/ energyIncome,
-				/*metalIncomePerGantry*/ Global::RoleSettings::Tech::MetalIncomePerGantry,
-				/*energyIncomePerGantry*/ Global::RoleSettings::Tech::EnergyIncomePerGantry);
-			GenericHelpers::LogUtil(
-				"[TECH][Gantry] Allowed from income: " + allowedGantry +
-					" (miPer=" + Global::RoleSettings::Tech::MetalIncomePerGantry +
-					", eiPer=" + Global::RoleSettings::Tech::EnergyIncomePerGantry + ")",
-				3);
-
-			// Start building gantries on front line, get rid of support role
-			if (allowedGantry > 1)
-			{
-				// Apply caps for gantries so we can build more than one when economy permits
-				array<string> landGantries = UnitHelpers::GetAllLandGantries();
-				array<string> waterGantries = UnitHelpers::GetAllWaterGantries();
-				UnitHelpers::BatchApplyUnitCaps(landGantries, allowedGantry);
-				UnitHelpers::BatchApplyUnitCaps(waterGantries, allowedGantry);
-			}
-		}
+		// D-288: the per-second income-scaled gantry cap that stood here (metal 250
+		// and energy 6000 per gantry, two string arrays allocated each second) is
+		// replaced by TechGantryScale, ticked above: one owner of target, cap and due.
 
 		// --- Dynamic T2 Bot Lab cap ---
 		// The primary T2 bot lab is reserved for fast-assist production, so the T2 combat
@@ -1038,10 +1020,14 @@ namespace RoleTech
 			GenericHelpers::LogUtil("[TECH][Factory] Gantry detected ('" + facDef.GetName() + "')", 3);
             IUnitTask@ amphib = AmphibiousOps::Produce(u, botLabGate);
             if (amphib !is null) return amphib;
-			// If economy is very strong, queue a batch of signature experimentals
+			// If economy is very strong, queue a batch of signature experimentals.
+			// D-287: after the late latch the batch is the terrain's heavy (land:
+			// Thor-class, amphibious: Titan-class), the other heavy as fallback.
 			if (metalIncome > 200.0f)
 			{
-				IUnitTask @tSig = Factory::EnqueueGantrySignatureBatch(u, side, /*count*/ 5, Task::Priority::HIGH);
+				IUnitTask @tSig = TechHeavyChoice::Late()
+					? TechHeavyChoice::LateBatch(u, side, /*count*/ 5)
+					: Factory::EnqueueGantrySignatureBatch(u, side, /*count*/ 5, Task::Priority::HIGH);
 				if (tSig !is null)
 					return tSig;
 			}
@@ -2554,15 +2540,10 @@ namespace RoleTech
 
 		AIFloat3 anchor = Factory::GetT2BotLabPos();
 
-		// Build experimental gantry by economy thresholds (per request)
-		int gantryCount = UnitDefHelpers::SumUnitDefCounts(UnitHelpers::GetAllLandGantries());
-		if (EconomyHelpers::ShouldBuildGantry(
-				/*mi*/ metalIncome,
-				/*ei*/ energyIncome,
-				/*metalStored*/ metalCurrent,
-				/*currentGantryCount*/ gantryCount,
-				/*metalIncomePerGantry*/ Global::RoleSettings::Tech::MetalIncomePerGantry,
-				/*energyIncomePerGantry*/ Global::RoleSettings::Tech::EnergyIncomePerGantry))
+		// D-288: one gantry policy - TechGantryScale decides when one is due (this
+		// legacy rung is kept for a disabled layout; the gantry.scale rule row
+		// normally claims the T2 constructor first)
+		if (TechGantryScale::Due())
 		{
 			bool routedG;   // D-114: a front factory cluster from +200 metal
 			IUnitTask @tGantryF = TechFactories::Route(UnitHelpers::GetLandGantryForSide(unitSide), u, routedG);

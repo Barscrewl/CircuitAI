@@ -679,76 +679,62 @@ namespace Factory {
 	}
 
 	// Enqueue a batch of signature experimental units from a gantry based on side
-	// Returns the last enqueued task or null if unavailable
+	// Returns the last enqueued task or null if unavailable. Early-window
+	// behaviour, unchanged: the side's signature heavy only.
 	IUnitTask@ EnqueueGantrySignatureBatch(CCircuitUnit@ gantry, const string &in side, int count = 5, Task::Priority prio = Task::Priority::HIGH)
 	{
-		if (gantry is null) return null;
-		const CCircuitDef@ facDef = gantry.circuitDef; if (facDef is null) return null;
-		string heavyName = UnitHelpers::GetGantrySignatureUnitForSide(side);
+		const string heavyName = UnitHelpers::GetGantrySignatureUnitForSide(side);
 		if (heavyName.length() == 0) {
 			GenericHelpers::LogUtil("[FACTORY] Gantry signature unit unresolved for side='" + side + "'", 2);
 			return null;
 		}
+		array<string> candidates = {heavyName};
+		return EnqueueGantryBatchFrom(gantry, candidates, count, prio);
+	}
 
-		// Build a small fallback list per side to improve robustness when the primary is capped or unavailable
-		array<string> candidates;
-		candidates.insertLast(heavyName);
-		// Prefer amphibious options if this is a water gantry
-		// bool waterFac = UnitHelpers::FactoryIsWater(facDef.GetName());
-		// if (side == "armada") {
-		// 	// Primary: Bantha; Fallbacks: Razorback (armraz), Lunkhead (armlun) which is amphibious/hover
-		// 	// candidates.insertLast("armraz");
-		// 	// candidates.insertLast("armlun");
-		// 	if (waterFac) {
-		// 		// Ensure amphibious candidate is early in list for water gantry
-		// 		int idx = candidates.find("armlun");
-		// 		if (idx >= 0) candidates.removeAt(uint(idx));
-		// 		candidates.insertAt(1, "armlun");
-		// 	}
-		// } else if (side == "cortex") {
-		// 	// Primary: Juggernaut (corkorg); Fallbacks: Shiva (corshiva, amphibious), Karganeth (corkarg)
-		// 	// candidates.insertLast("corshiva");
-		// 	// candidates.insertLast("corkarg");
-		// 	if (waterFac) {
-		// 		int idx2 = candidates.find("corshiva");
-		// 		if (idx2 >= 0) candidates.removeAt(uint(idx2));
-		// 		candidates.insertAt(1, "corshiva");
-		// 	}
-		// } else if (side == "legion") {
-		// 	// Primary: Sol Invictus; Fallback: Leg Pede (legpede)
-		// 	candidates.insertLast("legpede");
-		// }
-
+	// D-287: the first candidate this gantry can build and whose cap allows one
+	// more. A map cap (armthor = 0 on three water maps) makes IsAvailable false,
+	// so the next candidate is taken; no cap is raised here. O(candidates) per
+	// gantry ask (one ask per finished batch); no allocation beyond the recruits.
+	IUnitTask@ EnqueueGantryBatchFrom(CCircuitUnit@ gantry, const array<string>& in candidates, int count = 5, Task::Priority prio = Task::Priority::HIGH)
+	{
+		if (gantry is null) return null;
+		const CCircuitDef@ facDef = gantry.circuitDef; if (facDef is null) return null;
 		CCircuitDef@ heavyDef = null;
-		string chosen = "";
 		for (uint i = 0; i < candidates.length(); ++i) {
-			string name = candidates[i];
-			@heavyDef = ai.GetCircuitDef(name);
-			if (heavyDef is null) {
-				GenericHelpers::LogUtil("[FACTORY] Gantry candidate missing def: '" + name + "'", 3);
+			CCircuitDef@ candidate = ai.GetCircuitDef(candidates[i]);
+			if (candidate is null) {
+				GenericHelpers::LogUtil("[FACTORY] Gantry candidate missing def: '" + candidates[i] + "'", 3);
 				continue;
 			}
-			if (!heavyDef.IsAvailable(ai.frame)) {
-				GenericHelpers::LogUtil("[FACTORY] Gantry candidate not available now: '" + name + "'", 3);
+			// The factory's own build options decide (armshltxuw cannot build armthor)
+			if (!facDef.CanBuild(candidate)) {
+				GenericHelpers::LogUtil("[FACTORY] Gantry candidate not buildable by " + facDef.GetName() + ": '" + candidates[i] + "'", 3);
 				continue;
 			}
-			chosen = name;
+			if (!candidate.IsAvailable(ai.frame)) {
+				GenericHelpers::LogUtil("[FACTORY] Gantry candidate not available now: '" + candidates[i] + "'", 3);
+				continue;
+			}
+			@heavyDef = candidate;
 			break;
 		}
-		if (chosen.length() == 0 || heavyDef is null) {
-			GenericHelpers::LogUtil("[FACTORY] Gantry signature selection failed for side='" + side + "' (all candidates unavailable)", 2);
+		if (heavyDef is null) {
+			GenericHelpers::LogUtil("[FACTORY] Gantry batch selection failed at " + facDef.GetName() + " (all " + candidates.length() + " candidates unavailable)", 2);
 			return null;
 		}
 		const AIFloat3 pos = gantry.GetPos(ai.frame);
 		IUnitTask@ last = null;
-		int n = (count < 1 ? 1 : count);
+		const int n = (count < 1 ? 1 : count);
 		for (int i = 0; i < n; ++i) {
 			@last = aiFactoryMgr.Enqueue(
 				TaskS::Recruit(Task::RecruitType::FIREPOWER, prio, heavyDef, pos, 64.f)
 			);
 		}
-		GenericHelpers::LogUtil("[FACTORY] Gantry enqueued x" + n + " '" + chosen + "' from " + facDef.GetName(), 2);
+		lastGantryBatchUnit = heavyDef.GetName();   // read by the caller's level-1 trace
+		GenericHelpers::LogUtil("[FACTORY] Gantry enqueued x" + n + " '" + lastGantryBatchUnit + "' from " + facDef.GetName(), 2);
 		return last;
 	}
+	string lastGantryBatchUnit;   // the unit of the last successful EnqueueGantryBatchFrom
 
 }  // namespace Factory

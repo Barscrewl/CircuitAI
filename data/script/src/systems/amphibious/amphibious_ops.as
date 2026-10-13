@@ -540,9 +540,15 @@ namespace AmphibiousOps {
             }
         }
     }
+    // D-287: Marauder-class defs the native chooser must not pick for a late
+    // TECH (corshiva/legjav enter only through factory.json weights). Namespace
+    // constant: no per-ask allocation for the name list.
+    const array<string> LATE_MASK={"armmar","corshiva","legjav"};
     IUnitTask@ DefaultFactoryTask(CCircuitUnit@ f) {
         const bool active = Active();
-        if (!active && TelchineStartAllowed()) return aiFactoryMgr.DefaultMakeTask(f);
+        // O(1) gate; true for every non-TECH role, so AIR is unchanged (KI-572).
+        const bool late = !TechHeavyChoice::MarauderAllowed();
+        if (!active && TelchineStartAllowed() && !late) return aiFactoryMgr.DefaultMakeTask(f);
         // The ordinary chooser may still build other units and constructors,
         // but cannot bypass the shared amphibious budget with its own batch.
         array<string> names={"legamph","armmar"};
@@ -550,12 +556,23 @@ namespace AmphibiousOps {
         for (uint i=0;i<names.length();++i) {
             // Preserve the TECH start restriction even with amphibious waves disabled.
             if (!active && i!=0) continue;
+            if (i==0 && !active && TelchineStartAllowed()) continue;   // reached only when late
             CCircuitDef@ d=ai.GetCircuitDef(names[i]);
             if (d is null) continue;
             defs.insertLast(d); limits.insertLast(d.maxThisUnit); d.maxThisUnit=0;
         }
+        if (late) {
+            // Save -> zero -> DefaultMakeTask -> restore, as above; armmar may
+            // already be masked by the amphibious budget (skip the duplicate).
+            for (uint i=0;i<LATE_MASK.length();++i) {
+                CCircuitDef@ d=ai.GetCircuitDef(LATE_MASK[i]);
+                if (d is null || defs.findByRef(d)>=0) continue;
+                defs.insertLast(d); limits.insertLast(d.maxThisUnit); d.maxThisUnit=0;
+            }
+        }
         IUnitTask@ task=aiFactoryMgr.DefaultMakeTask(f);
-        for (uint i=0;i<defs.length();++i) defs[i].maxThisUnit=limits[i];
+        // Restore in reverse so a def recorded twice would end at its original cap.
+        for (int i=int(defs.length())-1;i>=0;--i) defs[i].maxThisUnit=limits[i];
         return task;
     }
     IUnitTask@ Produce(CCircuitUnit@ f, float roleGate) {
@@ -565,7 +582,14 @@ namespace AmphibiousOps {
         for (uint k=0;k<names.length();++k) {
             if (k==0 && !TelchineStartAllowed()) continue;
             CCircuitDef@ d=ai.GetCircuitDef(names[k]);
-            const int limit=k==0 ? telLimit : Size(k)*2;
+            int limit=k==0 ? telLimit : Size(k)*2;
+            // D-287: a late TECH recruits no Marauders, except the optional single
+            // mass batch on an amphibious map. Before the cap raise below, so a
+            // refused Marauder never lifts maxThisUnit. O(1); AIR unaffected.
+            if (k==1 && !TechHeavyChoice::MarauderAllowed()) {
+                limit=TechHeavyChoice::MassBatchLimit(d);
+                if (limit<=0) continue;
+            }
             if (d is null || !f.circuitDef.CanBuild(d) || d.count+aiFactoryMgr.GetPendingRecruitCount(d)>=limit
                 || aiEconomyMgr.metal.current<d.costM) continue;
             float seconds=0;
