@@ -278,7 +278,13 @@ namespace SupportBuild {
         if (assistant !is null) return assistant;
         IUnitTask@ production = FactoryProduction::MakeTask(unit);
         IBuilderTask@ recruit = cast<IBuilderTask>(production);
-        if (recruit !is null && recruit.buildDef !is null && recruit.buildDef.GetBuildSpeed() <= 0.0f)
+        // D-293: count a lottery batch as combat by role, not by workertime. A combat unit with
+        // build speed (leginfestor, workertime 100) never advanced combatBatches and so delayed
+        // the next legaceb admission. CFactoryManager's constructor adds the BUILDER role bit to
+        // every mobile unit with build options before ReadConfig adds the JSON roles, so
+        // legack, legaceb and legdecom still do not count. Cost: one mask test per lottery batch.
+        if (recruit !is null && recruit.buildDef !is null
+            && !recruit.buildDef.IsRoleAny(Unit::Role::BUILDER.mask))
             SupportProduction::CombatBatch();
         // Registered bot labs must not bypass the explicit assistant policy
         // through the native random fallback when all combat choices are capped.

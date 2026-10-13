@@ -616,6 +616,13 @@ namespace UnitHelpers {
         return GetFastAssistBots("");
     }
 
+    // D-293: combat units whose build options make native treat them as workers (BuilderManager)
+    // and never as fighters (MilitaryManager), so their build power is not real build power.
+    // leginfestor builds only itself. JSON sets "limit": 0; INV-204 checks no role orders one.
+    array<string> GetNonBuildPowerBuilders() {
+        return array<string> = {"leginfestor"};
+    }
+
     // Returns fast T2 combat bots for a given side (canonical unit IDs)
     // armada: armfast (Sprinter), cortex: corpyro (Fiend), legion: legstr (Hoplite)
     array<string> GetFastT2Bots(const string &in side) {
