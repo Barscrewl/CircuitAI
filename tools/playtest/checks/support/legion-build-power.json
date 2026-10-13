@@ -7,7 +7,7 @@
     {"key":"combat-engineer-ordered","pattern":"SUPPORT\\]\\[BuildPower\\] ordered legaceb owned=","by_minute":18},
     {"key":"combat-engineer","pattern":"SupportEvidence\\] finished=legaceb ","by_minute":18,"scope":"any"},
     {"key":"construction-turret","pattern":"SupportEvidence\\] finished=(legnanotc|legnanotct2) ","by_minute":16,"scope":"any"},
-    {"key":"combat","pattern":"SupportEvidence\\] finished=legstr ","by_minute":14,"scope":"any"}
+    {"key":"combat","pattern":"SupportEvidence\\] finished=legstr ","by_minute":18,"scope":"any"}
   ],
   "forbid": [
     {"key":"no-infestor","pattern":"SupportEvidence\\] finished=leginfestor ","scope":"any"},
