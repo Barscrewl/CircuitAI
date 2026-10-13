@@ -11,6 +11,11 @@ namespace Air {
             int PlannedT2Bays = 6;
             int PlannedT1Bays = 1;
             int PlannedEcoModules = 4; // one AFUS and eight converter pins each; reservation, not a build order
+            // D-292: ordinary fusion is its own module kind (reactor + support bank), planned
+            // only once the fusion era starts. Reservation, not a build order.
+            int PlannedFusionModules = 2;
+            int FusionSupportSlots = 6;
+            int FusionModuleFallbackSeconds = 45; // continuous module failure before the logged ring-search fallback
             float EcoFactorySeparation = 384.0f; // districts may abut; native envelopes still exclude overlap
             float EcoReactorSpacing = 512.0f;
             float EcoConverterClearance = 128.0f;

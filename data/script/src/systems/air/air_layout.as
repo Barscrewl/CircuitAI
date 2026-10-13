@@ -373,9 +373,25 @@ namespace AirLayout {
             || d.GetName() == UnitHelpers::GetSolarNameForSide(side)
             || d.GetName() == UnitHelpers::GetAdvSolarNameForSide(side))) return null;
         if (AirBuild::IsReactor(d) && AirBuild::ReactorPending()) return null;
-        if (AirEcoLayout::Managed(d)) return AirEcoLayout::Place(u, d, type, priority);
+        if (AirEcoLayout::Managed(d)) {
+            // D-292: fusion, AFUS and advanced converters are module kinds. A
+            // fusion reaches the ring search below only through the logged,
+            // time-boxed fallback (no module site for FusionModuleFallbackSeconds).
+            IUnitTask@ placed = AirEcoLayout::Place(u, d, type, priority);
+            if (placed !is null || !AirEcoLayout::FusionFallbackDue(d)) return placed;
+            @placed = PlaceField(u, d, type, priority, true, walkRadius);
+            AirEcoLayout::FallbackPlaced(placed, d);
+            return placed;
+        }
         if (d.GetName() == UnitHelpers::GetWindNameForSide(UnitHelpers::GetSideForUnitName(d.GetName())))
             return PlaceWind(u, d, priority, walkRadius);
+        return PlaceField(u, d, type, priority, reactor, walkRadius);
+    }
+    // Unmanaged economy placement: deterministic ring search around the start
+    // (or behind it for reactors), outside every production bay. Unchanged by
+    // D-292 apart from extraction; fusion uses it only as the module fallback.
+    IUnitTask@ PlaceField(CCircuitUnit@ u, CCircuitDef@ d, Task::BuildType type, Task::Priority priority, bool reactor, float walkRadius)
+    {
         const bool commander = UnitHelpers::IsCommander(u.circuitDef);
         const bool local = commander && walkRadius <= 0.0f;
         const string key = d.GetName() + (reactor ? ".reactor" : ".field") + (commander ? (local ? ".local." : ".walk.") + u.id : "");
