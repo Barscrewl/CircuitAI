@@ -578,6 +578,7 @@ namespace Commands {
         if (Global::AISettings::Role == AiRole::SEA) SeaBuild::Leave();
         if (Global::AISettings::Role == AiRole::TECH) TechChain::LeaveNukeOpening();
         aiBuilderMgr.ClearBuildRadii();
+        aiBuilderMgr.ClearReclaimProtected();   // D-290: the incoming role's InitHandler sets its own
         if (Global::AISettings::Role == AiRole::SUPPORT) {
             TechChain::active = false;
             TechChain::done = false;

@@ -61,6 +61,10 @@ namespace Factory {
 
 	// Track all factories by id -> handle, and each factory's nano count (id -> int)
 	dictionary allFactories;      // key: string unitId -> CCircuitUnit@
+	// D-289: the same factories as a list, kept with allFactories in AiUnitAdded /
+	// AiUnitRemoved (destroyed, given, captured), so a per-ask iteration
+	// (the turret ladder) allocates nothing (getKeys() allocates every call).
+	array<CCircuitUnit@> factoryList;
 	dictionary factoryNanoCounts; // key: string unitId -> int count
 
 	// Queued build counters for key factories/energy
@@ -282,6 +286,7 @@ namespace Factory {
 			string key = "" + unit.id;
 			// Register the factory handle
 			allFactories.set(key, @unit);
+			if (factoryList.findByRef(unit) < 0) factoryList.insertLast(unit);
 			// Ensure a nano count entry exists (0 if new)
 			int tmp = 0;
 			if (!factoryNanoCounts.get(key, tmp)) {
@@ -402,6 +407,10 @@ namespace Factory {
 		if (usage == Unit::UseAs::FACTORY) {
 			string key = "" + unit.id;
 			allFactories.delete(key);
+			{
+				const int at = factoryList.findByRef(unit);
+				if (at >= 0) factoryList.removeAt(uint(at));
+			}
 			factoryNanoCounts.delete(key);
 			GenericHelpers::LogUtil("[FACTORY] Untracked factory id=" + unit.id, 3);
 		}

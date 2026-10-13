@@ -112,6 +112,18 @@ namespace TechRules {
         else c.who = (UnitHelpers::GetConstructorTier(c.d) >= 2) ? CON_T2 : CON_T1;
         c.mi = Economy::GetMinMetalIncomeLast10s();
         c.ei = Economy::GetMinEnergyIncomeLast10s();
+        // D-289: no turret row reads the planner state, the counts or the
+        // building/ahead flags; skip EcoPlanner::Read and the aheadM scan for
+        // turrets (one O(N) read and one FindUnfinishedNear per turret ask). The
+        // trace reads only mi, ei and the energy target.
+        if (c.who == TURRET) {
+            @c.eco = null;
+            c.openingDone = RoleTech::Opening::complete;
+            c.intoT2 = TechBuild::IntoT2();   // the trace's T1/T2 tag
+            c.energyTarget = EcoPlanner::TargetEnergy(c.mi);
+            @c.building = null;
+            return c;
+        }
         @c.eco = EcoPlanner::Read(u, c.mi, c.ei);
         c.openingDone = RoleTech::Opening::complete;
         c.intoT2 = TechBuild::IntoT2();
@@ -217,12 +229,24 @@ namespace TechRules {
 
     IUnitTask@ ByKey(Ctx@ c, const string &in key) { return EcoPlanner::Enqueue(key, c.u); }
 
-    IUnitTask@ DoTurretAssist(Ctx@ c)   { return RoleTech::Tech_TurretAssist(c.u); }
+    // D-289: the turret ladder, steps 1-2, 3 and 4 (RoleTech::Tech_TurretWork)
+    IUnitTask@ DoTurretAssist(Ctx@ c)
+    {
+        IUnitTask@ t = RoleTech::Tech_TurretAssist(c.u);
+        if (t !is null) RoleTech::Tech_TurretWaited(c.u, false);
+        return t;
+    }
     IUnitTask@ DoTurretAny(Ctx@ c)
     {
-        CCircuitUnit@ near = aiBuilderMgr.FindUnfinishedNear(c.u.GetPos(ai.frame), 700.0f, null);
-        if (near is null) return null;
-        return aiBuilderMgr.Enqueue(TaskB::Repair(Task::Priority::NORMAL, near, 30 * SECOND));
+        IUnitTask@ t = RoleTech::Tech_TurretAnyFrame(c.u, false);
+        if (t !is null) RoleTech::Tech_TurretWaited(c.u, false);
+        return t;
+    }
+    IUnitTask@ DoTurretWait(Ctx@ c)
+    {
+        RoleTech::Tech_TurretWaited(c.u, true);   // INV-200
+        // D-229: the nuke opening re-asks its turrets every 2 s (its projects start often)
+        return TechBuild::Wait((TechChain::NukeRush() ? 2 : 5) * SECOND);
     }
     IUnitTask@ DoWaitShort(Ctx@ c)      { return TechBuild::Wait(5 * SECOND); }
     IUnitTask@ DoAirDedicated(Ctx@ c)   { return TechBuild::AirDedicated(c.u); }   // D-107
@@ -250,24 +274,13 @@ namespace TechRules {
     IUnitTask@ DoDefendMexes(Ctx@ c)    { return TechForward::DefendMexes(c.u); }  // D-109
     IUnitTask@ DoForwardT1(Ctx@ c)      { return TechForward::ForwardT1(c.u, c.mi); }   // D-109
     IUnitTask@ DoT1Turret(Ctx@ c)       { return Layout::NanoTask(c.u, Task::Priority::HIGH); }   // D-105
-    // D-105: a turret assists the nearest producing factory within its reach
+    // D-105, D-289: a turret with nothing high-priority in reach assists the
+    // nearest producing factory in reach (the fallback, no longer only a metal sink)
     IUnitTask@ DoTurretFactory(Ctx@ c)
     {
-        const float reach = 400.0f;   // the construction turret's builddistance (cornanotc, armnanotc, legnanotc)
-        const AIFloat3 here = c.u.GetPos(ai.frame);
-        array<string>@ keys = Factory::allFactories.getKeys();
-        CCircuitUnit@ best = null;
-        float bestSq = 1.0e30f;
-        for (uint i = 0; keys !is null && i < keys.length(); ++i) {
-            CCircuitUnit@ fac = null;
-            if (!Factory::allFactories.get(keys[i], @fac) || fac is null || fac.task is null || Lifecycle::IsRetiring(fac)) continue;
-            if (TechFactories::IsSpamLab(fac)) continue;   // D-119: its two turrets only
-            const float sq = MapHelpers::SqDist(here, fac.GetPos(ai.frame));
-            const float r = reach + ((fac.circuitDef is null) ? 48.0f : float(fac.circuitDef.GetFootprintX() > fac.circuitDef.GetFootprintZ() ? fac.circuitDef.GetFootprintX() : fac.circuitDef.GetFootprintZ()) * 4.0f);
-            if (sq <= r * r && sq < bestSq) { bestSq = sq; @best = fac; }
-        }
-        if (best is null) return null;
-        return GuardHelpers::AssignWorkerGuard(c.u, best, Task::Priority::LOW, true, 20 * SECOND);
+        IUnitTask@ t = RoleTech::Tech_TurretFactoryAssist(c.u, false);
+        if (t !is null) RoleTech::Tech_TurretWaited(c.u, false);
+        return t;
     }
     IUnitTask@ DoWait(Ctx@ c)           { return TechBuild::Wait(3 * SECOND); }
     IUnitTask@ DoGantrySupport(Ctx@ c) { return TechGantry::SupportWork(c.u); }
@@ -458,10 +471,10 @@ namespace TechRules {
         table.insertLast(Rule("harbour.yard",      MOBILE,       W0(), @DoHarbourYard,  "D-121: an island TECH with its advanced fusions: the T1 shipyard offshore, once"));
         table.insertLast(Rule("harbour.float",     COMMANDER,    W0(), @DoHarbourFloat, "D-121: an island TECH's commander: floating converters while energy floats (the land is for labs and fusions)"));
         table.insertLast(Rule("turret.spam",       TURRET,       W0(), @DoTurretSpam,   "D-109: the two turrets directly behind a spam lab always work for that lab"));
-        table.insertLast(Rule("turret.assist",     TURRET,       W0(), @DoTurretAssist, "reclaim in reach, then the economy under construction by the D-065 order"));
-        table.insertLast(Rule("turret.any",        TURRET,       W0(), @DoTurretAny,    "any structure of ours under construction within reach"));
-        table.insertLast(Rule("turret.factory",    TURRET,       W1(@MetalFloodedLong), @DoTurretFactory, "D-105: the metal bank full and nothing to build in reach: assist a producing factory in reach (production is the sink)"));
-        table.insertLast(Rule("turret.wait",       TURRET,       W0(), @DoWaitShort,    "5 s"));
+        table.insertLast(Rule("turret.assist",     TURRET,       W0(), @DoTurretAssist, "D-289 steps 1-2: a reclaim in reach the D-290 gate allows, then high-priority frames in reach (nuke projects; the advanced fusion when converters starve; the chain's dear frame; the labs; the D-065 economy order)"));
+        table.insertLast(Rule("turret.any",        TURRET,       W0(), @DoTurretAny,    "D-289 step 3: any structure of ours under construction in exact reach (build distance + model radius)"));
+        table.insertLast(Rule("turret.factory",    TURRET,       W0(), @DoTurretFactory, "D-289 step 4 (owner): nothing high-priority in reach: guard a producing, non-spam, non-retiring factory in reach (not while energy stalls, the bank is nearly empty under a dear frame, or the nuke silo is funded)"));
+        table.insertLast(Rule("turret.wait",       TURRET,       W0(), @DoTurretWait,   "5 s (2 s in the nuke opening); INV-200 watches the wait"));
         table.insertLast(Rule("land.recall",       CONSTRUCTORS, W0(), @DoLandRecall,   "D-109: a tier whose air constructors went down: its land constructors drop a forward job for the eco rows"));
         table.insertLast(Rule("weapons.super",     CONSTRUCTORS, W0(), @DoWeaponsSuper, "D-126 (owner): a super cannon framed or startable: every air constructor builds it"));
         table.insertLast(Rule("keep.current",      MOBILE,       W0(), @DoKeepCurrent,  "the construction the builder is on, when native re-asks"));
