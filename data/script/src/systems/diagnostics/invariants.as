@@ -185,6 +185,31 @@ namespace Invariants {
     int ladderFloatSince = -1;
     dictionary offSince;   // reclaim target id -> frame turrets were first seen off it (INV-008)
 
+    // D-293 / INV-204: no role produces a unit whose build power is not real build power.
+    // Checks policy and orders, never the living count, so a gifted or captured Infestor does
+    // not trip it. Defs resolved once per AI (k = 1 today); per call: k maxThisUnit reads, k
+    // pending-recruit lookups and k unfinished lookups. Called from AiUpdateEconomy (1 s).
+    array<CCircuitDef@> nonBuildPower;
+    bool nonBuildPowerResolved = false;
+    void CheckNonBuildPowerBuilders()
+    {
+        if (!nonBuildPowerResolved) {
+            nonBuildPowerResolved = true;
+            array<string>@ names = UnitHelpers::GetNonBuildPowerBuilders();
+            for (uint i = 0; i < names.length(); ++i) {
+                CCircuitDef@ d = ai.GetCircuitDef(names[i]);
+                if (d !is null) nonBuildPower.insertLast(d);
+            }
+        }
+        for (uint i = 0; i < nonBuildPower.length(); ++i) {
+            CCircuitDef@ d = nonBuildPower[i];
+            if (d.maxThisUnit > 0)
+                Violation("INV-204", d.GetName(), "non-build-power builder " + d.GetName() + " reopened for production (cap " + d.maxThisUnit + ")");
+            else if (aiFactoryMgr.GetPendingRecruitCount(d) + aiBuilderMgr.GetUnfinishedCount(d) > 0)
+                Violation("INV-204", d.GetName(), "non-build-power builder " + d.GetName() + " ordered for production");
+        }
+    }
+
     // D-175: every role checks the same overflow promise after sharing.
     void CheckTeamShare()
     {

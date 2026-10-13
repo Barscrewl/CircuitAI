@@ -62,6 +62,7 @@ namespace Economy {
 		// D-175: one overflow policy and cooldown for every experimental role.
 		TeamEconomy::ShareOverflow();
 		Invariants::CheckTeamShare();
+		Invariants::CheckNonBuildPowerBuilders();   // D-293: INV-204, every role
 	}
 
 	/**************************************
