@@ -3,6 +3,7 @@
 #include "../helpers/common/generic_helpers.as"
 #include "../systems/combat/porc_policy.as"
 #include "../systems/combat/spam.as"
+#include "../systems/combat/scout_raid.as"
 #include "../systems/team/ferry.as"
 #include "../systems/amphibious/amphibious_ops.as"
 
@@ -73,6 +74,8 @@ namespace Military {
 		if (t !is null) return t;
 		@t = Spam::MilitaryMakeTask(u);   // spam units join their factory's route
 		if (t !is null) return t;
+		@t = ScoutRaid::MilitaryMakeTask(u);   // D-296: non-spam land scouts raid the backline
+		if (t !is null) return t;
 		// Preserve specialist owners above; production is unaffected.
 		@t = aiMilitaryMgr.TryMakeRangedTask(u);
 		if (t !is null) return t;
@@ -99,6 +102,7 @@ namespace Military {
 	void AiTaskRemoved(IUnitTask@ task, bool done)
 	{
 		Spam::OnTaskRemoved(task);
+		ScoutRaid::TaskRemoved(task);
 		TechFlank::TaskRemoved(task);
         AmphibiousOps::TaskRemoved(task);
 		RoleConfig@ cfg = (Global::profileController is null) ? null : Global::profileController.RoleCfg;
@@ -124,6 +128,7 @@ namespace Military {
 		Team::Ferry::OnUnitRemoved(unit);
 		TechFlank::UnitRemoved(unit);
         AmphibiousOps::UnitRemoved(unit);
+        ScoutRaid::UnitRemoved(unit);
 
 		// Delegate to role-specific handler if registered
 		RoleConfig@ cfg = (Global::profileController is null) ? null : Global::profileController.RoleCfg;
@@ -136,6 +141,8 @@ namespace Military {
 	{
         AmphibiousOps::Reset(); // ephemeral routes are rebuilt through Military::AiMakeTask
         AmphibiousOps::lastTick = -100000; // a loaded frame may precede the last live update
+        ScoutRaid::Reset(); // raid routes are rebuilt through Military::AiMakeTask
+        ScoutRaid::lastTick = -100000;
 	}
 
 	void AiSave(OStream& ostream)

@@ -6,6 +6,17 @@ local camera,photos=nil,{}
 local commandTypes,unitCommands={},{}
 local factorySamples,factoryIds={},{}
 local function log(s) Spring.Echo("[RangedArena] frame="..Spring.GetGameFrame().." "..s) end
+-- Opt-in census fixtures (D-294/D-295/D-296). Observation only, no orders.
+-- caseUnits: cfg.units (list) or cfg.unit. Tallies are logged as one summary
+-- line every 10 s so checks can match thresholds with a regex.
+local caseUnits={}
+local shotTally={scouts=0,other=0}
+local killTally={econ=0,armed=0,losses=0,static_losses=0}
+local econTargets={}
+local function isScout(def)
+    local c=UnitDefs[def] and UnitDefs[def].modCategories
+    return c and c["groundscout"] and true or false
+end
 local occupied={}
 local function site(g,x,z)
     local def=UnitDefNames[g.unit]
@@ -89,6 +100,8 @@ function widget:Initialize()
     priorCommand=widgetHandler.UnitCommand
     commandHook=function(self,...) command(...);if priorCommand then return priorCommand(self,...) end end
     widgetHandler.UnitCommand=commandHook;widgetHandler:UpdateCallIn("UnitCommand")
+    for _,name in ipairs(cfg.units or {cfg.unit}) do caseUnits[name]=true end
+    for _,name in ipairs(cfg.econ_targets or {}) do econTargets[name]=true end
     log("loaded case="..cfg.name.." variant="..cfg.variant)
 end
 function widget:UnitCreated(id,def,team,builder)
@@ -105,8 +118,19 @@ function widget:UnitCreated(id,def,team,builder)
         tracked[id]={team=team,def=def,child=true,parent=builder};log("child id="..id.." parent="..builder.." unit="..UnitDefs[def].name)
     end
 end
-function widget:UnitDestroyed(id,def,team)
+function widget:UnitDestroyed(id,def,team,attacker,attackerDef,attackerTeam)
     factoryIds[id]=nil
+    if cfg.kill_census and tracked[id] then
+        local by=attackerDef and UnitDefs[attackerDef] and UnitDefs[attackerDef].name or "none"
+        log("killed def="..UnitDefs[def].name.." team="..team.." by="..by.." byTeam="..tostring(attackerTeam))
+        if team==1 and caseUnits[by] then
+            if econTargets[UnitDefs[def].name] then killTally.econ=killTally.econ+1
+            elseif UnitDefs[def].weapons and #UnitDefs[def].weapons>0 then killTally.armed=killTally.armed+1 end
+        elseif team==0 and caseUnits[UnitDefs[def].name] then
+            killTally.losses=killTally.losses+1
+            if attackerDef and UnitDefs[attackerDef] and (UnitDefs[attackerDef].speed or 0)==0 then killTally.static_losses=killTally.static_losses+1 end
+        end
+    end
     if tracked[id] then log("death id="..id.." team="..team.." unit="..UnitDefs[def].name.." cost="..UnitDefs[def].metalCost);tracked[id]=nil end
 end
 function widget:UnitFinished(id,def,team)
@@ -222,6 +246,14 @@ function widget:GameFrame(f)
                             if tx then distance=math.floor(math.sqrt((x-tx)^2+(z-tz)^2)) end
                         end
                         log("shot id="..id.." unit="..d.name.." weapon="..index.." target="..tostring(kind==1 and target or -1).." distance="..distance.." intent="..tostring(Spring.GetUnitRulesParam(id,"unitTargetID") or -1))
+                        if cfg.shot_census and caseUnits[d.name] and kind==1 and target then
+                            local targetDef=Spring.GetUnitDefID(target)
+                            if targetDef then
+                                local scout=isScout(targetDef)
+                                if scout then shotTally.scouts=shotTally.scouts+1 else shotTally.other=shotTally.other+1 end
+                                log("shot_census unit="..id.." shooter="..d.name.." target="..UnitDefs[targetDef].name.." category="..(scout and "GROUNDSCOUT" or "other"))
+                            end
+                        end
                     end
                     lastReload[key]=reload
                 end
@@ -246,11 +278,44 @@ function widget:GameFrame(f)
             log(string.format("economy metal=%.1f storage=%.1f income=%.1f expense=%.1f energy=%.1f eincome=%.1f eexpense=%.1f",m,ms,mi,me,e,ei,ee))
         end
         for team,c in pairs(orders) do log("orders team="..team.." total="..c.all.." nonlua="..c.nonlua.." lua="..c.lua) end
+        if cfg.shot_census then log("shots scouts="..shotTally.scouts.." other="..shotTally.other) end
+        if cfg.kill_census then log("kill_census econ="..killTally.econ.." armed="..killTally.armed.." losses="..killTally.losses.." static_losses="..killTally.static_losses) end
         if cfg.command_breakdown then
             for cmd,count in pairs(commandTypes) do log("command_type command="..cmd.." count="..count) end
             for key,count in pairs(unitCommands) do log("unit_command key="..key.." count="..count) end
         end
         log("render fps="..Spring.GetFPS())
+    end
+    -- D-295/D-296 progress observers, O(tracked) every 2/5 s.
+    if cfg.centroid_distance and f%60==0 then
+        local cx,cz,n=0,0,0
+        for id,u in pairs(tracked) do
+            if u.team==1 and not u.child then
+                local x,_,z=Spring.GetUnitPosition(id)
+                if x and (UnitDefs[u.def].speed or 0)>0 then cx,cz,n=cx+x,cz+z,n+1 end
+            end
+        end
+        if n>0 then
+            cx,cz=cx/n,cz/n
+            local sum,m=0,0
+            for id,u in pairs(tracked) do
+                if u.team==0 and caseUnits[UnitDefs[u.def].name] then
+                    local x,_,z=Spring.GetUnitPosition(id)
+                    if x then sum,m=sum+math.sqrt((x-cx)^2+(z-cz)^2),m+1 end
+                end
+            end
+            if m>0 then log("centroid_distance mean="..math.floor(sum/m).." units="..m.." enemies="..n) end
+        end
+    end
+    if cfg.depth_units and f%150==0 then
+        local best,alive=-1,0
+        for id,u in pairs(tracked) do
+            if u.team==0 and caseUnits[UnitDefs[u.def].name] then
+                local _,_,z=Spring.GetUnitPosition(id)
+                if z then alive=alive+1;best=math.max(best,math.floor(z)) end
+            end
+        end
+        log("scout_depth max_z="..best.." alive="..alive)
     end
     if not cfg.headless then
         for _,second in ipairs(cfg.photos or {45,120,210}) do
@@ -260,7 +325,7 @@ function widget:GameFrame(f)
                 Spring.SendCommands({"setmaxspeed 0.25","setminspeed 0.25","setmaxspeed 0.25"})
                 local state={mode=1,px=p[1],py=math.max(0,Spring.GetGroundHeight(p[1],p[2])),pz=p[2],height=p[3],angle=cfg.camera_angle or .9}
                 Spring.SetCameraState(state,0)
-                local ids={};for id,u in pairs(tracked) do if u.team==0 and UnitDefs[u.def].name==cfg.unit then ids[#ids+1]=id end end
+                local ids={};for id,u in pairs(tracked) do if u.team==0 and caseUnits[UnitDefs[u.def].name] then ids[#ids+1]=id end end
                 Spring.SelectUnitArray(ids,false)
                 camera={frame=f,draws=0,time=Spring.GetTimer(),state=state}
             end

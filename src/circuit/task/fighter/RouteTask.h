@@ -48,6 +48,11 @@ public:
     }
     bool SetSeaTarget(int id); // Existing aircraft-only contract.
     bool SetNavalTarget(int id); // Opt-in water target, priority fire without pursuit.
+    // D-296: opt-in ground priority target (BAR SET_TARGET, OPEN fire) for a
+    // land route raider; not gated on SEA control. -1 cancels. Validated
+    // against a live, legally observed, non-flying contact.
+    bool SetLandTarget(int id);
+    int GetPriorityTarget() const { return seaTarget; }
     void SetRepairThreshold(float value);
     // Task-scoped policy: never leaks a SEA firing-line choice to another role.
     void SetCombatRetreat(bool enabled) { combatRetreat = enabled; }
@@ -124,10 +129,11 @@ private:
     int airTarget = -1;
     int seaTarget = -1;
     bool navalTarget = false;
+    bool landTarget = false; // D-296: seaTarget is a ground target (SetLandTarget)
     float repairThreshold = 0.f;
     bool combatRetreat = true;
     bool SetPriorityTarget(int id, bool naval);
-    void IssuePriorityTarget(CCircuitUnit* unit, int id, bool naval);
+    void IssuePriorityTarget(CCircuitUnit* unit, int id, bool naval, bool land = false);
     std::map<CCircuitUnit*, int> issuedVersion;
 };
 

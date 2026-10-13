@@ -155,5 +155,47 @@ int main()
             assert(waterWeapons.Any(point,(largest+std::fabs(margin))+std::fabs(formation),within)==legacy);
         }
     }
+    // D-294: Fatboy (307 elmo/s shell, 150 splash) against a Tick (132 elmo/s,
+    // radius 8) at full 700 range drifts ~301 elmos > 1.5*158: evasive.
+    assert(Evasive(700.f,307.f/30.f,132.f,150.f,8.f,1.5f));
+    // Closer shots arrive sooner: 400 elmos drifts ~172, inside the limit.
+    assert(!Evasive(400.f,307.f/30.f,132.f,150.f,8.f,1.5f));
+    // A slow assault hull (42 elmo/s) at full range is never evasive.
+    assert(!Evasive(700.f,307.f/30.f,42.f,150.f,24.f,1.5f));
+    // Stationary targets, beams/instant weapons and a disabled limit opt out.
+    assert(!Evasive(700.f,307.f/30.f,0.f,150.f,8.f,1.5f));
+    assert(!Evasive(700.f,0.f,132.f,150.f,8.f,1.5f));
+    assert(!Evasive(700.f,307.f/30.f,132.f,150.f,8.f,0.f));
+    assert(!Evasive(700.f,307.f/30.f,132.f,150.f,8.f,std::numeric_limits<float>::quiet_NaN()));
+    // The threshold is strict and monotone in distance.
+    assert(!Evasive(10.f*30.f*1.f,10.f,100.f,40.f,10.f,2.f)); // drift 100 == 2*(50)
+    assert(Evasive(10.f*30.f*1.01f,10.f,100.f,40.f,10.f,2.f));
+    // D-296: hazard disc painting matches a brute-force centre-in-disc oracle,
+    // clips at every edge, keeps the maximum and rejects invalid input.
+    {
+        const int gw=20, gh=12; const float cs=64.f;
+        std::mt19937 rng(296);
+        std::uniform_real_distribution<float> coordinate(-400.f,1700.f), radius(1.f,700.f);
+        for (int trial=0; trial<500; ++trial) {
+            std::vector<float> grid(gw*gh,0.f), oracle(gw*gh,0.f);
+            const float x=coordinate(rng), z=coordinate(rng), r=radius(rng);
+            const int painted=PaintDisc(grid,gw,gh,cs,x,z,r,1.f);
+            int expected=0;
+            for (int c=0;c<gw*gh;++c) {
+                const float dx=(c%gw+.5f)*cs-x, dz=(c/gw+.5f)*cs-z;
+                if (dx*dx+dz*dz<=r*r) { oracle[c]=1.f; ++expected; }
+            }
+            assert(painted==expected && grid==oracle);
+        }
+        std::vector<float> grid(gw*gh,0.f);
+        assert(PaintDisc(grid,gw,gh,cs,96.f,96.f,40.f,3.f)==1 && grid[1*gw+1]==3.f);
+        assert(PaintDisc(grid,gw,gh,cs,96.f,96.f,40.f,2.f)==1 && grid[1*gw+1]==3.f); // max kept
+        assert(PaintDisc(grid,gw,gh,cs,-5000.f,96.f,100.f,1.f)==0);                 // off grid
+        assert(PaintDisc(grid,gw,gh,cs,std::numeric_limits<float>::quiet_NaN(),96.f,100.f,1.f)==0);
+        assert(PaintDisc(grid,gw,gh,cs,96.f,96.f,std::numeric_limits<float>::infinity(),1.f)==0);
+        assert(PaintDisc(grid,gw,gh,cs,96.f,96.f,0.f,1.f)==0);
+        std::vector<float> small(3,0.f);
+        assert(PaintDisc(small,gw,gh,cs,96.f,96.f,100.f,1.f)==0);                   // undersized grid
+    }
     std::cout << "ranged geometry: ordered legacy/brute-force spatial oracle, early exits, generations, overflow, weapon envelopes and ID sort PASS\n";
 }
