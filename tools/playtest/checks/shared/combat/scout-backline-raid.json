@@ -1,0 +1,85 @@
+{
+  "stop_minute": 6,
+  "_doc": "D-296 scout backline raid. Pass: raiders admitted and routed, at least three economy kills by scouts by minute 6, at most two scouts killed by static defences, no front unit killed by a scout (incidental fire is allowed, a chosen armed target is not), no INVARIANT (INV-211/212/213).",
+  "expect": [
+    {
+      "key": "loaded",
+      "pattern": "\\[RangedArena\\].* loaded",
+      "scope": "any",
+      "by_minute": 1
+    },
+    {
+      "key": "spawn",
+      "pattern": "\\[RangedArena\\].* spawn",
+      "scope": "any",
+      "by_minute": 1
+    },
+    {
+      "key": "admitted",
+      "pattern": "\\[ScoutRaid\\] admit unit=",
+      "scope": "any",
+      "by_minute": 2
+    },
+    {
+      "key": "routed",
+      "pattern": "\\[ScoutRaid\\] route unit=\\d+ target=",
+      "scope": "any",
+      "by_minute": 2
+    },
+    {
+      "key": "depth",
+      "pattern": "\\[RangedArena\\].* scout_depth max_z=",
+      "scope": "any",
+      "by_minute": 2
+    },
+    {
+      "key": "first economy kill",
+      "pattern": "\\[RangedArena\\].* killed def=(cormex|corwin|cornanotc|armmex|armwin|armnanotc) team=1 by=(armflea|corfav|legscout)",
+      "scope": "any",
+      "by_minute": 5
+    },
+    {
+      "key": "three economy kills",
+      "pattern": "\\[RangedArena\\].* kill_census econ=([3-9]|\\d\\d+)",
+      "scope": "any",
+      "by_minute": 6
+    }
+  ],
+  "forbid": [
+    {
+      "key": "script",
+      "pattern": ": ERR\\s+:|SCRIPT CRASH|Lib exception",
+      "scope": "any"
+    },
+    {
+      "key": "invariant",
+      "pattern": "INVARIANT",
+      "scope": "any"
+    },
+    {
+      "key": "fixture",
+      "pattern": "\\[RangedArena\\].*ERROR|Error in.*ranged_arena|Removed widget: Ranged combat arena",
+      "scope": "any"
+    },
+    {
+      "key": "crash",
+      "pattern": "Access violation|has crashed|Fatal:",
+      "scope": "any"
+    },
+    {
+      "key": "policy",
+      "pattern": "has invalid ranged policy",
+      "scope": "any"
+    },
+    {
+      "key": "raider lost to statics",
+      "pattern": "\\[RangedArena\\].* kill_census .*static_losses=([3-9]|\\d\\d+)",
+      "scope": "any"
+    },
+    {
+      "key": "raider fought the front",
+      "pattern": "\\[RangedArena\\].* killed def=(corthud|armham) team=1 by=(armflea|corfav|legscout)",
+      "scope": "any"
+    }
+  ]
+}

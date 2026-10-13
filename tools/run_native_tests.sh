@@ -58,6 +58,7 @@ done
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/gantry_math.as" "$REPO/tests/gantry_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/assist_math.as" "$REPO/tests/assist_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/transport_math.as" "$REPO/tests/transport_math_tests.as" || rc=1
+"$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/scout_raid_math.as" "$REPO/tests/scout_raid_math_tests.as" || rc=1
 "${PYTHON:-python}" "$REPO/tools/knowledge/check_performance_policy.py" --runner "$OUT/production_math_test.exe" --output "$OUT/performance-policy" || rc=1
 "${PYTHON:-python}" "$REPO/tools/knowledge/check_weapon_work.py" --runner "$OUT/production_math_test.exe" --output "$OUT/weapon-policy" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/common/collection_helpers.as" "$REPO/tests/collection_helpers_tests.as" --dictionary || rc=1

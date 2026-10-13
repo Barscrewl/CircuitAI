@@ -1,6 +1,9 @@
     // Mono-space font required
 	{
 "nuclear": {"structures_only": true, "repeat_seconds": 300, "repeat_radius": 0},
+// D-296: non-spam land scouts raid the enemy backline (systems/combat/scout_raid.as).
+// Read once per AI by ScoutRaid::Active(); absent or false keeps native scouting.
+"scout_raid": {"enabled": true},
 		// Native base-layout mechanism is permitted for this profile; TECH must
 		// also opt its own AI instance in. Other roles retain normal placement.
 		"layout": {

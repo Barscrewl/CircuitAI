@@ -17,6 +17,7 @@ enum Phase {
     UNIT_ROUTE, UNIT_TERRAIN_REFRESH, UNIT_TERRAIN_BUILD,
     UNIT_ROUTE_THREAT, UNIT_ROUTE_OBSTACLES, UNIT_ROUTE_SEARCH,
     RANGED_ASSIST, // D-295: nested in RANGED_DECISION
+    BATTLE_GROUND_HAZARD, // D-296: lazy observed ground-weapon coverage
     PHASE_COUNT
 };
 extern const bool enabled;

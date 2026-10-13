@@ -22,7 +22,7 @@ constexpr std::array<const char*, PHASE_COUNT> names{
     "ranged-enemies", "ranged-friends", "ranged-state",
     "unit-route", "unit-terrain-refresh", "unit-terrain-build",
     "unit-route-threat", "unit-route-obstacles", "unit-route-search",
-    "ranged-assist"
+    "ranged-assist", "battle-ground-hazard"
 };
 struct Stat {
     uint64_t calls = 0;

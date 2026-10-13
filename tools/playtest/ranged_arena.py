@@ -48,6 +48,9 @@ def prepare(args):
         '--modoption','startenergystorage=1000000',
         '--extra-widget',str(HERE/'widgets/ranged_arena.lua'),
         '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua')]
+    # Declared per-case mod options (e.g. the Legion faction for legscout).
+    for key, value in case.get('modoptions', {}).items():
+        stage += ['--modoption', f'{key}={value}']
     if args.headless: stage += ['--headless']
     if case.get('aggression_widget_test'):
         stage += ['--extra-widget',str(ROOT/'tools/widgets/gui_barb_team_link.lua'),

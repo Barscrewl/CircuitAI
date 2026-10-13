@@ -368,6 +368,26 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
         const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
         float waterCost, float threatWeight, float maxWaterThreat)
 {
+    return UnitTerrainRoute(def, from, to, dry, landCost, waterCost, threatWeight, maxWaterThreat, nullptr, 0.f);
+}
+
+std::vector<AIFloat3> CBattleAnalysis::GetUnitRaidRoute(const CCircuitDef* def,
+        const AIFloat3& from, const AIFloat3& to, float hazardMargin, float hazardWeight)
+{
+    // D-296: a dry land route whose cells inside observed armed-ground
+    // coverage (+margin) cost hazardWeight extra each, on top of the legacy
+    // surface threat. Same synchronous search and UNIT_ROUTE accounting as
+    // GetUnitTerrainRoute; the overlay adds O(1) per cell to its threat fill.
+    if (!std::isfinite(hazardWeight) || hazardWeight < 0.f) return {};
+    EnsureGroundHazard(hazardMargin);
+    return UnitTerrainRoute(def, from, to, true, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard,
+        std::min(hazardWeight, 1e6f));
+}
+
+std::vector<AIFloat3> CBattleAnalysis::UnitTerrainRoute(const CCircuitDef* def,
+        const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
+        float waterCost, float threatWeight, float maxWaterThreat, const Grid* hazard, float hazardValue)
+{
     performance::Scope routeScope(circuit, performance::UNIT_ROUTE);
     EnsureGrid();
     auto inside = [this](const AIFloat3& p) {
@@ -451,6 +471,9 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
     performance::Scope threatScope(circuit, performance::UNIT_ROUTE_THREAT);
     threat.resize(height.size());
     for (size_t c=0;c<threat.size();++c) threat[c]=dry ? SurfThreat(CellPos(c)) : AmphThreat(CellPos(c));
+    if (hazard != nullptr && hazard->size() == threat.size()) {
+        for (size_t c=0;c<threat.size();++c) if ((*hazard)[c] > 0.f) threat[c]=std::max(threat[c],hazardValue);
+    }
     }
     // Exclude allied structures; the engine still resolves mobile traffic.
     auto& obstacles = unitRouteObstacles;

@@ -198,6 +198,32 @@ inline bool Evasive(float distance, float projectileSpeed, float targetSpeed,
     const float flight=distance/(projectileSpeed*30.f);
     return targetSpeed*flight>limit*(std::max(0.f,splash)+std::max(0.f,radius));
 }
+// D-296: mark every cell of a row-major gw x gh grid (cellSize elmos) whose
+// CENTRE lies within radius of (x, z), keeping the maximum value. Bounding-box
+// iteration: O(radius^2 / cellSize^2). Non-finite or non-positive inputs and
+// discs wholly off the grid write nothing. Returns the number of cells set.
+inline int PaintDisc(std::vector<float>& grid, int gw, int gh, float cellSize,
+                     float x, float z, float radius, float value) {
+    if (gw<=0 || gh<=0 || !(cellSize>0.f) || grid.size()<size_t(gw)*size_t(gh)
+        || !std::isfinite(x) || !std::isfinite(z) || !std::isfinite(radius) || !(radius>0.f)) return 0;
+    const float x0f=std::floor((x-radius)/cellSize), x1f=std::floor((x+radius)/cellSize);
+    const float z0f=std::floor((z-radius)/cellSize), z1f=std::floor((z+radius)/cellSize);
+    if (x1f<0.f || z1f<0.f || x0f>=float(gw) || z0f>=float(gh)) return 0;
+    const int x0=std::max(0,int(x0f)), x1=std::min(gw-1,int(x1f));
+    const int z0=std::max(0,int(z0f)), z1=std::min(gh-1,int(z1f));
+    const float r2=radius*radius;
+    int painted=0;
+    for (int cz=z0; cz<=z1; ++cz) {
+        const float dz=(cz+.5f)*cellSize-z;
+        for (int cx=x0; cx<=x1; ++cx) {
+            const float dx=(cx+.5f)*cellSize-x;
+            if (dx*dx+dz*dz>r2) continue;
+            float& cell=grid[size_t(cz)*size_t(gw)+size_t(cx)];
+            cell=std::max(cell,value); ++painted;
+        }
+    }
+    return painted;
+}
 inline float UsefulScore(float cost, float hp, float damage, float reserved,
                          bool precision, bool heavy, bool los, float progress) {
     const float left=std::max(0.f,hp-reserved);
