@@ -13,7 +13,7 @@ public:
     ~CRangedEngagement();
     void Update(CCircuitUnit* unit);
     void Idle() { nextFrame=0; }
-    void MoveFailed() { query.reset(); moving=false; completedMove=false; orientUntil=0; nextFrame=0; ++failures; }
+    void MoveFailed() { query.reset(); moving=false; completedMove=false; orientUntil=0; nextFrame=0; ++failures; ++rejections; }
     void Release(CCircuitUnit* unit, bool commands=true);
     int Target() const { return target; }
     bool IsSustainedRush() const { return world.IsSustainedRush(id); }
@@ -49,6 +49,15 @@ private:
     bool moving=false, issuing=false, released=false, cloakWanted=false, reorient=false;
     float reservedDamage=0.f;
     std::vector<int> nearby;
+    // D-295 assist state: reused query buffer (capacity retained), the
+    // current assisted contact id (log once per change), and the INV-206
+    // one-decision follow-up of an accepted assist Move.
+    std::vector<int> assistNearby;
+    int assistTarget=-1, assistCheckFrame=-1;
+    // Monotonic count of rejected worker paths and engine move failures;
+    // unlike `failures` it is never reset by progress (INV-206 baseline).
+    unsigned rejections=0, assistCheckRejections=0;
+    bool assistInvariantLogged=false;
     std::vector<springai::AIFloat3> path;
 };
 }

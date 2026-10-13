@@ -267,7 +267,7 @@ bool CRangedEngagement::Move(CCircuitUnit* unit,const AIFloat3& dest,bool escape
             ai->LOG("[INVARIANT] INV-167 ranged exact endpoint would cancel its queued predecessor unit=%d",id);
         if(!solved || !LegalPath(unit,points,escape)) {
             if(trace) ai->LOG("RANGED: path rejected unit=%d points=%u",id,unsigned(points.size()));
-            query.reset(); orientUntil=0; ++failures; return;
+            query.reset(); orientUntil=0; ++failures; ++rejections; return;
         }
         // Validate the actual worker path, then every continued route against
         // fresh coverage. No engine callbacks run on path worker threads.
@@ -549,11 +549,22 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
     // start incorrectly rejects a successful escape as renewed exposure.
     while(pathCursor<path.size() && (pos.SqDistance2D(path[pathCursor])<4096.f
         || (pathCursor+1<path.size() && pos.SqDistance2D(path[pathCursor+1])<pos.SqDistance2D(path[pathCursor])))) ++pathCursor;
-    if(moving && !LegalPath(unit,path,true)) Hold(unit,true);
+    if(moving && !LegalPath(unit,path,true)) { Hold(unit,true); assistCheckFrame=-1; }
     if(moving && ai->GetUnitAPI()->GetCMDQueueSize(id)==0) {
         completedMove=!path.empty() && pathCursor==path.size()
             && pos.SqDistance2D(destination)<4096.f;
         moving=false; path.clear(); pathCursor=0;
+    }
+    if(assistCheckFrame>=0) {
+        // INV-206: an accepted assist Move leaves the unit moving or with a
+        // pending worker query by its next decision. A rejected worker path or
+        // MoveFailed counts a failure; a fresh danger hold clears the check.
+        if(!moving && !query && rejections==assistCheckRejections && !assistInvariantLogged
+            && pos.SqDistance2D(destination)>128.f*128.f) {
+            ai->LOG("[INVARIANT] INV-206 ranged assist move accepted but unit %d is neither moving nor querying",id);
+            assistInvariantLogged=true;
+        }
+        assistCheckFrame=-1;
     }
 
     if(liveWeapon) {
@@ -725,8 +736,33 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         const float dist=pos.SqDistance2D(c.pos);
         if(dist<nearest && (!c.def || (c.def->GetCategory()&def->GetTargetCategory()))) { nearest=dist; objective=i; }
     };
-    if(best>=0) consider(best);
-    else for(int i:choices) consider(i);
+    // D-295: with no legal shot, prefer the nearest visible contact an allied
+    // screen is already fighting (precedence: shot > danger/closing > assist >
+    // nearest objective). O(K) over contacts within assistRadius, reusing
+    // assistNearby; Engaged is memoised per contact per frame and evaluated
+    // only for a candidate nearer than the current best.
+    bool assisting=false; int assistAlly=-1;
+    if(best<0 && policy.assistRadius>0.f && !closing) {
+        performance::Scope assistPhase(ai,performance::RANGED_ASSIST);
+        world.Nearby(pos,policy.assistRadius,assistNearby);
+        for(int i:assistNearby) {
+            const auto& c=contacts[i];
+            if(!c.def || !c.los || c.def->IsAbleToFly()) continue;
+            if((c.mobile?!policy.allowMobile:!policy.allowStatic) || !(c.def->GetCategory()&def->GetTargetCategory())
+                || (c.def->GetCategory()&policy.avoidCategory)) continue;
+            const float distance=pos.SqDistance2D(c.pos);
+            if(distance>=nearest) continue;
+            int ally=-1;
+            if(!world.Engaged(i,policy.assistMargin,&ally)) continue;
+            nearest=distance; objective=i; assistAlly=ally;
+        }
+        assisting=objective>=0;
+    }
+    if(!assisting) {
+        assistTarget=-1;
+        if(best>=0) consider(best);
+        else for(int i:choices) consider(i);
+    }
     // Nearby aircraft or incompatible contacts must not hide every distant
     // reachable ground objective. The shared shortlist is bounded to 16.
     if(objective<0) for(int i:world.Objectives()) {
@@ -767,6 +803,8 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
             if(!ai->GetTerrainManager()->CanMoveToPos(unit->GetArea(),point)) { ++terrainRejected; continue; }
             if(!world.FreeSlot(id,point,spacing)) { ++slotRejected; continue; }
             if(!world.Safe(pos,point,policy.safetyMargin,true) || world.DangerSign(point,policy.safetyMargin)>0.f) { ++coverageRejected; continue; }
+            // D-295: an assist standoff stays behind the allied screen.
+            if(assisting && policy.assistScreen && !world.HasScreen(id,point,c.pos)) { ++coverageRejected; continue; }
             if(!world.Trajectory(w,point,c.pos)) { ++fireRejected; continue; }
             if(world.FriendlyLine(w,id,point,c.pos)) { ++fireRejected; continue; }
             // Forward-fire policy chooses safe advancing/lateral firing sites,
@@ -806,9 +844,27 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         }
         if (report && found) ai->LOG("RANGED: staging unit=%d outside target=%d coverage", id, c.id);
     }
-    if(found) {
+    if(found && assisting) {
+        // INV-205: the selected assist site is outside known static coverage
+        // on its path and carries no danger sign. Same predicates as the
+        // site loop; fires only on a regression. Two O(local) queries.
+        if(!world.Safe(pos,chosen,policy.safetyMargin,true) || world.DangerSign(chosen,policy.safetyMargin)>0)
+            ai->LOG("[INVARIANT] INV-205 ranged assist destination is covered unit=%d target=%d dest=%.0f,%.0f",id,c.id,chosen.x,chosen.z);
+        if(c.id!=assistTarget) {
+            assistTarget=c.id; assistInvariantLogged=false;
+            ai->LOG("RANGED: assist unit=%d target=%d ally=%d dest=%.0f,%.0f",id,c.id,assistAlly,chosen.x,chosen.z);
+        }
+    }
+    // D-295 hysteresis: a moving assist follows a moving fight. Keep a live,
+    // still-legal route (or a pending query) whose goal is within one spacing
+    // of the new site instead of re-pathing every 8-frame decision.
+    const bool keepAssist=found && assisting && destination.SqDistance2D(chosen)<spacing*spacing
+        && (query || (moving && ai->GetUnitAPI()->GetCMDQueueSize(id)>0 && LegalPath(unit,path,true)));
+    if(keepAssist) {
+        world.SetSlot(id,destination,spacing,def->GetCostM());
+    } else if(found) {
         world.SetSlot(id,chosen,spacing,def->GetCostM());
-        Move(unit,chosen,true);
+        if(Move(unit,chosen,true) && assisting) { assistCheckFrame=frame; assistCheckRejections=rejections; }
     } else if(!moving) world.SetSlot(id,pos,spacing,def->GetCostM());
     if(report) ai->LOG("RANGED: sites unit=%d target=%d known=%d found=%d terrain=%d slots=%d coverage=%d fire=%d dest=%.0f,%.0f moving=%d query=%d queryid=%d generation=%u",id,c.id,c.def!=nullptr,int(found),terrainRejected,slotRejected,coverageRejected,fireRejected,chosen.x,chosen.z,int(moving),query?int(query->GetState()):-1,query?query->GetId():-1,generation);
     if(pos.SqDistance2D(lastPos)>1024.f) { lastPos=pos; lastProgressFrame=frame; failures=0; }

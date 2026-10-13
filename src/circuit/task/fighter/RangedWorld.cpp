@@ -105,7 +105,7 @@ void CRangedWorld::Refresh()
     alliesDirty = true;
     largestRange=largestStaticRange=0.f; nonnegativeHazardCosts=finiteStaticHazards=true;
     largestCohortHazard=0.f;
-    largestSpacing=0.f; largestFriendRadius=0.f;
+    largestSpacing=0.f; largestFriendRadius=0.f; largestScreenRange=0.f;
     // Profile threat suppression must not erase an actual weapon's coverage.
     // Respect true fog, neutral/dying contacts and BAR's explicit ignoredByAI.
     {
@@ -220,6 +220,9 @@ void CRangedWorld::Refresh()
                 prototype.radius=definition->GetRadius();
                 prototype.screen=definition->IsAttacker() && (!definition->IsAttrRanged() || definition->GetRangedPolicy().coordinated);
                 prototype.radar=metadata.radar; prototype.jammer=metadata.jammer; prototype.los=metadata.los;
+                // D-295: O(D) per frame with the existing prototype; never per unit.
+                prototype.range=prototype.screen ? definition->GetMaxRange(CCircuitDef::RangeType::LAND) : 0.f;
+                prototype.assist=definition->IsAttrRanged() && definition->GetRangedPolicy().assistRadius>0.f;
             }
         }
         if(!prototype.def) continue;
@@ -233,6 +236,7 @@ void CRangedWorld::Refresh()
         // cross-AI authority. INV-148 compares every resulting field in tests.
         Friend f=prototype; f.id=id; f.pos=position;
         largestFriendRadius=std::max(largestFriendRadius,f.radius);
+        if(f.screen && !f.assist) largestScreenRange=std::max(largestScreenRange,f.range);
         friends.push_back(f);
     }
     static const bool verify=std::getenv("CIRCUIT_VERIFY_RANGED_SNAPSHOT")!=nullptr;
@@ -452,6 +456,38 @@ bool CRangedWorld::HasScreen(int id,const AIFloat3& from,const AIFloat3& target)
         const auto& f=friends[i];
         return f.id!=id && f.screen && f.pos.SqDistance2D(target)<distance && f.pos.SqDistance2D(from)<490000.f;
     });
+}
+bool CRangedWorld::Engaged(int contact,float margin,int* ally) const
+{
+    if(ally) *ally=-1;
+    if(contact<0 || size_t(contact)>=contacts.size()) return false;
+    const auto& c=contacts[contact];
+    // Only identified, currently visible ground contacts can be an allied
+    // engagement; a radar dot or aircraft never pulls a precision gun forward.
+    if(!c.def || !c.los || c.def->IsAbleToFly() || c.pos.y< -20.f) return false;
+    if(engagedFrame!=frame || engagedMargin!=margin) {
+        engagedMemo.assign(contacts.size(),-1); // reuses capacity
+        engagedFrame=frame; engagedMargin=margin;
+    }
+    int& memo=engagedMemo[contact];
+    if(memo<0) {
+        // One bounded local query per contact per frame: O(allies near c).
+        // Other assisters are excluded so assisting guns never bootstrap
+        // each other forward. Allied teams' units are included because the
+        // snapshot is GetFriendlyUnitIds (engine: same allyteam, not neutral).
+        EnsureAllies();
+        int found=-1;
+        allies.Any(P(c.pos),largestScreenRange+margin+c.radius,[&](int k) {
+            const auto& f=friends[k];
+            if(!f.screen || f.assist || f.range<=0.f) return false;
+            const float reach=f.range+margin+c.radius;
+            if(f.pos.SqDistance2D(c.pos)>reach*reach) return false;
+            found=k; return true;
+        });
+        memo=found+1;
+    }
+    if(memo>0 && ally) *ally=friends[memo-1].id;
+    return memo>0;
 }
 bool CRangedWorld::FriendlyLine(const Weapon& w,int id,const AIFloat3& from,const AIFloat3& target) const
 {

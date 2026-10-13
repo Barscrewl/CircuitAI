@@ -1668,7 +1668,7 @@
 			"armmanni": {
 				"role": ["anti_heavy", "assault"],
 				"attribute": ["artillery", "siege", "ranged"],
-				"ranged": {"hold_fireline": true, "target_mode": "precision", "advance_unknown_radar": false, "range_fraction": 0.94, "spacing": 256, "safety_margin": 48, "reaction_seconds": 1.0, "prefer_heavy": true},
+				"ranged": {"hold_fireline": true, "target_mode": "precision", "advance_unknown_radar": false, "range_fraction": 0.94, "spacing": 256, "safety_margin": 48, "reaction_seconds": 1.0, "prefer_heavy": true, "assist_radius": 3500, "assist_margin": 150, "assist_screen": true},
 				"threat": {"air": 0.0, "surf": 0.0, "water": 0.0, "default": 0.0,
 					"vs": { "spam": 0}
 				},

@@ -61,6 +61,12 @@ struct RangedPolicy {
     // D-294: 0 = off. Penalise a mobile target whose drift during projectile
     // flight exceeds evasionLimit*(splash+target radius); see ranged::Evasive.
     float evasionLimit = 0.f;
+    // D-295: 0 = off. With no legal shot, seek the nearest LOS contact within
+    // this radius that an allied screen is already fighting (CRangedWorld::Engaged).
+    // Individual (non-coordinated) controller only.
+    float assistRadius = 0.f;
+    float assistMargin = 150.f; // ally counts as engaged within its ground range + margin + contact radius
+    bool assistScreen = true;   // assist firing sites require an allied screen toward the target
 };
 }
 #endif
