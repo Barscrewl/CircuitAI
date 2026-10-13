@@ -2281,7 +2281,11 @@ namespace RoleTech
 	{
 		if (u is null) return;
 		const string key = "" + u.id;
-		if (!waiting) { turretWaitingSince.delete(key); return; }
+		if (!waiting) {
+			turretWaitingSince.delete(key);
+			Invariants::turretBlockedSince.delete(key);   // a later wait starts INV-200's clock afresh
+			return;
+		}
 		if (!turretWaitingSince.exists(key)) turretWaitingSince.set(key, int64(ai.frame));
 	}
 
