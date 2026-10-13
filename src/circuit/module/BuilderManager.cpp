@@ -44,6 +44,8 @@
 #include "task/builder/PatrolTask.h"
 #include "task/builder/GuardTask.h"
 #include "task/builder/CombatTask.h"
+#include "task/builder/CommanderTask.h"
+#include "module/CommanderControl.h"
 #include "task/builder/BuildChain.h"
 #include "CircuitAI.h"
 #include "unit/ally/AllyTeam.h"
@@ -638,6 +640,7 @@ int CBuilderManager::UnitIdle(CCircuitUnit* unit)
 
 int CBuilderManager::UnitDamaged(CCircuitUnit* unit, CEnemyInfo* attacker)
 {
+    if(circuit->GetCommanderControl()) circuit->GetCommanderControl()->Damaged(unit);
 	auto search = damagedHandler.find(unit->GetCircuitDef()->GetId());
 	if (search != damagedHandler.end()) {
 		search->second(unit, attacker);
@@ -1194,6 +1197,20 @@ IUnitTask* CBuilderManager::FindMatchingGuard(CCircuitUnit* unit, const TaskB::S
 		? current : nullptr;
 }
 
+CCommanderTask* CBuilderManager::EnqueueCommander(IUnitTask* previous) {
+    auto* task=new CCommanderTask(this,previous);
+    updateTasks.push_back(task); lastEnqueued=task; TaskAdded(task); return task;
+}
+bool CBuilderManager::SetCommanderCombatOption(const std::string& name,float value) {
+    return circuit->GetCommanderControl()->SetOption(name,value);
+}
+float CBuilderManager::GetCommanderEnergyReserve() const { return circuit->GetCommanderControl()->GetReserve(); }
+float CBuilderManager::GetCommanderEnergyDeficit() const { return circuit->GetCommanderControl()->GetDeficit(); }
+int CBuilderManager::GetCommanderOperation() const { return circuit->GetCommanderControl()->GetOperation(); }
+IUnitTask* CBuilderManager::CommanderFrontWork(CCircuitUnit* unit,int kind,CCircuitDef* def,float radius) {
+    return circuit->GetCommanderControl()->FrontWork(unit,kind,def,radius);
+}
+
 IUnitTask* CBuilderManager::Enqueue(const TaskB::SServBTask& ti)
 {
 	IUnitTask* task;
@@ -1586,6 +1603,7 @@ IUnitTask* CBuilderManager::DefaultMakeTaskImpl(CCircuitUnit* unit)
 	const CCircuitDef* cdef = unit->GetCircuitDef();
 	constexpr float POWER_MOD = 1.5f;
 	if ((cdef->GetPower() > THREAT_MIN)
+        && !(circuit->GetCommanderControl() && circuit->GetCommanderControl()->Handles(unit))
 		&& (circuit->GetMilitaryManager()->FindBCombatTarget(unit, pos, POWER_MOD, true) != nullptr))
 	{
 		return Enqueue(TaskB::Combat(POWER_MOD));

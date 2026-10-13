@@ -60,6 +60,7 @@ class CPathFinder;
 class CTerrainManager;
 class CBattleAnalysis;
 class CBuilderManager;
+class CCommanderControl;
 class CFactoryManager;
 class CEconomyManager;
 class CMilitaryManager;
@@ -335,6 +336,7 @@ public:
 	CTerrainManager*  GetTerrainManager()  const { return terrainManager.get(); }
 	CBattleAnalysis*  GetBattle()          const { return battle.get(); }  // D-126
 	CBuilderManager*  GetBuilderManager()  const { return builderManager.get(); }
+    CCommanderControl* GetCommanderControl() const { return commanderControl.get(); }
 	CFactoryManager*  GetFactoryManager()  const { return factoryManager.get(); }
 	CEconomyManager*  GetEconomyManager()  const { return economyManager.get(); }
 	CMilitaryManager* GetMilitaryManager() const { return militaryManager.get(); }
@@ -391,6 +393,7 @@ private:
 	std::shared_ptr<CTerrainManager> terrainManager;
 	std::shared_ptr<CBattleAnalysis> battle;  // D-126: TECH's weapon clusters
 	std::shared_ptr<CBuilderManager> builderManager;
+    std::unique_ptr<CCommanderControl> commanderControl;
 	std::shared_ptr<CFactoryManager> factoryManager;
 	std::shared_ptr<CEconomyManager> economyManager;
 	std::shared_ptr<CMilitaryManager> militaryManager;

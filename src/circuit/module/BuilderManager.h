@@ -31,6 +31,7 @@ class CQueryCostMap;
 class CBRepairTask;
 class CBReclaimTask;
 class CCombatTask;
+class CCommanderTask;
 
 struct SBuildChain;
 
@@ -283,6 +284,12 @@ public:
 
 	float GetGoalExecTime() const { return goalExecTime; }
 	unsigned int GetWorkerCount() const { return workers.size(); }
+    CCommanderTask* EnqueueCommander(IUnitTask* previous);
+    bool SetCommanderCombatOption(const std::string& name,float value);
+    float GetCommanderEnergyReserve() const;
+    float GetCommanderEnergyDeficit() const;
+    int GetCommanderOperation() const;
+    IUnitTask* CommanderFrontWork(CCircuitUnit* unit,int kind,CCircuitDef* def,float radius);
 	void AddBuildPower(CCircuitUnit* unit);
 	void DelBuildPower(CCircuitUnit* unit);
 	float GetBuildPower() const { return buildPower; }

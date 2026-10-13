@@ -22,7 +22,9 @@ local function site(g,x,z)
             local angle=direction*math.pi/8
             local px,pz=x+math.cos(angle)*ring*64,z+math.sin(angle)*ring*64
             local y=Spring.GetGroundHeight(px,pz)
-            local free=y>=0 and math.abs(y-reference)<=64
+            -- Ships and floating units spawn on water; everything else on land.
+            local naval=(UnitDefs[def.id].minWaterDepth or 0)>0 or UnitDefs[def.id].floatOnWater
+            local free=(y>=0 or naval) and math.abs(y-reference)<=64
             if free and mobile and not UnitDefs[def.id].canFly then free=Spring.TestMoveOrder(def.id,px,y,pz,0,0,0,true,true,false) end
             if free and not mobile then free=Spring.TestBuildOrder(def.id,px,y,pz,0)>0 end
             for _,p in ipairs(occupied) do if (px-p[1])^2+(pz-p[2])^2<(cfg.min_spawn_spacing or 96)^2 then free=false;break end end
@@ -110,7 +112,7 @@ function widget:UnitDestroyed(id,def,team)
     if tracked[id] then log("death id="..id.." team="..team.." unit="..UnitDefs[def].name.." cost="..UnitDefs[def].metalCost);tracked[id]=nil end
 end
 function widget:UnitFinished(id,def,team)
-    if (cfg.production or cfg.natural) and tracked[id] then
+    if (cfg.production or cfg.natural or cfg.commander_front_work) and tracked[id] then
         log("finished id="..id.." team="..team.." unit="..UnitDefs[def].name.." cost="..UnitDefs[def].metalCost)
     end
 end
@@ -118,8 +120,29 @@ function widget:GameFrame(f)
     if f==150 then
         if not cfg.natural then Spring.SendCommands("cheat 1") end
         log("ready")
+        -- Optional terrain probe for fixture design: ground height sampled
+        -- along each segment {x0,z0,x1,z1,steps}; negative is under water.
+        for _,p in ipairs(cfg.height_probe or {}) do
+            local parts={}
+            for i=0,p[5] do
+                local x=p[1]+(p[3]-p[1])*i/p[5];local z=p[2]+(p[4]-p[2])*i/p[5]
+                parts[#parts+1]=math.floor(x)..","..math.floor(z)..":"..math.floor(Spring.GetGroundHeight(x,z))
+            end
+            log("height_probe "..table.concat(parts," "))
+        end
     end
     if f<300 then return end
+    if f==300 and cfg.commander_initial then
+        for _,id in ipairs(Spring.GetAllUnits()) do
+            local def=Spring.GetUnitDefID(id)
+            if UnitDefs[def].customParams and UnitDefs[def].customParams.iscommander then
+                local x,_,z=Spring.GetUnitPosition(id)
+                local team=Spring.GetUnitTeam(id)
+                tracked[id]={team=team,def=def}
+                log("spawn id="..id.." team="..team.." unit="..UnitDefs[def].name.." x="..math.floor(x).." z="..math.floor(z))
+            end
+        end
+    end
     if cfg.rush_loss_steps then
         if not cfg.original_front and f>=cfg.rush_capture_seconds*30 then
             cfg.original_front={}
@@ -211,6 +234,16 @@ function widget:GameFrame(f)
                 log("factory id="..id.." unit="..d.name.." repeat="..tostring(states["repeat"] or false).." builds="..builds.." building="..tostring(Spring.GetUnitIsBuilding(id) or -1))
             end
             if u.team==0 and d.canMove and (not u.child or cfg.observe_children) then
+                if cfg.commander_observation and d.customParams and d.customParams.iscommander then
+                    local x,y,z=Spring.GetUnitPosition(id)
+                    local hp=Spring.GetUnitHealth(id)
+                    local state=Spring.GetUnitStates(id) or {}
+                    log("commander id="..id.." x="..math.floor(x).." z="..math.floor(z).." hp="..math.floor(hp or 0)
+                        .." cloaked="..tostring(Spring.GetUnitIsCloaked(id)).." fire="..tostring(state.firestate))
+                    if cfg.commander_front_work and f<45*30 and z>4350 then
+                        log("ERROR commander_left_before_nano id="..id)
+                    end
+                end
                 for index,w in ipairs(d.weapons or {}) do
                     local reload=Spring.GetUnitWeaponState(id,index,"reloadFrame")
                     local key=id..":"..index

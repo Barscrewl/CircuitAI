@@ -3,6 +3,7 @@
 #include "shared/ferry.as"
 #include "shared/constructor_assistance.as"
 #include "shared/military.as"
+#include "shared/commander.as"
 #include "shared/spam.as"
 #include "shared/construction.as"
 #include "roles/tech.as"

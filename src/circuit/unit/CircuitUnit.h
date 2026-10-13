@@ -134,6 +134,9 @@ public:
 	bool IsDisarmed(int frame);
 	bool IsWeaponReady(int frame);
 	bool IsDGunReady(int frame, float energy);
+    int GetDGunReloadFrame() const;
+    int GetRequestedFireState() const { return requestedFire; }
+    int GetRequestedMoveState() const { return requestedMove; }
 	bool IsShieldCharged(float percent);
 	bool IsJumpReady();
 	bool IsJumping();
@@ -238,6 +241,7 @@ private:
 	terrain::SArea* area;  // = nullptr if a unit flies
 
 	CDGunAction* dgunAct;
+    int requestedFire=CCircuitDef::FireType::OPEN, requestedMove=CCircuitDef::MoveType::MANEUVRE;
 	ITravelAction* travelAct;
 
 	int moveFails;

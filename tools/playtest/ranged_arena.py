@@ -34,10 +34,10 @@ def prepare(args):
     if role not in ('FRONT', 'TECH', 'AIR', 'SEA', 'SUPPORT', 'TACTICAL'): raise ValueError('Unsupported arena role: '+role)
     directory = storage.allocate('shared', 'combat', case.get('storage_scenario',case['name']), case['map_key'], 'supplied', seed=args.seed)
     starts = directory / 'starts.as'
-    starts.write_text(''.join(f'StartSpot(AIFloat3({x},0,{z}), AiRole::{role}, false),\n' for x,z in case['starts']))
+    starts.write_text(''.join(f'StartSpot(AIFloat3({x},0,{z}), AiRole::{role if i==0 else case.get("enemy_role",role)}, false),\n' for i,(x,z) in enumerate(case['starts'])))
     command = [sys.executable, str(HERE / 'playtest.py')]
     stage = command + ['stage','--dir',str(directory),'--dll',str(args.dll),'--data',str(args.data),
-        '--map',case['map'],'--map-file',str(starts),'--role',role,'--roles','all','--ally-spots','1',
+        '--map',case['map'],'--map-file',str(starts),'--role',role,'--roles','all','--ally-spots',case.get('ally_spots','1'),
         '--side',case.get('side','armada'),'--game',args.game,
         '--engine','recoil_2026.07.04','--speed',str(args.speed),'--minutes',str(args.minutes),
         '--shots','','--width','1280','--height','720','--lean-render','--bonus','0',
@@ -49,6 +49,9 @@ def prepare(args):
         '--extra-widget',str(HERE/'widgets/ranged_arena.lua'),
         '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua')]
     if args.headless: stage += ['--headless']
+    # Extra lobby mod options (e.g. scavunitsforplayers=1 loads Scavenger defs).
+    for key, value in case.get('modoptions', {}).items():
+        stage += ['--modoption', f'{key}={value}']
     if case.get('aggression_widget_test'):
         stage += ['--extra-widget',str(ROOT/'tools/widgets/gui_barb_team_link.lua'),
                   '--extra-widget',str(HERE/'widgets/aggression_watch.lua')]
@@ -58,8 +61,9 @@ def prepare(args):
     staged = directory/'AI/Skirmish/BARbTest/test'
     pool_symbols(staged)
     setup=staged/'script/src/setup.as'
+    fixture_role=('(ai.teamId==0?AiRole::'+role+':AiRole::'+case['enemy_role']+')') if case.get('enemy_role') else 'AiRole::'+role
     setup.write_text(setup.read_text().replace('Global::AISettings::Role = derivedRole;',
-        'derivedRole=AiRole::'+role+'; Global::AISettings::Role = derivedRole;'))
+        'derivedRole='+fixture_role+'; Global::AISettings::Role = derivedRole;'))
     for name,manager,wait in [('builder','aiBuilderMgr','TaskB::Wait(60*SECOND)'),('factory','aiFactoryMgr','TaskS::Wait(false,60*SECOND)')]:
         path = staged/'script/src/manager'/(name+'.as')
         source = path.read_text(); start = source.index('{',source.index('IUnitTask@ AiMakeTask(CCircuitUnit@ u)'))+1
@@ -68,6 +72,8 @@ def prepare(args):
             repair+='\n if (ai.teamId==0 && !u.circuitDef.IsMobile()) return aiBuilderMgr.DefaultMakeTask(u);'
         condition = 'ai.teamId==1' if name=='factory' and case.get('production') else 'ai.frame>=0'
         if name=='builder' and case.get('builders'): condition = 'ai.teamId==1'
+        if name=='builder' and case.get('commander_front_work'):
+            condition = 'ai.teamId!=0 || !u.circuitDef.IsRoleAny(Unit::Role::COMM.mask)'
         if name=='builder' and case.get('production'):
             repair += '\n if (ai.teamId==0 && !u.circuitDef.IsMobile()) return aiBuilderMgr.DefaultMakeTask(u);'
         path.write_text(source[:start]+repair+'\n if ('+condition+') return '+manager+'.Enqueue('+wait+'); // supplied arena only\n'+source[start:])
@@ -110,6 +116,14 @@ def prepare(args):
             return FixtureRoute;
         } // supplied route: exercise ordinary spam's native arrival/idle path
 '''
+    if case.get('hold_all'):
+        override=override.replace('ai.teamId==0 && u.circuitDef.IsMobile()','u.circuitDef.IsMobile()')
+    if case.get('enemy_commander_home'):
+        # D-294: the opposing start commander carries radar; routed with the
+        # fixture it escorts the supplied T3 and confounds concealed approaches.
+        override=override.replace('if (ai.teamId==1 && u.circuitDef.IsMobile())',
+            'if (ai.teamId==1 && u.circuitDef.IsMobile() && !u.circuitDef.IsRoleAny(Unit::Role::COMM.mask))',1)
+    override=override.replace('ai.teamId==1','ai.teamId=='+str(case.get('enemy_team',1)))
     patched = source[:start]+override+source[start:]
     if case.get('native_route'): patched = 'CRouteTask@ FixtureRoute;\n'+patched
     path.write_text(patched)
@@ -117,6 +131,25 @@ def prepare(args):
         path=staged/'script'/args.profile/'main.as'
         source=path.read_text(); start=source.index('{',source.index('void AiUpdate()'))+1
         path.write_text(source[:start]+'\n if (ai.teamId==0) aiMilitaryMgr.SetAggressionDelta('+str(float(case['aggression_delta']))+'f); // declared fixture offset\n'+source[start:])
+    if case.get('commander_observation'):
+        path=staged/'script'/args.profile/'main.as'
+        source=path.read_text(); start=source.index('{',source.index('void AiUpdate()'))+1
+        # Frozen economic builders never ask for an opening factory, so Setup's
+        # usual role resolution does not run. Declare only the fixture role.
+        source=source[:start]+'\n Global::AISettings::Role='+fixture_role+'; // commander fixture role\n'+source[start:]
+        if case.get('enemy_commander_home'):
+            # D-294: ...and its own commander control would deploy it with the T3.
+            source=source[:start]+'\n if (ai.teamId==1 && ai.frame<2*SECOND) CommanderCombat::Override("enabled",0.f); // keep enemy commander home\n'+source[start:]
+        # D-293: exercise the per-AI script override on team 0 only; it must
+        # win over the profile JSON that CommanderCombat::Update applies.
+        for key,value in case.get('commander_overrides',{}).items():
+            source=source[:start]+'\n if (ai.teamId==0 && ai.frame<2*SECOND) CommanderCombat::Override("'+key+'",'+repr(float(value))+'f); // per-AI override fixture\n'+source[start:]
+        if case.get('commander_energy_test'):
+            source=source[:start]+'''\n
+ if (ai.teamId==0 && ai.frame==22*SECOND)
+     TeamEconomy::SendEnergy(1,TeamEconomy::OwnEnergy(TeamEconomy::CURRENT)); // declared one-time bank drain
+'''+source[start:]
+        path.write_text(source)
     if case.get('trace_spam'):
         # Supplied buildings did not come through TECH's reserved layout.
         # Its geometry/economy Tick cannot judge this isolated production
@@ -173,7 +206,7 @@ def prepare(args):
     (directory/'ranged-arena.json').write_text(json.dumps(case,indent=2)+'\n')
     pins={'dll_sha256':hashlib.sha256(args.dll.read_bytes()).hexdigest(),
           'diagnostics':{name:os.environ[name] for name in
-              ('CIRCUIT_RANGED_TRACE','CIRCUIT_VERIFY_RANGED_QUERIES','CIRCUIT_VERIFY_RANGED_SNAPSHOT','CIRCUIT_PERF_PHASES')
+              ('CIRCUIT_RANGED_TRACE','CIRCUIT_VERIFY_RANGED_QUERIES','CIRCUIT_VERIFY_RANGED_SNAPSHOT','CIRCUIT_PERF_PHASES','CIRCUIT_COMMANDER_TRACE')
               if name in os.environ},
           'files':{str(p.relative_to(staged)):storage.file_hash(p) for p in staged.rglob('*') if p.is_file() and p.suffix in ('.as','.json')},
           'observer_sha256':storage.file_hash(HERE/'widgets/ranged_arena.lua'),
@@ -183,6 +216,8 @@ def prepare(args):
                if args.profile.startswith('experimental_') else ['native legacy economy remains active'])}
     if case.get('production'):
         pins['overrides'] += ['team 0 factories and static assistants active; mobile builders '+('active' if case.get('builders') else 'frozen')]
+    if case.get('commander_front_work'):
+        pins['overrides'] += ['team 0 commanders use real FRONT builder policy; other builders frozen']
     if case.get('trace_spam'):
         pins['overrides'] += ['TECH layout/economy invariant Tick disabled for supplied buildings; production/lifecycle and spam invariants retained', 'read-only factory task census every 10 seconds']
     if case.get('hold_friendly'):

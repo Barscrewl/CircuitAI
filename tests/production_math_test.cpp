@@ -30,8 +30,9 @@ int main(int argc, char** argv) {
     RegisterScriptArray(engine, true);
     // Some differential fixtures deliberately supply a tiny dictionary stub.
     // Opt into the real add-on only for tests of its runtime semantics.
-    if (argc == 4 && std::string(argv[3]) == "--dictionary") {
+    if (argc == 4 && (std::string(argv[3]) == "--dictionary" || std::string(argv[3]) == "--strings")) {
         RegisterStdString(engine);
+        RegisterStdStringUtils(engine);
         RegisterScriptDictionary(engine);
     }
     engine->RegisterGlobalFunction("void Check(bool)", asFUNCTION(Check), asCALL_GENERIC);

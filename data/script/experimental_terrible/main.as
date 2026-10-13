@@ -104,6 +104,7 @@ namespace Main {
 		Military::UpdateEnemyThreatCache();
 		Military::UpdateEnemyCostCache();
         Aggression::Update();
+        CommanderCombat::Update();
 
 		if (Global::profileController !is null) {
 			Global::profileController.MainUpdate();

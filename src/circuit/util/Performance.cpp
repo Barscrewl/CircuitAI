@@ -21,7 +21,9 @@ constexpr std::array<const char*, PHASE_COUNT> names{
     "ranged-snapshot", "ranged-decision", "ranged-escort",
     "ranged-enemies", "ranged-friends", "ranged-state",
     "unit-route", "unit-terrain-refresh", "unit-terrain-build",
-    "unit-route-threat", "unit-route-obstacles", "unit-route-search"
+    "unit-route-threat", "unit-route-obstacles", "unit-route-search",
+    "commander-observe", "commander-decision",
+    "commander-t3", "commander-fallback", "commander-deploy", "commander-handover"
 };
 struct Stat {
     uint64_t calls = 0;

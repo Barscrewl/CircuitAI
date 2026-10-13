@@ -9,6 +9,7 @@
 #include "map/ThreatMap.h"
 #include "map/InfluenceMap.h"
 #include "module/BuilderManager.h"
+#include "module/CommanderControl.h"
 #include "module/EconomyManager.h"
 #include "module/FactoryManager.h"
 #include "resource/MetalManager.h"
@@ -85,7 +86,8 @@ void CRetreatTask::AssignTo(CCircuitUnit* unit)
 		TRY_UNIT(manager->GetCircuit(), unit,
 			unit->CmdCloak(true);
 			// Opted-in precision retreat must not decloak on return fire.
-			unit->CmdSetFireState(cdef->IsAttrRanged() && cdef->IsAttrRetHold()
+			unit->CmdSetFireState((cdef->IsAttrRanged() && cdef->IsAttrRetHold())
+                || (circuit->GetCommanderControl() && circuit->GetCommanderControl()->Handles(unit))
 				? CCircuitDef::FireType::HOLD : CCircuitDef::FireType::RETURN);
 		)
 	}

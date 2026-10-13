@@ -6,6 +6,20 @@ from ranged_benchmark import summarize
 
 
 class MeasurementsTest(unittest.TestCase):
+    def test_explicit_enemy_team_excludes_allied_casualties(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)
+            (path/'ranged-arena.json').write_text(json.dumps(dict(name='energy',unit='armcom',
+                variant='ranged',seed=1,minutes=1,enemy_team=2,
+                assertions=dict(min_kills=1,min_shooters=0,min_damage=0))))
+            (path/'infolog.txt').write_text('''[RangedArena] frame=700 death id=2 team=2 unit=corak cost=43
+[RangedArena] frame=710 death id=3 team=1 unit=armwar cost=280
+[RangedArena] frame=1800 orders team=0 nonlua=12 lua=0
+''')
+            result=summarize(path)
+            self.assertEqual(result['enemy_kills'],1)
+            self.assertEqual(result['enemy_metal_destroyed'],43)
+
     def test_first_actual_shot_and_forward_progress_exclude_shutdown(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)

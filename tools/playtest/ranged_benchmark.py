@@ -111,7 +111,7 @@ def summarize(directory):
     watched = cfg.get('units', [cfg['unit']])
     losses = [d for d in deaths if d['team'] == '0' and d['unit'] in watched]
     unrelated = [d for d in deaths if d['team'] == '0' and d['unit'] not in watched]
-    kills = [d for d in deaths if d['team'] == '1']
+    kills = [d for d in deaths if d['team'] == str(cfg.get('enemy_team',1))]
     allied_losses = [d for d in deaths if d['team']=='0' and d['unit'] in cfg.get('support_units',[]) and int(d['frame'])<=30*cfg.get('support_deadline_seconds',cfg['minutes']*60)]
     checks = cfg.get('assertions', {})
     failures = []
@@ -145,7 +145,7 @@ def summarize(directory):
     verdict = json.loads(archives[-1].read_text()).get('verdict') if archives else None
     if verdict and verdict != 'PASS': failures.append('original watch verdict: '+verdict)
     if re.search(r'\[INVARIANT\]|\[RangedArena\].*ERROR|Error in.*ranged_arena', text): failures.append('runtime/fixture error')
-    result = dict(schema=8, case=cfg['name'], variant=cfg['variant'], seed=cfg['seed'], directory=str(directory),
+    result = dict(schema=9, case=cfg['name'], variant=cfg['variant'], seed=cfg['seed'], directory=str(directory),
                   measurement_deadline_frame=cfg['minutes']*1800,
                   first_damage_seconds=first/30 if first else None, raw_damage_including_overkill=damage,
                   shooters_fired=len(shooters), shots=len(shots), enemy_kills=len(kills), friendly_losses=len(losses),
@@ -168,7 +168,7 @@ def summarize(directory):
                   engine_ai_windows=samples, failures=failures, passed=not failures)
     # New analysis schema gets a new path. Earlier immutable measurements
     # remain valid evidence rather than being silently recomputed in place.
-    output = directory / 'ranged-measurements-v8.json'
+    output = directory / 'ranged-measurements-v9.json'
     if output.exists() and json.loads(output.read_text()) != result:
         raise RuntimeError('Refusing to overwrite a different measurement: ' + str(output))
     output.write_text(json.dumps(result, indent=2)+'\n')

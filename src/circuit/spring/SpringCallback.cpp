@@ -145,9 +145,15 @@ const std::vector<int>& COOAICallback::GetEnemyUnitIdsIn(const AIFloat3& pos, fl
 {
 	float pos_posF3[3];
 	pos.LoadInto(pos_posF3);
-	unitIds.resize(MAX_UNITS);
-	int size = sAICallback->getEnemyUnitsIn(skirmishAIId, pos_posF3, radius, spherical, unitIds.data(), MAX_UNITS);
-	unitIds.resize(size);
+    // Commander observation asks this every three frames. As for friendly
+    // local queries, retain the bounded callback buffer and copy only the K
+    // results instead of zero-filling MAX_UNITS on every ask. Preserve engine
+    // order and this shared-vector lifetime; callback_buffer_test covers the
+    // reusable storage contract across empty/full queries and size changes.
+    const auto result=queriedUnitIds.Read(MAX_UNITS,[&](int* output,int capacity) {
+        return sAICallback->getEnemyUnitsIn(skirmishAIId,pos_posF3,radius,spherical,output,capacity);
+    });
+    unitIds.assign(result.begin(),result.end());
 	return unitIds;
 }
 
