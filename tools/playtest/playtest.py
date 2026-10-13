@@ -33,7 +33,8 @@ from symbol_store import stage_symbols
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-BAR_DATA = LOCALAPPDATA / "Programs" / "Beyond-All-Reason" / "data"  # read-only
+# read-only; BAR_DATA_DIR overrides it for a machine-wide install (e.g. C:\Program Files\Beyond-All-Reason\data)
+BAR_DATA = Path(os.environ.get("BAR_DATA_DIR") or (LOCALAPPDATA / "Programs" / "Beyond-All-Reason" / "data"))
 BUILD_AI = Path(r"C:\bardev\bar-RecoilEngine\build-amd64-windows\install\AI\Skirmish\BARb\stable")
 DEFAULT_DIR = Path(r"C:\bardev\barb-playtest")
 AI_SHORT = "BARbTest"
