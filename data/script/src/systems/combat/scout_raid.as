@@ -494,7 +494,10 @@ namespace ScoutRaid {
             bool hazardAhead = false;
             float ahead = 0.0f;
             AIFloat3 previous = pos;
-            for (uint k = r.cursor; k < r.route.length() && (ahead < Global::ScoutRaid::LookaheadElmos || k < r.cursor + 3); ++k) {
+            // Faster scouts need a longer lookahead: 10 s of travel (Rover 168
+            // elmo/s -> 1680) or LookaheadElmos, whichever is larger.
+            const float lookahead = AiMax(Global::ScoutRaid::LookaheadElmos, Global::ScoutRaid::LookaheadSeconds * u.circuitDef.GetSpeed());
+            for (uint k = r.cursor; k < r.route.length() && (ahead < lookahead || k < r.cursor + 3); ++k) {
                 if (aiBattle.GroundHazard(r.route[k], margin) > 0.0f) { hazardAhead = true; break; }
                 ahead += previous.distance2D(r.route[k]); previous = r.route[k];
             }
@@ -512,6 +515,26 @@ namespace ScoutRaid {
                 }
             }
             else r.hazardSince = -1;
+            // Inside coverage now (the engine detoured a planned leg through it,
+            // or a contact appeared on top of us): step back to the previous
+            // clear waypoint and replan at once. Round 14: a Rover sent west
+            // around the line was walked south by the engine's own path into
+            // an LLT's range.
+            if (aiBattle.GroundHazard(pos, margin) > 0.0f && ai.frame - r.lastMove < 2 * SECOND) {
+                AIFloat3 back = pos;
+                for (int k = int(r.cursor) - 1; k >= 0; --k)
+                    if (aiBattle.GroundHazard(r.route[k], margin) <= 0.0f) { back = r.route[k]; break; }
+                if (back.SqDistance2D(pos) < 1.0f && r.route.length() > 0) back = r.route[0];
+                array<AIFloat3> escape = {back};
+                r.task.SetRoute(escape);
+                r.route.resize(0); r.cursor = 0;
+                r.nextReplan = AiMin(r.nextReplan, ai.frame + SECOND);
+                if (!r.queued) {
+                    GenericHelpers::LogUtil("[ScoutRaid] inside coverage unit=" + r.id + " at (" + int(pos.x) + "," + int(pos.z)
+                        + ") back to (" + int(back.x) + "," + int(back.z) + ")", 1);
+                    Queue(r);
+                }
+            }
             const bool idleAtEnd = atEnd && r.target < 0;
             const bool wantTarget = r.target < 0 && anyRaidTarget && ai.frame >= r.nextTargetScan;
             if (wantTarget) r.nextTargetScan = ai.frame + cooldown;
