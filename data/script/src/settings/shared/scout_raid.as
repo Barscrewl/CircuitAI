@@ -11,6 +11,9 @@ namespace ScoutRaid {
         int KeepNativeScouts = 1;    // first N listed scouts keep native CScoutTask recon
         // Observed armed-ground coverage is dilated by this margin (elmos).
         float HazardMargin = 120.0f;
+        // An unidentified radar dot is avoided with this radius (a T1 turret's
+        // range); identification replaces it with the contact's real range.
+        float UnknownHazardRange = 700.0f;
         // Extra route cost per 64-elmo cell inside that coverage (soft avoid).
         float HazardWeight = 50.0f;
         // Target kind weights (0 disables a kind).

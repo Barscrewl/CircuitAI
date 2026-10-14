@@ -378,20 +378,63 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitRaidRoute(const CCircuitDef* def,
     // coverage (+margin) cost hazardWeight extra each, on top of the legacy
     // surface threat. Same synchronous search and UNIT_ROUTE accounting as
     // GetUnitTerrainRoute; the overlay adds O(1) per cell to its threat fill.
-    if (!std::isfinite(hazardWeight) || hazardWeight < 0.f) return {};
+    if (def == nullptr || !std::isfinite(hazardWeight) || hazardWeight < 0.f) return {};
+    performance::Scope routeScope(circuit, performance::UNIT_ROUTE);
+    EnsureGrid();
+    auto inside = [this](const AIFloat3& p) {
+        return std::isfinite(p.x) && std::isfinite(p.z) && p.x>=0 && p.z>=0
+            && p.x<gw*cellSize && p.z<gh*cellSize;
+    };
+    if (!inside(from) || !inside(to)) return {};
+    std::unique_ptr<MoveData> move(def->GetDef()->GetMoveData());
+    if (!move) return {};
+    int cls;
+    switch (move->GetSpeedModClass()) {
+        case 0: cls = L_LAND; break;  // MoveDef::Tank
+        case 1: cls = L_BOT; break;   // MoveDef::KBot
+        case 2: cls = L_HOVER; break; // MoveDef::Hover
+        default: return {};           // ships are not land raiders
+    }
+    if (!laneTerrain) CaptureLaneRequest(1, 0.f, 0.f, 1.f, 0.f, 1.f, 0);
+    if (!laneTerrain) return {};
     EnsureGroundHazard(hazardMargin);
-    // One grid per definition: route with the unit's own MoveData depth only.
-    // The earlier dry-then-wet retry built two grids per def (8v8 full3: 29+29
-    // legscout builds, `unit-terrain-build` 0.297 ms/frame summed over 16 AIs,
-    // the largest phase). The grid is retained across height revisions.
-    return UnitTerrainRoute(def, from, to, false, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard,
-        std::min(hazardWeight, 1e6f), true);
+    const float weight = std::min(hazardWeight, 1e6f);
+    {
+    performance::Scope threatScope(circuit, performance::UNIT_ROUTE_THREAT);
+    // Base surface threat once per ThreatMap publication (O(G) lookups), then
+    // an O(G) overlay of the current hazard per solve: a dot painted this
+    // second is in the next solve. No per-definition terrain is built.
+    const auto version = circuit->GetThreatMap()->GetPublicationVersion();
+    if (raidBaseVersion != version || raidBaseThreat.size() != height.size()) {
+        raidBaseThreat.resize(height.size());
+        for (size_t c = 0; c < raidBaseThreat.size(); ++c) raidBaseThreat[c] = SurfThreat(CellPos(c));
+        raidBaseVersion = version;
+    }
+    raidRouteThreat.resize(height.size());
+    for (size_t c = 0; c < raidRouteThreat.size(); ++c)
+        raidRouteThreat[c] = observedGroundHazard[c] > 0.f ? std::max(raidBaseThreat[c], weight) : raidBaseThreat[c];
+    }
+    std::vector<int> cells;
+    {
+    performance::Scope searchScope(circuit, performance::UNIT_ROUTE_SEARCH);
+    // threatVersion 0: penalties are rebuilt per solve (the overlay changes);
+    // the route cache is bypassed for the same reason. Water cells cost like
+    // land; the ceiling only blocks water cells, never covered land.
+    cells = lane::Solver(*laneTerrain, laneSettings).PointRoute({from.x, from.y, from.z}, {to.x, to.y, to.z},
+        cls, raidRouteThreat, 1.f, 1.f, 1.f, 1e9f, nullptr, &raidRouteWorkspace, 0);
+    }
+    if (cells.empty()) return {};
+    std::vector<AIFloat3> result;
+    result.reserve(cells.size() + 2);
+    result.emplace_back(from.x, Height(from), from.z);
+    for (int c : cells) { auto p = CellPos(c); p.y = Height(p); result.push_back(p); }
+    result.emplace_back(to.x, Height(to), to.z);
+    return result;
 }
 
 std::vector<AIFloat3> CBattleAnalysis::UnitTerrainRoute(const CCircuitDef* def,
         const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
-        float waterCost, float threatWeight, float maxWaterThreat, const Grid* hazard, float hazardValue,
-        bool retainTerrain)
+        float waterCost, float threatWeight, float maxWaterThreat, const Grid* hazard, float hazardValue)
 {
     performance::Scope routeScope(circuit, performance::UNIT_ROUTE);
     EnsureGrid();
@@ -421,10 +464,8 @@ std::vector<AIFloat3> CBattleAnalysis::UnitTerrainRoute(const CCircuitDef* def,
     auto& t=cache.grid;
     const int frame=circuit->GetLastFrame();
     static const bool verify = std::getenv("CIRCUIT_VERIFY_UNIT_ROUTES") != nullptr;
-    bool rebuild = t.height.empty() || t.gw != gw || t.gh != gh || t.cellSize != cellSize;
-    // Raid routes keep an existing grid: on a 16-AI battle map the height
-    // revision changes every refresh, so the 60 s check rebuilt every time.
-    const bool refresh = rebuild || (!retainTerrain && (frame < cache.frame || frame-cache.frame>=60*FRAMES_PER_SEC));
+    bool rebuild = t.height.empty();
+    const bool refresh = rebuild || frame < cache.frame || frame-cache.frame>=60*FRAMES_PER_SEC;
     if (refresh) {
         performance::Scope refreshScope(circuit, performance::UNIT_TERRAIN_REFRESH);
         cache.frame=frame;

@@ -138,10 +138,12 @@ public:
     // current ground snapshot; independent of profile threat multipliers.
     // Lazily rebuilt at most once per Update publication (and per margin).
     float GroundHazard(const springai::AIFloat3& pos, float margin);
-    // D-296: GetUnitTerrainRoute with that hazard layer as an additive cell
-    // penalty (hazardWeight per covered cell). Soft, not a block: the lane
-    // solver's ceiling only blocks water cells, and a hard land block would
-    // leave no route out of a fully covered start or to a ringed base.
+    // D-296: a route for the unit's movement class on the shared lane grid
+    // (bots L_BOT, vehicles L_LAND, hovers L_HOVER) with that hazard layer as an
+    // additive cell penalty (hazardWeight per covered cell). Soft, not a block:
+    // a hard block would leave no route out of a covered start or to a ringed
+    // base. The per-definition fine grid was rejected: it found no connection
+    // across glitters for a Tick the engine walks, and cost ~255 ms per build.
     std::vector<springai::AIFloat3> GetUnitRaidRoute(const CCircuitDef* def,
         const springai::AIFloat3& from, const springai::AIFloat3& to, float hazardMargin, float hazardWeight);
     int GetNavalContactCount() const { return static_cast<int>(navalContacts.size()); }
@@ -262,14 +264,21 @@ private:
     unsigned int groundHazardPublication = ~0u;
     float groundHazardMargin = -1.f;
     void EnsureGroundHazard(float margin);
-    // retainTerrain (D-296 raid routes only): once a definition's grid exists it
-    // is never rebuilt for height-revision changes. Craters do not change a
-    // scout's passability in practice, and each rebuild costs O(G*8*K) corridor
-    // samples (~250 ms on Supreme). Amphibious/sea callers keep the 60 s refresh.
     std::vector<springai::AIFloat3> UnitTerrainRoute(const CCircuitDef* def,
         const springai::AIFloat3& from, const springai::AIFloat3& to, bool dry,
         float landCost, float waterCost, float threatWeight, float maxWaterThreat,
-        const Grid* hazard, float hazardValue, bool retainTerrain = false);
+        const Grid* hazard, float hazardValue);
+    // D-296: unidentified radar dots are painted into the ground hazard with
+    // this conservative radius (default 700, about a T1 turret's range).
+    void SetUnknownHazardRange(float range);
+    std::vector<springai::AIFloat3> radarDots; // observed unidentified land contacts, per Update
+    float unknownHazardRange = 700.f;
+    // Raid routes solve on the shared per-class lane grid (no per-definition
+    // terrain build). Base surface threat is cached by ThreatMap publication;
+    // the hazard overlay is applied per solve, so a new dot is seen at once.
+    Grid raidBaseThreat, raidRouteThreat;
+    std::uint64_t raidBaseVersion = 0;
+    lane::PointWorkspace raidRouteWorkspace;
     lane::Settings laneSettings;
     std::shared_ptr<const lane::Terrain> laneTerrain;
     // Synchronous callback-only scratch, never shared with lane workers.
