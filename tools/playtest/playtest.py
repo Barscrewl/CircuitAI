@@ -541,6 +541,8 @@ def watch(args):
     widget_loaded = False
     verdict = None
     reason = ""
+    decided_frame = None
+    decided_text = ""
     started = time.time()
     wall_limit = float(args.wall_minutes) * 60 if args.wall_minutes else (stop_minute * 90 + 240)
     pos = 0
@@ -572,6 +574,9 @@ def watch(args):
                     frame = max(frame, event_frame)
                 if "[Playtest] widget loaded" in line:
                     widget_loaded = True
+                if decided_frame is None and "[Playtest] decided:" in line:
+                    decided_frame = event_frame
+                    decided_text = line.split("decided: ", 1)[-1][:120]
                 if re.search(r": ERR\s+:", line) or "Fix compilation errors" in line:
                     errors.append(line)
                 am = AI_RE.search(line)
@@ -631,6 +636,18 @@ def watch(args):
         if frame >= stop_frame:
             verdict = verdict or "PASS"
             reason = reason or "reached %.0f min" % stop_minute
+            break
+        # A decided game (one ally team left with living units, reported once a
+        # minute by playtest_camera.lua) is not worth playing to stop_minute:
+        # nothing the AI does after that is evidence. --play-decided keeps the
+        # old behaviour for fixtures that need the loser's side to stay dead.
+        if decided_frame is not None and not args.play_decided:
+            verdict = verdict or "PASS"
+            reason = reason or "game decided at %.1f min (%s)" % (minute(decided_frame), decided_text)
+            break
+        if args.stop_when_met and expects and all(e["seen"] is not None and e["seen"][0] is not None for e in expects):
+            verdict = verdict or "PASS"
+            reason = reason or "all expectations met at %.1f min" % minute(frame)
             break
         if not alive:
             # The engine can flush its final seconds while running_pids polls.
@@ -754,6 +771,8 @@ def add_watch_args(p):
     p.add_argument("--wall-minutes", default=None)
     p.add_argument("--keep-going", action="store_true", help="do not stop at the first failure")
     p.add_argument("--no-stop", action="store_true", help="leave the game running after the verdict")
+    p.add_argument("--play-decided", action="store_true", help="keep playing after one ally team is left alive (default: stop, the rest is not evidence)")
+    p.add_argument("--stop-when-met", action="store_true", help="stop as soon as every expect line has been seen (forbids after that point are not observed)")
     p.add_argument("--print-report", action="store_true")
     p.add_argument("--timeline-lines", type=int, default=400)
 

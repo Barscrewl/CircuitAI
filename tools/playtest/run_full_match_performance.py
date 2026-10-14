@@ -189,7 +189,9 @@ def main():
     if a.verify_indexes:env.update(CIRCUIT_VERIFY_ECONOMY_INDEX='1',CIRCUIT_VERIFY_POINT_ROUTES='1',
                                   CIRCUIT_VERIFY_EMPTY_PACK='1',CIRCUIT_VERIFY_SEA_STATIC_INDEX='1')
     subprocess.run(cli+['launch','--dir',str(d),'--engine','recoil_2026.07.04'],env=env,check=True)
-    return subprocess.run(cli+['watch','--dir',str(d),'--role',role,'--checks',str(d/'full-match-checks.json'),
+    # --play-decided: the match ends on the engine's GameOver ([FullMatchEnd]),
+    # not on the watcher's decided-game stop, so the end marker is recorded.
+    return subprocess.run(cli+['watch','--dir',str(d),'--role',role,'--checks',str(d/'full-match-checks.json'),'--play-decided',
         '--minutes',str(a.minutes+1),'--wall-minutes','180','--keep-going']).returncode
 
 
