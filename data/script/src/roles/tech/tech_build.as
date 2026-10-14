@@ -13,6 +13,7 @@
 #include "../../manager/factory.as"
 #include "../../systems/construction/layout.as"
 #include "../../systems/construction/eco_planner.as"
+#include "../../systems/construction/reclaim_policy.as"
 
 /******************************************************************************
 
@@ -550,6 +551,7 @@ namespace TechBuild {
     void Tick()
     {
         TrackMetal();   // D-075
+        TechReclaim::Tick();   // D-290: pause a script reclaim whose refund stopped fitting the bank
         RefillAirRoles();                                  // D-108
         if (airConvId >= 0) LiftCapForRole(UnitHelpers::GetAdvEnergyConverterNameForSide(Global::AISettings::Side));   // D-108
         if (airAfusId >= 0) LiftCapForRole(UnitHelpers::GetAdvFusionNameForSide(Global::AISettings::Side));           // D-108
@@ -591,10 +593,19 @@ namespace TechBuild {
             CCircuitDef@ rushStore = TechChain::NukeRush() ? ai.GetCircuitDef(TechChain::DefFor("mstor")) : null;
             const bool rushRelease = rushStore !is null && rushStore.count - aiBuilderMgr.GetUnfinishedCount(rushStore) > 0
                 && t2 !is null && !Lifecycle::IsRetiring(t2) && TechChain::NukeConstructorsReady();
-            const bool due = (t2 !is null) && !EcoOnline()
-                && (!TechHeavyRush::ProtectLab(t2.id) || rushRelease)
-                && ((AfusUnderWay() && !funded && BankHasRoomFor(t2, 2500.0f))
-                    || (rushRelease && aiEconomyMgr.metal.current < aiEconomyMgr.metal.storage * 0.5f));
+            // D-290 (owner): the heavy-rush batch keeps its lab on every path, the
+            // nuke opening's included (it used to override ProtectLab), and a lab
+            // retires only when its refund fits the bank (TechReclaim::Fits; it
+            // replaces BankHasRoomFor and the nuke path's "bank under 50 %").
+            string fitsWhy;
+            const bool protectedLab = (t2 !is null) && TechHeavyRush::ProtectLab(t2.id);
+            if (protectedLab && rushRelease && t2.id != heavyKeptLoggedFor) {
+                heavyKeptLoggedFor = t2.id;
+                GenericHelpers::LogUtil("[TECH][Build] nuke opening keeps the advanced lab " + t2.id + ": the heavy-rush batch is pending (D-290)", 1);
+            }
+            const bool due = (t2 !is null) && !EcoOnline() && !protectedLab
+                && ((AfusUnderWay() && !funded) || rushRelease)
+                && TechReclaim::Fits(t2, fitsWhy);
             if (due && !Lifecycle::IsRetiring(t2)) {
                 if (!rushRelease) fusionRetirementFunded.set("" + t2.id, funded);
                 if (t2.task !is null && (t2.task.GetType() == int(Task::Type::FACTORY)
@@ -648,6 +659,9 @@ namespace TechBuild {
     void PullTurrets(CCircuitUnit@ target)
     {
         if (target is null || target.circuitDef is null) return;
+        // D-290: turrets join only a reclaim the gate allows now (the nuke
+        // opening re-pulls every 2 s; a paused reclaim must stay paused)
+        if (!TechReclaim::Allowed(target, "pull")) return;
         const string key = "" + target.id;
         reclaimTargets.set(key, int64(ai.frame));
         int64 last = -100000; turretsPulledAt.get(key, last);
@@ -662,6 +676,7 @@ namespace TechBuild {
     int reclaimDeferLog = -100000;
     int throwawayLabId = -1;      // D-076: the T1 lab standing when the advanced lab began; -2 = none
     int t2DueSince = -1;          // D-078: INV-007 clock
+    int heavyKeptLoggedFor = -1;  // D-290: the nuke opening's lab kept for the heavy rush, logged once per lab
     bool throwawayDecided = false;
 
     IUnitTask@ ReclaimT1Lab(CCircuitUnit@ u, float radius)
@@ -674,23 +689,13 @@ namespace TechBuild {
         CCircuitDef@ t2 = ai.GetCircuitDef(UnitHelpers::GetT2BotLabForSide(Global::AISettings::Side));
         if (t2 is null) return null;
         if (!T2Begun()) return null;   // not begun yet (D-116: a frame, not an order)
-        // D-072: reclaimed metal past the storage cap is lost, so the reclaim
-        // waits until the bank has room for the lab's metal (the advanced lab's
-        // build makes that room; it is part-built by then, as intended)
-        {
-            const float labMetal = (lab.circuitDef is null) ? 500.0f : lab.circuitDef.costM;
-            if (aiEconomyMgr.metal.current + labMetal > aiEconomyMgr.metal.storage) {
-                if (ai.frame - reclaimDeferLog > 30 * SECOND) {
-                    reclaimDeferLog = ai.frame;
-                    GenericHelpers::LogUtil("[TECH][Build] T1 lab reclaim deferred: metal " + int(aiEconomyMgr.metal.current) + " of "
-                        + int(aiEconomyMgr.metal.storage) + " leaves no room for its " + int(labMetal), 1);
-                }
-                return null;
-            }
-        }
         if (MapHelpers::SqDist(u.GetPos(ai.frame), lab.GetPos(ai.frame)) > radius * radius) return null;
+        // D-072, D-290: reclaimed metal past the storage cap is lost, so the
+        // reclaim waits until the refund fits the bank (the advanced lab's
+        // build makes that room; it is part-built by then, as intended)
+        if (!TechReclaim::Allowed(lab, "lab.t1")) return null;
         IUnitTask@ t = aiBuilderMgr.Enqueue(TaskB::Reclaim(Task::Priority::HIGH, lab, 180 * SECOND));
-        if (t !is null) PullTurrets(lab);   // D-078
+        if (t !is null) { TechReclaim::Track(lab, t, "lab.t1"); PullTurrets(lab); }   // D-078
         if (t !is null && t1LabReclaimId != lab.id) {
             t1LabReclaimId = lab.id;
             GenericHelpers::LogUtil("[TECH][Build] the advanced lab is under way: reclaiming the T1 bot lab " + lab.id
@@ -820,8 +825,10 @@ namespace TechBuild {
             // INV-024 (D-101): T1 energy is reclaimed only while a reactor stands finished
             if (!ReactorStands())
                 Invariants::Violation("INV-024", target.circuitDef.GetName(), target.circuitDef.GetName() + " " + target.id + " reclaimed with no finished fusion or advanced fusion");
+            if (!TechReclaim::Allowed(target, "energy.reclaim")) continue;   // D-290
             IUnitTask@ t = aiBuilderMgr.Enqueue(TaskB::Reclaim(Task::Priority::NORMAL, target, 120 * SECOND));
             if (t is null) continue;
+            TechReclaim::Track(target, t, "energy.reclaim");
             PullTurrets(target);   // D-078
             const string key = "" + target.id;
             if (!reclaimInFlight.exists(key)) {
@@ -845,12 +852,13 @@ namespace TechBuild {
         // refund at completion, not during reclaim. The commander can reclaim
         // it immediately; waiting for nanos delays the mex/fusion funding while
         // the advanced constructors are occupied upgrading income.
-        if (TechChain::NukeRush() && TechChain::nukeLabReleased) {
-            if (aiEconomyMgr.metal.current >= aiEconomyMgr.metal.storage * 0.9f) return null;
-        } else if (!BankHasRoomFor(lab, 2500.0f)) return null;
+        // D-290: every path, the nuke opening's included (its "bank under 90 %"
+        // ignored the 2,600 metal paid at completion), orders only when the
+        // refund fits; TechReclaim::Tick pauses it while it would overflow.
         if (!T2MayReclaim(u, lab)) return null;   // D-105: T2 constructors only as a last resort
+        if (!TechReclaim::Allowed(lab, "lab.t2")) return null;
         IUnitTask@ t = aiBuilderMgr.Enqueue(TaskB::Reclaim(Task::Priority::HIGH, lab, 180 * SECOND));
-        if (t !is null) PullTurrets(lab);
+        if (t !is null) { TechReclaim::Track(lab, t, "lab.t2"); PullTurrets(lab); }
         return t;
     }
 

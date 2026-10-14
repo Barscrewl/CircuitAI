@@ -616,6 +616,13 @@ namespace UnitHelpers {
         return GetFastAssistBots("");
     }
 
+    // D-293: combat units whose build options make native treat them as workers (BuilderManager)
+    // and never as fighters (MilitaryManager), so their build power is not real build power.
+    // leginfestor builds only itself. JSON sets "limit": 0; INV-204 checks no role orders one.
+    array<string> GetNonBuildPowerBuilders() {
+        return array<string> = {"leginfestor"};
+    }
+
     // Returns fast T2 combat bots for a given side (canonical unit IDs)
     // armada: armfast (Sprinter), cortex: corpyro (Fiend), legion: legstr (Hoplite)
     array<string> GetFastT2Bots(const string &in side) {
@@ -1186,6 +1193,21 @@ namespace UnitHelpers {
         return ids;
     }
 
+    // D-290: every energy storage structure (land, underwater, hardened), across
+    // factions. TECH never reclaims one (owner's rule).
+    array<string> GetAllEnergyStorages()
+    {
+        array<string> ids = { "armestor", "corestor", "legestor", "armuwes", "coruwes", "leguwestore",
+            "armuwadves", "coruwadves", "legadvestore" };
+        return ids;
+    }
+    bool IsEnergyStorage(const string &in name)
+    {
+        return name == "armestor" || name == "corestor" || name == "legestor"
+            || name == "armuwes" || name == "coruwes" || name == "leguwestore"
+            || name == "armuwadves" || name == "coruwadves" || name == "legadvestore";
+    }
+
     // Metal storages: underwater hardened (Arm/Cortex) and Legion hardened land store
     array<string> GetAllAdvancedMetalStorages()
     {
@@ -1233,6 +1255,13 @@ namespace UnitHelpers {
         ids.insertLast("legnanotc");
         ids.insertLast("legnanotcplat");
         return ids;
+    }
+
+    // D-289: a T1 construction turret (land or platform), no allocation
+    bool IsT1Nano(const string &in name)
+    {
+        return name == "armnanotc" || name == "armnanotcplat" || name == "cornanotc" || name == "cornanotcplat"
+            || name == "legnanotc" || name == "legnanotcplat";
     }
 
     // Side-specific T1 nano caretaker name (base variant)

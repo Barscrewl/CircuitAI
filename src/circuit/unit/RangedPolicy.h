@@ -53,6 +53,20 @@ struct RangedPolicy {
     bool supportAllies = false; // opt-in frontline screening; never waives hard hazards
     float supportLossFraction = 0.f; // explicit HP budget when joining an allied mobile engagement
     float intentGain = 0.f; // required relative endpoint improvement; zero preserves old micro
+    // D-294: per-shooter target exclusion, resolved once from JSON
+    // "avoid_categories" (BAR category names, e.g. "GROUNDSCOUT"). Zero = none.
+    // Excluded contacts are never targeted, approached or escaped from; they
+    // remain hazards in CRangedWorld::Safe/DangerSign. O(1) AND per candidate.
+    int avoidCategory = 0;
+    // D-294: 0 = off. Penalise a mobile target whose drift during projectile
+    // flight exceeds evasionLimit*(splash+target radius); see ranged::Evasive.
+    float evasionLimit = 0.f;
+    // D-295: 0 = off. With no legal shot, seek the nearest LOS contact within
+    // this radius that an allied screen is already fighting (CRangedWorld::Engaged).
+    // Individual (non-coordinated) controller only.
+    float assistRadius = 0.f;
+    float assistMargin = 150.f; // ally counts as engaged within its ground range + margin + contact radius
+    bool assistScreen = true;   // assist firing sites require an allied screen toward the target
 };
 }
 #endif

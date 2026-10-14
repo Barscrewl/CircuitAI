@@ -368,6 +368,74 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
         const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
         float waterCost, float threatWeight, float maxWaterThreat)
 {
+    return UnitTerrainRoute(def, from, to, dry, landCost, waterCost, threatWeight, maxWaterThreat, nullptr, 0.f);
+}
+
+std::vector<AIFloat3> CBattleAnalysis::GetUnitRaidRoute(const CCircuitDef* def,
+        const AIFloat3& from, const AIFloat3& to, float hazardMargin, float hazardWeight)
+{
+    // D-296: a dry land route whose cells inside observed armed-ground
+    // coverage (+margin) cost hazardWeight extra each, on top of the legacy
+    // surface threat. Same synchronous search and UNIT_ROUTE accounting as
+    // GetUnitTerrainRoute; the overlay adds O(1) per cell to its threat fill.
+    if (def == nullptr || !std::isfinite(hazardWeight) || hazardWeight < 0.f) return {};
+    performance::Scope routeScope(circuit, performance::UNIT_ROUTE);
+    EnsureGrid();
+    auto inside = [this](const AIFloat3& p) {
+        return std::isfinite(p.x) && std::isfinite(p.z) && p.x>=0 && p.z>=0
+            && p.x<gw*cellSize && p.z<gh*cellSize;
+    };
+    if (!inside(from) || !inside(to)) return {};
+    std::unique_ptr<MoveData> move(def->GetDef()->GetMoveData());
+    if (!move) return {};
+    int cls;
+    switch (move->GetSpeedModClass()) {
+        case 0: cls = L_LAND; break;  // MoveDef::Tank
+        case 1: cls = L_BOT; break;   // MoveDef::KBot
+        case 2: cls = L_HOVER; break; // MoveDef::Hover
+        default: return {};           // ships are not land raiders
+    }
+    if (!laneTerrain) CaptureLaneRequest(1, 0.f, 0.f, 1.f, 0.f, 1.f, 0);
+    if (!laneTerrain) return {};
+    EnsureGroundHazard(hazardMargin);
+    const float weight = std::min(hazardWeight, 1e6f);
+    {
+    performance::Scope threatScope(circuit, performance::UNIT_ROUTE_THREAT);
+    // Base surface threat once per ThreatMap publication (O(G) lookups), then
+    // an O(G) overlay of the current hazard per solve: a dot painted this
+    // second is in the next solve. No per-definition terrain is built.
+    const auto version = circuit->GetThreatMap()->GetPublicationVersion();
+    if (raidBaseVersion != version || raidBaseThreat.size() != height.size()) {
+        raidBaseThreat.resize(height.size());
+        for (size_t c = 0; c < raidBaseThreat.size(); ++c) raidBaseThreat[c] = SurfThreat(CellPos(c));
+        raidBaseVersion = version;
+    }
+    raidRouteThreat.resize(height.size());
+    for (size_t c = 0; c < raidRouteThreat.size(); ++c)
+        raidRouteThreat[c] = observedGroundHazard[c] > 0.f ? std::max(raidBaseThreat[c], weight) : raidBaseThreat[c];
+    }
+    std::vector<int> cells;
+    {
+    performance::Scope searchScope(circuit, performance::UNIT_ROUTE_SEARCH);
+    // threatVersion 0: penalties are rebuilt per solve (the overlay changes);
+    // the route cache is bypassed for the same reason. Water cells cost like
+    // land; the ceiling only blocks water cells, never covered land.
+    cells = lane::Solver(*laneTerrain, laneSettings).PointRoute({from.x, from.y, from.z}, {to.x, to.y, to.z},
+        cls, raidRouteThreat, 1.f, 1.f, 1.f, 1e9f, nullptr, &raidRouteWorkspace, 0);
+    }
+    if (cells.empty()) return {};
+    std::vector<AIFloat3> result;
+    result.reserve(cells.size() + 2);
+    result.emplace_back(from.x, Height(from), from.z);
+    for (int c : cells) { auto p = CellPos(c); p.y = Height(p); result.push_back(p); }
+    result.emplace_back(to.x, Height(to), to.z);
+    return result;
+}
+
+std::vector<AIFloat3> CBattleAnalysis::UnitTerrainRoute(const CCircuitDef* def,
+        const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
+        float waterCost, float threatWeight, float maxWaterThreat, const Grid* hazard, float hazardValue)
+{
     performance::Scope routeScope(circuit, performance::UNIT_ROUTE);
     EnsureGrid();
     auto inside = [this](const AIFloat3& p) {
@@ -451,6 +519,9 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
     performance::Scope threatScope(circuit, performance::UNIT_ROUTE_THREAT);
     threat.resize(height.size());
     for (size_t c=0;c<threat.size();++c) threat[c]=dry ? SurfThreat(CellPos(c)) : AmphThreat(CellPos(c));
+    if (hazard != nullptr && hazard->size() == threat.size()) {
+        for (size_t c=0;c<threat.size();++c) if ((*hazard)[c] > 0.f) threat[c]=std::max(threat[c],hazardValue);
+    }
     }
     // Exclude allied structures; the engine still resolves mobile traffic.
     auto& obstacles = unitRouteObstacles;

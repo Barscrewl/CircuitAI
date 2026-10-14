@@ -2055,6 +2055,7 @@ namespace Builder {
 	{
 		if (Global::AISettings::Role == AiRole::TECH && Global::RoleSettings::Tech::ExperimentalBuild)
 			Invariants::ConstructionAdmitted(task);
+		if (Global::AISettings::Role == AiRole::TECH) TechReclaim::Audit(task);   // D-290: every reclaim of ours, named by path
 		if (Global::AISettings::Role == AiRole::AIR && Global::RoleSettings::Air::ExperimentalBuild) AirBuild::Added(task);
 		GenericHelpers::LogUtil("[BUILDER] AiTaskAdded called", 4);
 		// Mex ownership and upgrade state are role-independent: every role needs

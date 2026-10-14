@@ -992,8 +992,9 @@ namespace TechFactories {
             ReleaseBaseFactoryGround();
         }
         if (MapHelpers::SqDist(u.GetPos(ai.frame), f.GetPos(ai.frame)) > Sq(Global::RoleSettings::Tech::ExpAssistRadius)) return null;
+        if (!TechReclaim::Allowed(f, "lab.base")) return null;   // D-290: retired now, reclaimed when the refund fits
         IUnitTask@ t = aiBuilderMgr.Enqueue(TaskB::Reclaim(Task::Priority::HIGH, f, 180 * SECOND));
-        if (t !is null) TechBuild::PullTurrets(f);
+        if (t !is null) { TechReclaim::Track(f, t, "lab.base"); TechBuild::PullTurrets(f); }
         return t;
     }
     // the base's planned factory footprints (the pair's slots, the advanced lab's)

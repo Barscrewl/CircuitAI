@@ -33,6 +33,7 @@
 
 #include "AIFloat3.h"
 #include "AISCommands.h"
+#include "Game.h"
 #include "Feature.h"
 #include "Log.h"
 
@@ -539,6 +540,24 @@ void CFactoryManager::ReadConfig()
             boolean("support_allies", policy.supportAllies);
             number("support_loss_fraction", policy.supportLossFraction, 0.f, .9f);
             number("intent_gain", policy.intentGain, 0.f, .5f);
+            // D-294: resolve category names once at load. A malformed value or
+            // a non-empty name the engine does not know disables the policy
+            // with the standard diagnostic rather than silently targeting all.
+            const auto& avoid = settings["avoid_categories"];
+            if (!avoid.isNull()) {
+                if (!avoid.isString()) valid = false;
+                else if (!avoid.asString().empty()) {
+                    policy.avoidCategory = circuit->GetGame()->GetCategoriesFlag(avoid.asString().c_str());
+                    if (policy.avoidCategory == 0) valid = false;
+                }
+            }
+            number("evasion_limit", policy.evasionLimit, 0.f, 10.f);
+            // D-295: assist is an individual-controller lever; a coordinated
+            // cohort already has support_allies. Reject the combination.
+            number("assist_radius", policy.assistRadius, 0.f, 6000.f);
+            number("assist_margin", policy.assistMargin, 0.f, 600.f);
+            boolean("assist_screen", policy.assistScreen);
+            if (policy.assistRadius > 0.f && policy.coordinated) valid = false;
             const auto& formation = settings["formation"];
             if (!formation.isNull()) {
                 if (!formation.isObject() || !formation["family"].isString()

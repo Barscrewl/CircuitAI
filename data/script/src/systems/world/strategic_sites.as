@@ -8,6 +8,9 @@ namespace StrategicSites {
     array<Beach@> beaches;
     array<int> land;
     bool mapped = false;
+    // D-287: assault (use == 1) beach fronts of the last survey. Read-only for
+    // consumers (TechHeavyChoice); counted once per survey, O(beaches).
+    int assaultBeaches = 0;
 
     int LandAt(const AIFloat3& in p) {
         const int x = int(p.x) / 64, z = int(p.z) / 64;
@@ -155,9 +158,11 @@ namespace StrategicSites {
             }
             if (b.normals.length()*64>=uint(AiMax(64,aiSetupMgr.ConfigInt("lanes/beach_min_length",384)))) beaches.insertLast(b);
         }
+        assaultBeaches = 0;
+        for (uint i=0;i<beaches.length();++i) if (beaches[i].use==1) ++assaultBeaches;
     }
     void Analyse(const array<AIFloat3>& in ours, const array<AIFloat3>& in theirs) {
         Islands(ours,theirs); Geothermal(ours,theirs); Beaches(ours,theirs);
-        GenericHelpers::LogUtil("[Strategic] survey: " + geos.length() + " geos, " + islands.length() + " air-first islands, " + beaches.length() + " beach fronts; advisory only",1);
+        GenericHelpers::LogUtil("[Strategic] survey: " + geos.length() + " geos, " + islands.length() + " air-first islands, " + beaches.length() + " beach fronts (" + assaultBeaches + " assault); advisory only",1);
     }
 }

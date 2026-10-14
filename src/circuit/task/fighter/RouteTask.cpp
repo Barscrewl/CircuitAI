@@ -174,7 +174,7 @@ void CRouteTask::Start(CCircuitUnit* unit)
 {
     if (holdPosition) unit->TrySetMoveState(CCircuitDef::MoveType::HOLD_POS);
 	IssueRoute(unit, 0);
-    if (seaTarget >= 0) IssuePriorityTarget(unit, seaTarget, navalTarget);
+    if (seaTarget >= 0) IssuePriorityTarget(unit, seaTarget, navalTarget, landTarget);
 }
 
 void CRouteTask::Update()
@@ -278,14 +278,16 @@ void CRouteTask::SetRepairThreshold(float value)
 bool CRouteTask::SetSeaTarget(int id) { return SetPriorityTarget(id, false); }
 bool CRouteTask::SetNavalTarget(int id) { return SetPriorityTarget(id, true); }
 
-void CRouteTask::IssuePriorityTarget(CCircuitUnit* unit, int id, bool naval)
+void CRouteTask::IssuePriorityTarget(CCircuitUnit* unit, int id, bool naval, bool land)
 {
     auto* circuit = manager->GetCircuit();
     const auto* def = unit->GetCircuitDef();
     if (id >= 0) {
         const auto* enemy = circuit->GetEnemyInfo(id);
         if (enemy == nullptr || !enemy->IsInRadarOrLOS()) return;
-        if (naval) {
+        if (land) {
+            if (!(def->HasSurfToLand() || def->HasSubToLand())) return;
+        } else if (naval) {
             auto* targetDef = enemy->GetCircuitDef();
             const auto& p = enemy->GetPos();
             const bool submerged = targetDef != nullptr && targetDef->IsInWater(circuit->GetMap()->GetElevationAt(p.x,p.z),p.y);
@@ -319,16 +321,43 @@ bool CRouteTask::SetPriorityTarget(int id, bool naval)
         if (data.IsIgnore() && (!enemy->GetCircuitDef()->IsIgnore()
             || enemy->GetUnit()->GetRulesParamFloat("ignoredByAI", 0.f) > 0.f)) return false;
     }
-    if (id == seaTarget && naval == navalTarget) return true;
+    if (id == seaTarget && naval == navalTarget && !landTarget) return true;
     // O(members) only on intent changes; new assignees receive the current
     // priority in Start. Cancel the old ID so out-of-range lists cannot grow.
     // Movement remains the route/formation, never an engine ATTACK chase.
     for (auto* unit : units) {
-        if (seaTarget >= 0) IssuePriorityTarget(unit, -1, navalTarget);
+        if (seaTarget >= 0) IssuePriorityTarget(unit, -1, navalTarget, landTarget);
         if (id >= 0) IssuePriorityTarget(unit, id, naval);
     }
     seaTarget = id;
     navalTarget = naval;
+    landTarget = false;
+    return true;
+}
+
+bool CRouteTask::SetLandTarget(int id)
+{
+    // D-296: same validation and ID-specific cancel contract as the SEA path,
+    // for a ground contact. O(members) only when the intent changes.
+    auto* circuit = manager->GetCircuit();
+    if (id >= 0) {
+        const auto* enemy = circuit->GetEnemyInfo(id);
+        if (enemy == nullptr || !enemy->IsInRadarOrLOS() || enemy->GetCircuitDef() == nullptr
+            || enemy->GetCircuitDef()->IsAbleToFly()) return false;
+        const auto data = enemy->GetData()->GetData();
+        if (data.losStatus & (SEnemyData::LosMask::HIDDEN | SEnemyData::LosMask::NEUTRAL
+            | SEnemyData::LosMask::DYING | SEnemyData::LosMask::DEAD)) return false;
+        if (data.IsIgnore() && (!enemy->GetCircuitDef()->IsIgnore()
+            || enemy->GetUnit()->GetRulesParamFloat("ignoredByAI", 0.f) > 0.f)) return false;
+    }
+    if (id == seaTarget && (id < 0 || landTarget)) return true;
+    for (auto* unit : units) {
+        if (seaTarget >= 0) IssuePriorityTarget(unit, -1, navalTarget, landTarget);
+        if (id >= 0) IssuePriorityTarget(unit, id, false, true);
+    }
+    seaTarget = id;
+    navalTarget = false;
+    landTarget = id >= 0;
     return true;
 }
 
