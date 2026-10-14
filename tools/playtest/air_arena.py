@@ -17,7 +17,7 @@ import storage
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 DLL = ROOT.parent / 'bar-RecoilEngine/build-amd64-windows/install/AI/Skirmish/BARb/stable/SkirmishAI.dll'
-GAME = 'Beyond All Reason test-31479-433a460'
+GAME = None  # the last lobby script's archive, resolved by playtest.py; a pinned name goes stale when BAR updates
 ENGINE = 'recoil_2026.07.04'
 ROSTERS = {
     'armada': {'t1': 'armthund', 't2': 'armpnix', 'fighter1': 'armfig', 'fighter2': 'armhawk', 'gunship': 'armkam', 'torpedo': 'armlance', 'scout': 'armpeep'},
@@ -198,7 +198,7 @@ def prepare(args):
     starts = base / 'arena-starts.as'
     starts.write_text('\n'.join(f'StartSpot(AIFloat3({x},0,{z}), AiRole::AIR, false),' for x, z, _ in homes))
     cmd = [sys.executable, str(HERE / 'playtest.py'), 'stage', '--dir', str(base), '--dll', str(args.dll),
-           '--map', args.map, '--map-file', str(starts), '--game', args.game, '--engine', args.engine,
+           '--map', args.map, '--map-file', str(starts), '--engine', args.engine,
            '--role', 'AIR', '--roles', 'all', '--side', args.side, '--ally-spots', '1', '--bonus', '0',
            '--speed', str(args.speed), '--minutes', str(args.minutes), '--shots', '', '--width', '1280', '--height', '720', '--lean-render',
            '--ai-option', 'profile=' + args.profile, '--ai-option', 'random_seed=' + str(args.seed),
@@ -208,6 +208,8 @@ def prepare(args):
            '--extra-widget', str(HERE / 'widgets/air_command_watch.lua')]
     if args.data:
         cmd += ['--data', str(args.data)]
+    if args.game:
+        cmd += ['--game', args.game]
     if case.get('factory_production', False):
         cmd += ['--modoption', 'startmetal=1000000', '--modoption', 'startmetalstorage=1000000']
     subprocess.run(cmd, check=True)
@@ -342,9 +344,9 @@ def main():
                     folder = a.dir / f'{case}-{side}-{seed}'
                     command = [sys.executable, str(Path(__file__).resolve()), 'run', '--dir', str(folder),
                                '--case', case, '--side', side, '--defender', a.defender, '--seed', seed,
-                               '--dll', str(a.dll), '--map', a.map, '--game', a.game, '--engine', a.engine,
+                               '--dll', str(a.dll), '--map', a.map, '--engine', a.engine,
                                '--minutes', str(a.minutes), '--speed', str(a.speed), '--wall-minutes', str(a.wall_minutes)]
-                    for key in ('visibility', 'map_file', 'unit', 'fighters', 'checks', 'data', 'profile'):
+                    for key in ('visibility', 'map_file', 'unit', 'fighters', 'checks', 'data', 'profile', 'game'):
                         value = getattr(a, key)
                         if value is not None:
                             command += ['--'+key.replace('_','-'), str(value)]
