@@ -53,7 +53,7 @@ private:
     // current assisted contact id (log once per change), and the INV-206
     // one-decision follow-up of an accepted assist Move.
     std::vector<int> assistNearby;
-    int assistTarget=-1, assistCheckFrame=-1;
+    int assistTarget=-1, assistCheckFrame=-1, assistIdleStreak=0;
     // Monotonic count of rejected worker paths and engine move failures;
     // unlike `failures` it is never reset by progress (INV-206 baseline).
     unsigned rejections=0, assistCheckRejections=0;
