@@ -5,7 +5,7 @@
     "legscout"
   ],
   "checks": "scout-backline-raid",
-  "description": "D-296: six AI-owned legscout (one kept as a native recon scout) against a static front of four corllt and six holding corthud at z=7200-7400, with an economy backline (cormex, corwin, cornanotc) behind it near z=9300. Raiders must route around the armed front and kill economy structures, not fight the front. The radar at z=4300 (range 3500) covers the front line at z=7200-7400 so the turrets are radar dots before any raider is in their range.",
+  "description": "D-296: six AI-owned legscout (one kept as a native recon scout) against a static front of four corllt and six holding corthud at z=7200-7400, with an economy backline (cormex, corwin, cornanotc) behind it near z=9300. Raiders must route around the armed front and kill economy structures, not fight the front. The advanced radar legarad at z=4300 (range 3500) covers the front line at z=7200-7400 so the turrets are radar dots before any raider is in their range.",
   "map": "All That Glitters v2.2.3",
   "map_key": "glitters",
   "starts": [
@@ -38,7 +38,7 @@
   ],
   "groups": [
     {
-      "unit": "legrad",
+      "unit": "legarad",
       "count": 1,
       "team": 0,
       "position": [
