@@ -38,6 +38,8 @@ namespace ScoutRaid {
         int hazardReplans = 0;
         int routeFailures = 0;      // consecutive failed solves: exponential replan backoff
         int targetLostFrame = -1;   // first tick the (static) target was not observed; -1 = observed
+        bool insideCoverage = false; // log once on entering coverage and once when clear again
+        int lastDirectLog = -100000; // `detour`/`blocked` lines at most once per 30 s per raider
         int nextTargetScan = 0;     // next tick a target-less raider may replan for a new contact
         bool queued = false;
     }
@@ -205,8 +207,11 @@ namespace ScoutRaid {
     // 2400 elmos around the first covered sample is tried; otherwise the route
     // stops at the last clear sample and the raider waits there (the owner's
     // rule is "avoid all enemies"); the backoff replan retries later.
-    array<AIFloat3>@ DirectRoute(int unitId, const AIFloat3& in from, const AIFloat3& in goal, float margin)
+    array<AIFloat3>@ DirectRoute(Raider@ r, const AIFloat3& in from, const AIFloat3& in goal, float margin)
     {
+        const int unitId = r.id;
+        // Replans recur every 4-60 s per raider; one line per 30 s is enough.
+        const bool say = ai.frame - r.lastDirectLog >= 30 * SECOND;
         array<AIFloat3> route = {from};
         if (SampleLeg(from, goal, margin, route)) return route;
         const AIFloat3 clear = route[route.length() - 1];
@@ -224,13 +229,19 @@ namespace ScoutRaid {
                 array<AIFloat3> legs;
                 if (!SampleLeg(clear, d, margin, legs) || !SampleLeg(d, goal, margin, legs)) continue;
                 for (uint i = 0; i < legs.length(); ++i) route.insertLast(legs[i]);
-                GenericHelpers::LogUtil("[ScoutRaid] detour unit=" + unitId + " around (" + int(clear.x) + "," + int(clear.z)
-                    + ") via (" + int(d.x) + "," + int(d.z) + ")", 1);
+                if (say) {
+                    r.lastDirectLog = ai.frame;
+                    GenericHelpers::LogUtil("[ScoutRaid] detour unit=" + unitId + " around (" + int(clear.x) + "," + int(clear.z)
+                        + ") via (" + int(d.x) + "," + int(d.z) + ")", 1);
+                }
                 return route;
             }
         }
-        GenericHelpers::LogUtil("[ScoutRaid] blocked unit=" + unitId + " waits at (" + int(clear.x) + "," + int(clear.z)
-            + ") coverage ahead, no detour", 1);
+        if (say) {
+            r.lastDirectLog = ai.frame;
+            GenericHelpers::LogUtil("[ScoutRaid] blocked unit=" + unitId + " waits at (" + int(clear.x) + "," + int(clear.z)
+                + ") coverage ahead, no detour", 1);
+        }
         return route;
     }
 
@@ -317,11 +328,11 @@ namespace ScoutRaid {
             // the cooldown, from a new position) retries the hazard route.
             // A targeted contact that stays unreachable is excluded.
             if (target >= 0) r.excluded = target;
-            GenericHelpers::LogUtil("[ScoutRaid] no route unit=" + r.id + " target=" + target
+            if (ai.frame - r.lastDirectLog >= 30 * SECOND) GenericHelpers::LogUtil("[ScoutRaid] no route unit=" + r.id + " target=" + target
                 + " from=(" + int(pos.x) + "," + int(pos.z) + ") pass=" + LandPassable(pos)
                 + " goal=(" + int(goal.x) + "," + int(goal.z) + ") pass=" + LandPassable(goal)
                 + " hazard=" + aiBattle.GroundHazard(goal, Global::ScoutRaid::HazardMargin) + "; direct move", 1);
-            @path = DirectRoute(r.id, pos, goal, Global::ScoutRaid::HazardMargin);
+            @path = DirectRoute(r, pos, goal, Global::ScoutRaid::HazardMargin);
             direct = true;
         }
         // Backoff: 4, 8, 16, 32, 60 s after consecutive solves that could not
@@ -520,7 +531,8 @@ namespace ScoutRaid {
             // clear waypoint and replan at once. Round 14: a Rover sent west
             // around the line was walked south by the engine's own path into
             // an LLT's range.
-            if (aiBattle.GroundHazard(pos, margin) > 0.0f && ai.frame - r.lastMove < 2 * SECOND) {
+            const bool covered = aiBattle.GroundHazard(pos, margin) > 0.0f;
+            if (covered && ai.frame - r.lastMove < 2 * SECOND) {
                 AIFloat3 back = pos;
                 for (int k = int(r.cursor) - 1; k >= 0; --k)
                     if (aiBattle.GroundHazard(r.route[k], margin) <= 0.0f) { back = r.route[k]; break; }
@@ -529,11 +541,16 @@ namespace ScoutRaid {
                 r.task.SetRoute(escape);
                 r.route.resize(0); r.cursor = 0;
                 r.nextReplan = AiMin(r.nextReplan, ai.frame + SECOND);
-                if (!r.queued) {
+                // One line per episode (round 16: 758 lines in 11 min at one per tick).
+                if (!r.insideCoverage) {
+                    r.insideCoverage = true;
                     GenericHelpers::LogUtil("[ScoutRaid] inside coverage unit=" + r.id + " at (" + int(pos.x) + "," + int(pos.z)
                         + ") back to (" + int(back.x) + "," + int(back.z) + ")", 1);
-                    Queue(r);
                 }
+                if (!r.queued) Queue(r);
+            } else if (!covered && r.insideCoverage) {
+                r.insideCoverage = false;
+                GenericHelpers::LogUtil("[ScoutRaid] clear of coverage unit=" + r.id + " at (" + int(pos.x) + "," + int(pos.z) + ")", 1);
             }
             const bool idleAtEnd = atEnd && r.target < 0;
             const bool wantTarget = r.target < 0 && anyRaidTarget && ai.frame >= r.nextTargetScan;
