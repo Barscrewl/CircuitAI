@@ -544,6 +544,7 @@ void CBattleAnalysis::Update(int frame)
 	EnsureGrid();
 	airContacts.clear();
     groundContacts.clear();
+    radarDots.clear();
     navalContacts.clear();
     observedWaterWeapons.assign(height.size(), 0.f);
 	const float dt = float(frame - lastDecay) / FRAMES_PER_SEC;
@@ -560,6 +561,13 @@ void CBattleAnalysis::Update(int frame)
 		const CEnemyUnit* e = kv.second;
 		const CCircuitDef* d = e->GetCircuitDef();
 		if (d == nullptr) {
+            // D-296: an unidentified dot is still an enemy to avoid. Same
+            // visibility rules as identified contacts; land only.
+            if (e->IsInRadarOrLOS() && !e->IsIgnore()
+                && !(e->GetData().losStatus & (SEnemyData::LosMask::HIDDEN | SEnemyData::LosMask::NEUTRAL
+                    | SEnemyData::LosMask::DYING | SEnemyData::LosMask::DEAD))
+                && std::isfinite(e->GetPos().x) && std::isfinite(e->GetPos().z) && Height(e->GetPos()) >= 0.f)
+                radarDots.push_back(e->GetPos());
 			continue;
 		}
 		const float m = d->GetCostM();
@@ -728,6 +736,17 @@ void CBattleAnalysis::EnsureGroundHazard(float margin)
         ranged::PaintDisc(observedGroundHazard, gw, gh, float(cellSize), c.pos.x, c.pos.z,
             c.hazardRange + margin + float(cellSize), 1.f);
     }
+    // Unidentified dots (played: raiders ran into an LLT line that was only a
+    // dot until inside its range). Conservative radius; identification later
+    // replaces it with the real range. O(D * (r+margin)^2 / cell^2).
+    for (const auto& p : radarDots)
+        ranged::PaintDisc(observedGroundHazard, gw, gh, float(cellSize), p.x, p.z,
+            unknownHazardRange + margin + float(cellSize), 1.f);
+}
+void CBattleAnalysis::SetUnknownHazardRange(float range)
+{
+    const float value = std::isfinite(range) ? std::clamp(range, 0.f, 2048.f) : 700.f;
+    if (value != unknownHazardRange) { unknownHazardRange = value; groundHazardPublication = ~0u; }
 }
 float CBattleAnalysis::GroundHazard(const AIFloat3& pos, float margin)
 {

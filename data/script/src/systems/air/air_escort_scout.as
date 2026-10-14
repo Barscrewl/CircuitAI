@@ -15,7 +15,7 @@
 // hands each its route.
 //
 // Cost: Plan is once per wiped offensive operation (minutes apart per AI):
-// one O(n log n) sort plus at most 5 candidates x 2 AirThreatAlong corridor
+// one O(n log n) sort plus at most 9 candidates x 2 AirThreatAlong corridor
 // queries per fighter (n <= EscortScoutMax) and an O(n^2) spacing check on the
 // chosen points. Tick is O(active + pending) per policy tick and returns at
 // once when both are empty. Commands: one route leg per scout at Start and one
@@ -29,18 +29,31 @@ namespace AirEscortScout {
     dictionary startedAt; // fighter id -> int64 frame dispatched
     dictionary arrivedAt; // fighter id -> int64 frame first seen at its point
     array<AIFloat3> points;
-    const array<float> nudge = {0.0f, 0.5f, -0.5f, 1.0f, -1.0f}; // candidate offsets in fan steps
+    const array<float> nudge = {0.0f, 0.5f, -0.5f, 1.0f, -1.0f, 1.5f, -1.5f, 2.0f, -2.0f}; // candidate offsets in fan steps
 
     AIFloat3 Rotate(const AIFloat3 &in d, float a)
     {
         return AIFloat3(d.x * cos(a) - d.z * sin(a), 0.0f, d.x * sin(a) + d.z * cos(a));
     }
+    // A candidate must lie inside the map with the screen margin; clamping an
+    // off-map point onto the edge stacks the whole fan on one line.
+    bool Inside(const AIFloat3 &in p)
+    {
+        return p.x >= 128.0f && p.z >= 128.0f && p.x <= float(AiTerrainWidth()) - 128.0f && p.z <= float(AiTerrainHeight()) - 128.0f;
+    }
     // Primary enemy base: the start nearest the operation's aim; further bases
-    // follow by distance from it (deterministic for a given start list).
+    // follow by distance from it (deterministic for a given start list). Script
+    // starts of every foreign ally team count as enemy (SetupManager), which in
+    // a fixture includes spectator and gaia placeholders at the map corner, so
+    // a start within the screen margin of the edge is dropped unless it is all
+    // there is.
     array<AIFloat3>@ Bases(const AIFloat3 &in aim)
     {
-        array<AIFloat3> starts = Lanes::ScriptStarts(true);
-        if (starts.length() == 0) starts.insertLast(AirScreen::Enemy(Global::Map::StartPos));
+        array<AIFloat3> all = Lanes::ScriptStarts(true);
+        if (all.length() == 0) all.insertLast(AirScreen::Enemy(Global::Map::StartPos));
+        array<AIFloat3> starts;
+        for (uint i = 0; i < all.length(); ++i) if (Inside(all[i])) starts.insertLast(all[i]);
+        if (starts.length() == 0) starts = all;
         uint first = 0;
         for (uint i = 1; i < starts.length(); ++i)
             if (MapHelpers::SqDist(aim, starts[i]) < MapHelpers::SqDist(aim, starts[first])) first = i;
@@ -55,12 +68,14 @@ namespace AirEscortScout {
         }
         return result;
     }
-    // Fighters start inside the umbrella that killed the bombers, so every leg
-    // crosses it. Judge only the outbound leg beyond EscortScoutExitDistance and
-    // the destination itself, so the comparison between candidates stays
-    // discriminating. AirThreatAlong reads the threat map and visible SurfToAir
-    // weapons; hidden AA is unseen, so this is advisory, not a safety guarantee.
-    float Exposure(const AIFloat3 &in from, const AIFloat3 &in p)
+    // Leg exposure. aiBattle.AirThreatAlong returns the highest threat-map cell
+    // the padded corridor touches (threat-grid units, the scale of
+    // NavalSupportMaxThreat and StrikeMaxThreat), and only below 1.0 falls back
+    // to "a visible SurfToAir range intersects" (returns 1.0). Fighters start
+    // inside the umbrella that killed the bombers, so every leg crosses it;
+    // judge only the part beyond EscortScoutExitDistance. Hidden AA is unseen:
+    // advisory, not a safety guarantee.
+    float LegRisk(const AIFloat3 &in from, const AIFloat3 &in p)
     {
         const float sq = MapHelpers::SqDist(from, p);
         const float exit = Global::RoleSettings::Air::EscortScoutExitDistance;
@@ -69,8 +84,13 @@ namespace AirEscortScout {
             const float f = exit / sqrt(sq);
             q = AIFloat3(from.x + (p.x - from.x) * f, 0.0f, from.z + (p.z - from.z) * f);
         }
-        const float pad = Global::RoleSettings::Air::EscortScoutThreatPadding;
-        return AiMax(aiBattle.AirThreatAlong(q, p, pad), aiBattle.AirThreatAlong(p, p, pad));
+        return aiBattle.AirThreatAlong(q, p, Global::RoleSettings::Air::EscortScoutThreatPadding);
+    }
+    // Destination exposure: the threat cell at the point, or 1.0 when a visible
+    // AA range covers it. A scout never parks under known AA.
+    float PointRisk(const AIFloat3 &in p)
+    {
+        return aiBattle.AirThreatAlong(p, p, Global::RoleSettings::Air::EscortScoutThreatPadding);
     }
     void Plan(CAirWaveTask@ wave, array<int>@ fighters, int op)
     {
@@ -84,6 +104,7 @@ namespace AirEscortScout {
         const float half = Global::RoleSettings::Air::EscortScoutFanDegrees * 0.5f * 0.0174533f;
         const float step = perBase > 1 ? 2.0f * half / float(perBase - 1) : 0.0f;
         array<AIFloat3> chosen;
+        int skippedAa = 0, skippedLeg = 0, skippedSite = 0;
         IUnitTask@ waveTask = cast<IUnitTask>(wave);
         for (int i = 0; i < cap; ++i) {
             CCircuitUnit@ u = ai.GetTeamUnit(fighters[i]);
@@ -101,24 +122,35 @@ namespace AirEscortScout {
             const float radius = Global::RoleSettings::Air::EscortScoutDepth
                 + float(layer) * Global::RoleSettings::Air::EscortScoutLayerStep;
             AIFloat3 best;
-            float bestRisk = 1.0e30f;
-            bool found = false;
+            float bestRisk = 1.0e30f, bestLeg = 0.0f, bestPoint = 0.0f;
+            bool found = false, aaOnly = false;
+            // Nudges up to two fan steps either way let a base near the map
+            // edge, whose rear is off the map, still use its in-map flanks.
             for (uint k = 0; k < nudge.length(); ++k) {
                 const AIFloat3 d = Rotate(axis, -half + step * float(slot) + nudge[k] * step);
-                const AIFloat3 p = AirScreen::Clamp(AIFloat3(base.x + d.x * radius, 0.0f, base.z + d.z * radius));
-                bool crowded = false; // map-edge clamping can collapse a fan onto one point
+                const AIFloat3 p(base.x + d.x * radius, 0.0f, base.z + d.z * radius);
+                if (!Inside(p)) continue;
+                bool crowded = false;
                 for (uint c = 0; c < chosen.length() && !crowded; ++c)
                     crowded = MapHelpers::SqDist(p, chosen[c]) < minSp * minSp;
                 if (crowded) continue;
-                const float risk = Exposure(from, p);
-                if (!AirMath::Valid(risk)) continue;
-                if (risk < bestRisk) { bestRisk = risk; best = p; found = true; }
+                const float point = PointRisk(p);
+                const float leg = LegRisk(from, p);
+                if (!AirMath::Valid(point) || !AirMath::Valid(leg)) continue;
+                if (point >= Global::RoleSettings::Air::EscortScoutMaxThreat) { aaOnly = true; continue; }
+                const float risk = leg + point;
+                if (risk < bestRisk) { bestRisk = risk; bestLeg = leg; bestPoint = point; best = p; found = true; }
                 if (risk <= Global::RoleSettings::Air::EscortScoutSafeThreat) break;
             }
-            // >= 1.0: a visible AA weapon's range intersects the leg or the point.
-            if (!found || bestRisk >= Global::RoleSettings::Air::EscortScoutMaxThreat) {
+            if (found && bestLeg >= Global::RoleSettings::Air::EscortScoutMaxLegThreat) {
+                ++skippedLeg;
+                GenericHelpers::LogUtil("[AIR][EscortScout] skip fighter=" + fighters[i] + " op=" + op + " reason=leg risk=" + bestLeg, 1);
+                continue;
+            }
+            if (!found) {
+                if (aaOnly) ++skippedAa; else ++skippedSite;
                 GenericHelpers::LogUtil("[AIR][EscortScout] skip fighter=" + fighters[i] + " op=" + op
-                    + " reason=" + (found ? "aa risk=" + bestRisk : "no spaced site"), 1);
+                    + " reason=" + (aaOnly ? "aa" : "no spaced site"), 1);
                 continue; // idles into AirProduction::HomeTask as before
             }
             chosen.insertLast(best);
@@ -127,15 +159,18 @@ namespace AirEscortScout {
             pendingAt.set(key, int64(ai.frame));
             points.insertLast(best);
             GenericHelpers::LogUtil("[AIR][EscortScout] fighter=" + fighters[i] + " def=" + u.circuitDef.GetName()
-                + " op=" + op + " point=" + int(best.x) + "," + int(best.z) + " slot=" + i + "/" + cap + " risk=" + bestRisk, 1);
+                + " op=" + op + " point=" + int(best.x) + "," + int(best.z) + " slot=" + i + "/" + cap
+                + " leg=" + bestLeg + " point=" + bestPoint, 1);
         }
         // INV-202 spacing, O(n^2) with n <= EscortScoutMax, once per wipe.
         for (uint a = 0; a < chosen.length(); ++a)
             for (uint b = a + 1; b < chosen.length(); ++b)
                 if (MapHelpers::SqDist(chosen[a], chosen[b]) < minSp * minSp)
                     Invariants::Violation("INV-202", "op " + op, "escort scout points of one wipe are closer than EscortScoutMinSpacing");
-        if (int(fighters.length()) > cap)
-            GenericHelpers::LogUtil("[AIR][EscortScout] overflow op=" + op + " homeward=" + (int(fighters.length()) - cap), 1);
+        GenericHelpers::LogUtil("[AIR][EscortScout] plan op=" + op + " anchor=" + int(bases[0].x) + "," + int(bases[0].z)
+            + " bases=" + bases.length() + " fighters=" + fighters.length() + " points=" + chosen.length()
+            + " rejected=" + (skippedAa + skippedLeg + skippedSite) + " aa=" + skippedAa + " leg=" + skippedLeg
+            + " site=" + skippedSite + " homeward=" + (int(fighters.length()) - cap), 1);
     }
     // Air_MilitaryAiMakeTask hook, after AirBaseResponse (home emergencies keep
     // priority) and before AirRecon/HomeTask. Returns null for every fighter

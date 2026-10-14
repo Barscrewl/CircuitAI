@@ -319,10 +319,20 @@ namespace AirEcoLayout {
                 || t.GetBuildType() != int(Task::BuildType::ENERGY) || !AirBuild::IsReactor(t.buildDef)) continue;
             if (fallbackTasks.findByRef(AirBuild::projects[i]) >= 0) continue;
             const int kind = IsFusion(t.buildDef) ? KindFusion : KindAfus;
+            // A pin is served on the order's first assignment (IBuilderTask
+            // keeps pinnedReservation apart from reservationId until then), so
+            // an order enqueued since the last audit still reads -1. Match it
+            // by its build position, as INV-078 does for wind pins; a genuine
+            // field order is at no module's reactor position.
             const int slot = AiTaskReservationId(AirBuild::projects[i]);
+            const AIFloat3 at = t.GetBuildPos();
             bool pinned = false;
-            for (uint m = 0; m < modules.length() && !pinned; ++m)
-                pinned = modules[m].kind == kind && modules[m].slots.length() > 0 && modules[m].slots[0] == slot;
+            for (uint m = 0; m < modules.length() && !pinned; ++m) {
+                if (modules[m].kind != kind || modules[m].slots.length() == 0) continue;
+                const int reactor = modules[m].slots[0];
+                pinned = reactor == slot || (slot < 0 && aiTerrainMgr.GetReservationState(reactor) >= 0
+                    && MapHelpers::SqDist(at, aiTerrainMgr.GetReservationPos(reactor)) < 1.0f);
+            }
             if (!pinned) Invariants::Violation("INV-203", t.buildDef.GetName() + " slot " + slot,
                 "AIR reactor order is not pinned to a " + KindName(kind) + " module reactor slot");
         }

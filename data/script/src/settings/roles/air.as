@@ -379,8 +379,13 @@ namespace Air {
             float EscortScoutMinSpacing = 320.0f;  // scout points of one wipe are at least this far apart
             float EscortScoutExitDistance = 700.0f; // ignore the first part of the leg (inside the umbrella that killed the bombers)
             float EscortScoutThreatPadding = 128.0f;
-            float EscortScoutSafeThreat = 0.25f;   // first candidate at or below this is taken
-            float EscortScoutMaxThreat = 1.0f;     // at or above: a visible AA range covers the leg/point; fighter goes home
+            // Threat-grid units (aiBattle.AirThreatAlong: the highest threat cell touched,
+            // or 1.0 when only a visible AA range intersects), the scale of
+            // NavalSupportMaxThreat and StrikeMaxThreat. The destination must be clear
+            // of known AA; the leg may cross the base the fighters are already over.
+            float EscortScoutSafeThreat = 0.0f;     // first candidate at or below leg+point risk is taken
+            float EscortScoutMaxThreat = 1.0f;      // destination at or above: under known AA; fighter goes home
+            float EscortScoutMaxLegThreat = 1500.0f; // leg beyond the exit distance at or above: fighter goes home
             int EscortScoutPendingSeconds = 10;    // planned point expires if the fighter does not idle in time
             int EscortScoutLingerSeconds = 4;      // seconds at the point before returning
             int EscortScoutTimeoutSeconds = 75;
