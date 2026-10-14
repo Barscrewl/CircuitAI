@@ -122,6 +122,10 @@ void CRangedWorld::Refresh()
             // but never invented precision identities, HP or threat estimates.
             c.pos.y=circuit->GetTerrainManager()->GetAreaData()->GetElevationAt(c.pos.x,c.pos.z);
             c.mobile=true;
+            // D-294: the engine reports a radar dot's velocity (UpdateInRadarData);
+            // a shooter uses it to tell a slow or stationary dot (blind shot
+            // allowed) from one too fast for its shell. Zero until sampled.
+            c.velocity=e->GetVel()*30.f;
             enemies.Add(P(c.pos),int(contacts.size())); objectives.push_back(int(contacts.size()));
             contacts.push_back(c); continue;
         }

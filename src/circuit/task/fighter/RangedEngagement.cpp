@@ -75,11 +75,12 @@ void CRangedEngagement::SelectTarget(CCircuitUnit* unit,int selected,int weapon,
     }
     const int avoid=unit->GetCircuitDef()->GetRangedPolicy().avoidCategory;
     if(selected>=0 && avoid!=0) {
-        // INV-207: every candidate loop filters avoided categories before this
-        // call. One enemy lookup per changed intent (never per candidate).
+        // INV-207: every candidate loop filters identified avoided categories
+        // before this call; a blind shot at an unidentified slow dot is legal
+        // and never flagged. One enemy lookup per changed intent.
         auto* enemy=ai->GetEnemyManager()->GetEnemyUnit(selected);
         if(enemy && enemy->GetCircuitDef() && (enemy->GetCircuitDef()->GetCategory()&avoid)) {
-            ai->LOG("[INVARIANT] INV-207 ranged unit %d selected avoided-category target %d (%s); refused",
+            ai->LOG("[INVARIANT] INV-207 ranged unit %d selected identified avoided-category target %d (%s); refused",
                 id,selected,enemy->GetCircuitDef()->GetDef()->GetName());
             selected=-1; weapon=-1; damage=0.f;
             if(target<0) return;
@@ -641,10 +642,11 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         const auto& c=contacts[i];
         if(!c.los && !policy.allowRadar) continue;
         if((c.mobile && !policy.allowMobile)||(!c.mobile && !policy.allowStatic)) continue;
-        // D-294: an avoided category cannot be verified on an unidentified radar
-        // dot, so a shooter that avoids anything takes no blind shot (played:
-        // Fatboys SET_TARGETed Tick radar dots before vision identified them).
-        if(policy.avoidCategory!=0 && (!c.def || (c.def->GetCategory()&policy.avoidCategory))) continue; // O(1)
+        // D-294 (owner correction): artillery and radar are a pairing, so a
+        // blind shot at a slow or stationary dot stays valid. Identified avoided
+        // categories are excluded here; an unidentified dot too fast for the
+        // shell is excluded below by the same evasion arithmetic.
+        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) continue; // O(1)
         for(size_t wi=0;wi<caps.weapons.size();++wi) {
             const auto& w=caps.weapons[wi];
             if((c.def && !(w.category&c.def->GetCategory())) || c.pos.y< -20.f) continue;
@@ -666,11 +668,17 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
                 policy.preferHeavy && c.def->IsEnemyRoleAny(CCircuitDef::HEAVY|CCircuitDef::COMM),c.los,world.Progress(c.id,policy.repairedTargetPenalty)) : .01f/(1.f+world.Reserved(c.id,id));
             if(c.def && policy.mode!=RangedPolicy::Mode::PRECISION)
                 value+=policy.splashWeight*std::max(0.f,world.ClusterValue(c.pos,w.splash)-c.cost);
-            // D-294: opt-in hit-likelihood penalty for slow shells against fast
-            // light targets. A penalty, not an exclusion: with nothing better
-            // the shot is still taken. O(1) per candidate mount.
-            if(policy.evasionLimit>0.f && c.mobile && ranged::Evasive(std::sqrt(pos.SqDistance2D(c.pos)),w.speed,
-                std::sqrt(c.velocity.x*c.velocity.x+c.velocity.z*c.velocity.z),w.splash,c.radius,policy.evasionLimit)) value*=.05f;
+            // D-294: opt-in hit-likelihood test for slow shells against fast
+            // targets. Identified: a 0.05 penalty (with nothing better the shot
+            // is still taken). Unidentified dot for an avoid-category shooter:
+            // excluded, since a dot that fast cannot be told from a scout and
+            // the played run spent 7-second shells on running Ticks. A dot's
+            // velocity comes from the radar track; one sample reads as
+            // stationary. O(1) per candidate mount.
+            const bool evasive=policy.evasionLimit>0.f && c.mobile && ranged::Evasive(std::sqrt(pos.SqDistance2D(c.pos)),w.speed,
+                std::sqrt(c.velocity.x*c.velocity.x+c.velocity.z*c.velocity.z),w.splash,c.radius,policy.evasionLimit);
+            if(evasive && !c.def && policy.avoidCategory!=0) continue;
+            if(evasive) value*=.05f;
             if(c.id==target) value*=policy.targetHysteresis;
             if(policy.mode==RangedPolicy::Mode::BOMBARDMENT && !c.mobile) value*=1.5f;
             if(closing && closing->id==c.id) value*=2.f;
