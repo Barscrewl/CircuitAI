@@ -380,8 +380,13 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitRaidRoute(const CCircuitDef* def,
     // GetUnitTerrainRoute; the overlay adds O(1) per cell to its threat fill.
     if (!std::isfinite(hazardWeight) || hazardWeight < 0.f) return {};
     EnsureGroundHazard(hazardMargin);
-    return UnitTerrainRoute(def, from, to, true, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard,
-        std::min(hazardWeight, 1e6f));
+    const float weight = std::min(hazardWeight, 1e6f);
+    auto route = UnitTerrainRoute(def, from, to, true, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard, weight);
+    // A dry corridor rejects every cell below sea level. Glitters-style maps
+    // join their halves through fordable shallows, so fall back to the unit's
+    // own MoveData depth (same two-step order as AmphibiousOps::Travel).
+    if (route.empty()) route = UnitTerrainRoute(def, from, to, false, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard, weight);
+    return route;
 }
 
 std::vector<AIFloat3> CBattleAnalysis::UnitTerrainRoute(const CCircuitDef* def,

@@ -208,7 +208,12 @@ namespace ScoutRaid {
             Global::ScoutRaid::HazardMargin, Global::ScoutRaid::HazardWeight);
         if (path is null || path.length() < 2) {
             if (target >= 0) r.excluded = target;   // unreachable: try another next time
-            GenericHelpers::LogUtil("[ScoutRaid] no route unit=" + r.id + " target=" + target, 2);
+            // Level 1: bounded by MaxRoutesPerSecond, and the first played run
+            // hid this exact failure behind level 2.
+            GenericHelpers::LogUtil("[ScoutRaid] no route unit=" + r.id + " target=" + target
+                + " from=(" + int(pos.x) + "," + int(pos.z) + ") pass=" + aiBattle.IsPassable(pos, Lanes::BOT)
+                + " goal=(" + int(goal.x) + "," + int(goal.z) + ") pass=" + aiBattle.IsPassable(goal, Lanes::BOT)
+                + " hazard=" + aiBattle.GroundHazard(goal, Global::ScoutRaid::HazardMargin), 1);
             return;
         }
         r.route = Compact(path);
