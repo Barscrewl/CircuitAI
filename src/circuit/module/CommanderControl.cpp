@@ -7,6 +7,7 @@
 #include "task/RetreatTask.h"
 #include "task/fighter/RangedWorld.h"
 #include "unit/CircuitUnit.h"
+#include "unit/ally/AllyUnit.h"
 #include "unit/CircuitWDef.h"
 #include "unit/enemy/EnemyUnit.h"
 #include "unit/enemy/EnemyManager.h"
@@ -43,7 +44,8 @@ bool CCommanderControl::ActualDecoy(CCircuitDef* definition) const {
     actualDecoys.emplace(definition->GetId(),actual); return actual;
 }
 bool CCommanderControl::Handles(CCircuitUnit* unit) const {
-    return options.enabled && unit && unit->HasDGun() && unit->GetCircuitDef()->IsRoleComm()
+    return options.enabled && unit && !unit->IsDead() && !unit->IsDestroying()
+        && unit->HasDGun() && unit->GetCircuitDef()->IsRoleComm()
         && (options.decoys || !ActualDecoy(unit->GetCircuitDef()));
 }
 void CCommanderControl::Join(CCircuitUnit* unit) {
@@ -54,7 +56,12 @@ void CCommanderControl::Join(CCircuitUnit* unit) {
 }
 void CCommanderControl::Leave(int id) {
     ai->GetAllyTeam()->GetCommanderShots().Release(ai->GetTeamId(),id);
-    commanders.erase(id); ++operation;
+    if(commanders.erase(id)>0) ++operation;
+}
+bool CCommanderControl::RetreatCloakFunded(CCircuitUnit* unit) const {
+    if(!Handles(unit) || !unit->GetCircuitDef()->IsAbleToCloak()) return false;
+    const auto& cap=ai->GetMilitaryManager()->GetRangedWorld()->CapabilitiesFor(unit->GetCircuitDef());
+    return ai->GetEconomyManager()->GetEnergyCur()>=cap.cloakMoving*options.escapeSeconds+options.margin;
 }
 void CCommanderControl::Damaged(CCircuitUnit* unit) {
     auto it=commanders.find(unit->GetId());
@@ -62,9 +69,10 @@ void CCommanderControl::Damaged(CCircuitUnit* unit) {
     auto& s=it->second; const int frame=ai->GetLastFrame();
     // Coalesce simultaneous weapon hits, never delay beyond the current frame.
     if(s.lastDamage==frame) return;
+    performance::Scope measured(ai,performance::COMMANDER_DAMAGE);
     s.lastDamage=frame; s.next=frame+3;
-    const float previousReserve=reserve; reserve=std::max(0.f,reserve-s.budget);
-    Tick(unit,s,frame); reserve=std::max(previousReserve,reserve+s.budget);
+    const float previousReserve=reserve; reserve=std::max(0.f,reserve-std::max(s.budget,s.fundingBudget));
+    Tick(unit,s,frame); reserve=std::max(previousReserve,reserve+std::max(s.budget,s.fundingBudget));
 }
 void CCommanderControl::MoveFailed(int id) {
     auto it=commanders.find(id); if(it==commanders.end()) return;
@@ -101,6 +109,7 @@ bool CCommanderControl::SetOption(const std::string& name,float value) {
     }
     if(name=="front_ready") { options.frontReady=value>0; return true; }
     if(name.rfind("t3.",0)==0) return SetProfileOption(name,value);
+    if(name.rfind("reset.t3.",0)==0) return SetProfileOption(name.substr(6),value,true);
     if(name=="fallback") {
         // Disabling releases through the ordinary SUPPORT/Resume path.
         if(options.fallback && value<=0) for(auto& [id,s]:commanders) s.fallbackUntil=-1;
@@ -129,7 +138,13 @@ bool CCommanderControl::SetOption(const std::string& name,float value) {
         {"fallback_porc_range",&options.fallbackPorcRange,200,5000},{"sensor_memory",&options.sensorMemory,0,120},
         {"t3_leash",&options.t3Leash,200,4000},{"t3_hold_seconds",&options.t3HoldSeconds,0,30},
         {"t3_dodge_seconds",&options.t3DodgeSeconds,0,5},{"t3_hunt_leash",&options.t3HuntLeash,200,6000},
-        {"t3_screen",&options.t3Screen,0,20000}};
+        {"t3_screen",&options.t3Screen,0,20000},
+        {"t3_hunt",&options.t3Hunt,0,1},{"t3_artillery_approach",&options.t3ArtilleryApproach,0,400},
+        {"t3_trade",&options.t3Trade,0,1},{"t3_retry_seconds",&options.t3RetrySeconds,.3f,10},
+        {"t3_cloaked_volley_risk",&options.t3CloakedVolleyRisk,0,1},
+        {"t3_bait_def",&options.t3BaitDef,-1,100000},{"t3_bait_count",&options.t3BaitCount,0,8},
+        {"t3_bait_margin",&options.t3BaitMargin,0,1000},{"t3_bait_distance",&options.t3BaitDistance,16,400},
+        {"t3_bait_spacing",&options.t3BaitSpacing,32,300},{"t3_bait_timeout",&options.t3BaitTimeout,1,20}};
     for(const auto& field:fields) if(name==field.name) {
         *field.field=std::clamp(value,field.low,field.high); return true;
     }
@@ -153,14 +168,38 @@ void CCommanderControl::Observe(CCircuitUnit* unit,int frame) {
         }
         return false;
     };
+    const auto observeWeapons=[&](int id,const commander::Contact& c,const CRangedWorld::Capabilities& cap) {
+        for(const auto& w:cap.weapons) {
+            if((w.category & def->GetCategory())==0 || w.damage.empty()) continue;
+            // Definition-owned noExplode metadata costs one load-time callback;
+            // this O(1) crossing bound prevents treating Behemoth gauss as a
+            // single 1200-damage hit. See commander_combat_test and corjugg arena.
+            const float hits=w.continuous?commander::CollisionHits(def->GetRadius(),w.speed*30.f):1.f;
+            const float damage=w.damage[std::min(size_t(std::max(0,armor)),w.damage.size()-1)]*w.alphaScale*hits;
+            if(damage<=0) continue;
+            const int reload=api->GetVisibleWeaponReload(id,w.index);
+            threats.push_back({c.pos,c.velocity,w.range,damage,w.reload,
+                std::max(0.f,float(reload-frame)/30.f),w.splash,w.speed*30.f,w.arc,w.heightMod,c.height,
+                !w.instant && w.speed>0.f,w.guided,(w.ballistic || w.high) && !w.guided,
+                w.range+def->GetRadius()*w.beamTargetBorder,w.beamMinIntensity,c.radius+def->GetRadius()});
+        }
+    };
     // All queries are local. No RangedWorld::Refresh/global army census here.
     // O(E*W+F), retained buffers; effective definition metadata is cached by
     // RangedWorld for this AI lifetime. Enemy reload is never read without LOS.
     const auto& enemies=ai->GetCallback()->GetEnemyUnitIdsIn(pos,options.scan,false);
+    if(commanderTrace && frame%30<3) ai->LOG("[CommanderTrace] query unit=%i x=%.0f z=%.0f count=%i",unit->GetId(),pos.x,pos.z,int(enemies.size()));
     for(int id:enemies) {
         auto* enemy=ai->GetEnemyInfo(id);
-        if(!enemy || enemy->IsHidden() || enemy->GetData()->IsNeutral()
-            || enemy->GetData()->IsDead() || enemy->GetData()->IsDying()) continue;
+        if(commanderTrace && frame%30<3) ai->LOG("[CommanderTrace] contact id=%i known=%i hidden=%i los=%i neutral=%i dead=%i dying=%i",id,int(enemy!=nullptr),enemy?enemy->IsHidden():0,enemy?enemy->IsInLOS():0,enemy?enemy->GetData()->IsNeutral():0,enemy?enemy->GetData()->IsDead():0,enemy?enemy->GetData()->IsDying():0);
+        if(!enemy) continue;
+        const auto data=enemy->GetData()->GetData();
+        if(data.losStatus & (SEnemyData::HIDDEN|SEnemyData::NEUTRAL|SEnemyData::DEAD|SEnemyData::DYING)) continue;
+        // IsHidden also includes profile threat suppression (IGNORE). Match
+        // RangedWorld's legal-contact filter: a zero strategic threat weight
+        // must not blind local commander defence to visible T1 attackers.
+        if(data.IsIgnore() && (!enemy->GetCircuitDef() || !enemy->GetCircuitDef()->IsIgnore()
+            || enemy->GetUnit()->GetRulesParamFloat("ignoredByAI",0.f)>0.f)) continue;
         if(!enemy->IsInLOS()) {
             // Radar uncertainty contributes danger, never a precision aim.
             threats.push_back({P(enemy->GetPos()),{},450,250,1,0,100,0,-1,0,enemy->GetPos().y,false,false});
@@ -198,18 +237,7 @@ void CCommanderControl::Observe(CCircuitUnit* unit,int frame) {
         if(enemy->GetUnit()->IsBeingBuilt() || enemy->GetUnit()->IsParalyzed()
             || enemy->GetUnit()->GetRulesParamFloat("disarmed",0)>0) continue;
         if(canHit(cap)) attackers.push_back({c.pos,c.cost});
-        for(const auto& w:cap.weapons) {
-            if((w.category & def->GetCategory())==0 || w.damage.empty()) continue;
-            const float damage=w.damage[std::min(size_t(std::max(0,armor)),w.damage.size()-1)]*w.alphaScale;
-            if(damage<=0) continue;
-            const int reload=api->GetVisibleWeaponReload(id,w.index);
-            // Beam contact has no evadable travel window. Forward arcs are
-            // conservatively treated as covered unless a legal direction feed
-            // proves otherwise; flank selection must not invent a blind spot.
-            threats.push_back({c.pos,c.velocity,w.range,damage,w.reload,
-                std::max(0.f,float(reload-frame)/30.f),w.splash,w.speed*30.f,w.arc,w.heightMod,ep.y,
-                w.burst<=0.f && w.speed>0.f,!(!w.guided),(w.ballistic || w.high) && !w.guided});
-        }
+        observeWeapons(id,c,cap);
     }
     // Bounded candidate seeds, but ScoreLine still scores every local contact.
     const auto order=[this](int a,int b) {
@@ -283,10 +311,14 @@ void CCommanderControl::Observe(CCircuitUnit* unit,int frame) {
         c.reserved=claims.Reserved(id,ai->GetTeamId(),unit->GetId())>=c.health;
         c.t3=true; // the far query keeps T3 definitions only
         contacts.push_back(c);
+        // Same legal LOS-only weapon observation as the near scan. The distance
+        // exclusion above makes crossing the boundary count each weapon once.
+        if(!enemy->GetUnit()->IsBeingBuilt() && !enemy->GetUnit()->IsParalyzed()
+            && enemy->GetUnit()->GetRulesParamFloat("disarmed",0)<=0) observeWeapons(id,c,cap);
     }
 }
 
-float CCommanderControl::Exposure(Point from,Point to,float seconds,float height,bool moving) const {
+float CCommanderControl::Exposure(Point from,Point to,float seconds,float height,bool moving,float newVolleyRisk) const {
     float total=0;
     for(const auto& t:threats) {
         const float distance=std::min(commander::Length(t.pos-from),commander::Length(t.pos-to));
@@ -295,14 +327,14 @@ float CCommanderControl::Exposure(Point from,Point to,float seconds,float height
         // Reload is evidence of a window, not evidence that its last projectile
         // missed us. Include one in-flight salvo while inside its flight time.
         const float flight=t.projectile?distance/std::max(1.f,t.speed):0;
-        const float since=t.reload-t.delay;
-        const float incoming=(t.delay>0 && since<=flight+.2f)?1.f:0.f;
         // A moving commander dodges most unguided shells: ballistic arcs, and
         // straight-flying missiles with over 0.6 s of flight (corcat, b19).
         const bool dodgeable=!t.guided && (t.ballistic || (t.projectile && flight>.6f));
         const float hit=moving && dodgeable?.35f:1.f;
-        total+=hit*t.damage*(incoming+std::max(0.f,seconds-t.delay)/std::max(.1f,t.reload)
-            +(t.delay<=seconds?1.f:0.f));
+        // Recoil BeamLaser damage falls with beam length. Subtract both unit
+        // radii as a conservative muzzle/surface bound, not a guessed rear arc.
+        const float intensity=commander::BeamIntensity(distance-t.beamClearance,t.beamRange,t.beamMinIntensity);
+        total+=hit*intensity*t.damage*commander::ImpactVolleys(seconds,t.reload,t.delay,flight,newVolleyRisk);
     }
     for(const auto& p:projectiles) {
         if(ai->GetLastFrame()-p.frame>6) continue;
@@ -355,29 +387,32 @@ void CCommanderControl::Update() {
         if(!Handles(unit)) {
             ai->GetAllyTeam()->GetCommanderShots().Release(ai->GetTeamId(),id);
             if(auto* task=dynamic_cast<CCommanderTask*>(unit->GetTask())) task->Resume(unit);
-            s.budget=0; s.pending=-1; s.mode=Mode::SUPPORT; continue;
+            s.budget=0; s.fundingBudget=0; s.pending=-1; s.mode=Mode::SUPPORT; continue;
         }
         // Fixed three-frame active/idle observation cadence independent of the
         // total action population. Immediate own-shot/move-failure invalidation.
+        if(frame>=s.fundingUntil || !ai->GetEnemyInfo(s.fundingTarget)) s.fundingBudget=0;
         if(frame>=s.next) { s.next=frame+3; Tick(unit,s,frame); }
-        reserve+=s.budget;
+        reserve+=std::max(s.budget,s.fundingBudget);
     }
 }
 void CCommanderControl::Tick(CCircuitUnit* unit,State& s,int frame) {
     auto* current=unit->GetTask();
     auto* task=dynamic_cast<CCommanderTask*>(current);
     const bool trace=commanderTrace && frame%30<3;
-    if(trace) ai->LOG("[CommanderTrace] unit=%i task=%i morph=%i stun=%i disarm=%i",unit->GetId(),current?int(current->GetType()):-1,unit->IsMorphing(),unit->GetUnit()->IsParalyzed(),unit->IsDisarmed(frame));
+    if(trace) ai->LOG("[CommanderTrace] unit=%i task=%i morph=%i stun=%i disarm=%i build=%i external=%i reclaim=%i transported=%.0f retry=%i",unit->GetId(),current?int(current->GetType()):-1,unit->IsMorphing(),unit->GetUnit()->IsParalyzed(),unit->IsDisarmed(frame),unit->GetUnit()->IsBeingBuilt(),current?current->IsExternalControlled():0,current?current->IsEnemyReclaim():0,unit->GetUnit()->GetRulesParamFloat("circuit_comm_transported",0),s.retry);
     if(s.invalidated) {
         ai->GetAllyTeam()->GetCommanderShots().Release(ai->GetTeamId(),unit->GetId());
-        s.invalidated=false; s.budget=0; s.deployed=false;
+        s.invalidated=false; s.budget=0; s.fundingBudget=0; s.deployed=false;
+        EndT3(unit,s,frame,"invalidated");
         if(task) { ai->GetBuilderManager()->AbortTask(task); Transition(unit,s,Mode::SUPPORT,frame); return; }
     }
     if(!current || current->GetType()==IUnitTask::Type::PLAYER || current->IsEnemyReclaim()
         || current->IsExternalControlled() || unit->IsMorphing() || unit->GetUnit()->IsBeingBuilt()
         || unit->GetUnit()->IsParalyzed() || unit->IsDisarmed(frame)
         || unit->GetUnit()->GetRulesParamFloat("circuit_comm_transported",0)>0) {
-        s.budget=0; s.pending=-1; s.leaseUntil=0;
+        s.budget=0; s.fundingBudget=0; s.pending=-1; s.leaseUntil=0;
+        EndT3(unit,s,frame,"ownership");
         ai->GetAllyTeam()->GetCommanderShots().Release(ai->GetTeamId(),unit->GetId());
         if(task) task->Resume(unit);
         return;
@@ -402,9 +437,14 @@ void CCommanderControl::Tick(CCircuitUnit* unit,State& s,int frame) {
     const float shot=def->GetDGunDef()->GetCostE();
     const float range=unit->GetDGunRange()-12;
     Observe(unit,frame);
+    if(trace) ai->LOG("[CommanderTrace] observation unit=%i contacts=%i seeds=%i threats=%i y=%.0f",unit->GetId(),int(contacts.size()),int(seeds.size()),int(threats.size()),pos.y);
     // D-294: a T3 in range is engaged from the line (concealed per-T3 plan)
     // ahead of the D-293 withdrawal, which then covers everything else.
     if(Intercept(unit,s,frame)) return;
+    if(current->GetType()==IUnitTask::Type::RETREAT && Handles(unit)) {
+        const bool hide=RetreatCloakFunded(unit) && CloakSafe(unit,P(pos),P(pos),options.escapeSeconds);
+        unit->TrySetFireState(hide?CCircuitDef::FireType::HOLD:CCircuitDef::FireType::RETURN);
+    }
     // Under fire from an attacker it cannot see (a submerged amphibious T3,
     // fire from beyond sight) and no known T3 owns the situation: cloak and
     // step back toward base for a few seconds (b43: a submerged Juggernaut
@@ -553,7 +593,7 @@ void CCommanderControl::Tick(CCircuitUnit* unit,State& s,int frame) {
         candidate.y=ai->GetMap()->GetElevationAt(candidate.x,candidate.z);
         // No submerged manual fire; shore movement may still use normal torpedo.
         if(candidate.y<0 || (i>0 && !Route(unit,pos,candidate))) continue;
-        if(candidate.SqDistance2D(home)>options.leash*options.leash && !emergency) continue;
+        if(i>0 && candidate.SqDistance2D(home)>options.leash*options.leash && !emergency) continue;
         const float travel=i==0?0.f:commander::TravelSeconds(commander::Length(offsets[i]),speed,
             cap.acceleration,cap.turnRate,i==3?0.f:1.5707963f);
         const float escape=commander::Length(P(candidate)-P(safe))/speed;
@@ -577,6 +617,14 @@ void CCommanderControl::Tick(CCircuitUnit* unit,State& s,int frame) {
 
     const bool opportunity=best.target>=0 && (best.value>=minValue || emergency);
     if(trace) ai->LOG("[CommanderTrace] unit=%i contacts=%i seeds=%i range=%.1f target=%i value=%.1f min=%.1f ready=%i danger=%i support=%.1f home=%.1f,%.1f",unit->GetId(),int(contacts.size()),int(seeds.size()),range,best.target,best.value,minValue,ready,endangered,support,home.x,home.z);
+    // A visible unit outside useful firing range is not a reason to lock a
+    // healthy front commander in combat. Deployment and role construction
+    // keep their owner until a real attack/withdrawal opportunity appears.
+    if(options.frontDuty && !opportunity && !endangered && s.pending<0) {
+        if(Deploy(unit,s,frame)) return;
+        if(task) { Conceal(unit,s,false); Transition(unit,s,Mode::SUPPORT,frame); task->Resume(unit); }
+        return;
+    }
     if(!task) {
         const bool defend=endangered && enemyNearby;
         const bool attack=opportunity && (nearest<=range+32 || (support>=options.support && front));
@@ -601,8 +649,7 @@ void CCommanderControl::Tick(CCircuitUnit* unit,State& s,int frame) {
     }
     if(opportunity && ready && bestPos.SqDistance2D(pos)<16.f*16.f
         && (!endangered || emergency)) {
-        Fire(unit,s,best,frame);
-        return;
+        if(Fire(unit,s,best,frame)) return;
     }
     const bool expired=frame-s.started>int(options.maxSeconds*30) || s.failed>=2;
     if(!opportunity && !endangered && s.fired>=s.started && frame-s.fired>=27) {
@@ -634,7 +681,22 @@ void CCommanderControl::Tick(CCircuitUnit* unit,State& s,int frame) {
         if(expired || nearest>range+200 || hp/maxHp<options.retreat) {
             Conceal(unit,s,false); Transition(unit,s,Mode::RECOVER,frame);
             s.retry=frame+60; s.budget=0; s.leaseUntil=0;
-            if(hp/maxHp<options.recover) {
+            bool lineRepair=false;
+            if(options.frontDuty && hp/maxHp>=options.retreat
+                && commander::Survivable(hp,maxHp,Exposure(P(pos),P(pos),options.escapeSeconds,pos.y),options.retreat)) {
+                // Existing local contacts only; no global builder scan. A real,
+                // completed allied builder must be in range of the commander.
+                for(const auto& c:contacts) if(c.friendly) {
+                    const auto* ally=ai->GetFriendlyUnit(c.id);
+                    const auto* repair=ally?ally->GetCircuitDef():nullptr;
+                    if(repair && repair->IsBuilder() && repair->GetWorkerTime()>0
+                        && commander::Length(c.pos-P(pos))<=repair->GetBuildDistance()
+                        && !ally->GetUnit()->IsBeingBuilt() && !ally->GetUnit()->IsParalyzed()) {
+                        lineRepair=true; break;
+                    }
+                }
+            }
+            if(hp/maxHp<options.recover && !lineRepair) {
                 auto* retreat=ai->GetBuilderManager()->EnqueueRetreat();
                 ai->GetBuilderManager()->AssignTask(unit,retreat);
             } else task->Resume(unit);

@@ -87,7 +87,7 @@ void CRetreatTask::AssignTo(CCircuitUnit* unit)
 			unit->CmdCloak(true);
 			// Opted-in precision retreat must not decloak on return fire.
 			unit->CmdSetFireState((cdef->IsAttrRanged() && cdef->IsAttrRetHold())
-                || (circuit->GetCommanderControl() && circuit->GetCommanderControl()->Handles(unit))
+                || (circuit->GetCommanderControl() && circuit->GetCommanderControl()->RetreatCloakFunded(unit))
 				? CCircuitDef::FireType::HOLD : CCircuitDef::FireType::RETURN);
 		)
 	}
@@ -112,15 +112,22 @@ void CRetreatTask::RemoveAssignee(CCircuitUnit* unit)
 
 void CRetreatTask::Start(CCircuitUnit* unit)
 {
-	if ((unit->GetTravelAct() == nullptr) || unit->GetTravelAct()->IsFinished()) {
+	if (unit->GetTravelAct() == nullptr) {
 		return;
+	}
+	CCircuitAI* circuit = manager->GetCircuit();
+	AIFloat3 commanderStation;
+	const bool commanderFallback = circuit->GetCommanderControl()
+		&& circuit->GetCommanderControl()->RetreatStation(unit, commanderStation);
+	if (unit->GetTravelAct()->IsFinished()) {
+		if (!commanderFallback || unit->GetPos(circuit->GetLastFrame()).SqDistance2D(commanderStation) <= SQUARE(64.f)) return;
+		unit->GetTravelAct()->StateActivate();
 	}
 
 	if (!IsQueryReady(unit)) {
 		return;
 	}
 
-	CCircuitAI* circuit = manager->GetCircuit();
 	const int frame = circuit->GetLastFrame();
 	CPathFinder* pathfinder = circuit->GetPathfinder();
 	const AIFloat3& startPos = unit->GetPos(frame);
@@ -134,12 +141,13 @@ void CRetreatTask::Start(CCircuitUnit* unit)
 	}
 
 	bool isNoEndPos = true;
+    if (commanderFallback) { endPos = commanderStation; range = 64.f; isNoEndPos = false; }
     // D-268: a script may nominate a short withdrawal stage, not replace the
     // repair destination. Constant work per route request; no fleet scan here.
     // Expiry, anchor ownership/movement, reachability and current threat are
     // checked on the engine thread. Arrival consumes the stage permanently
     // until policy publishes a new one after this retreat has finished.
-    if (unit->GetRetreatAnchor() >= 0) {
+    if (isNoEndPos && unit->GetRetreatAnchor() >= 0) {
         CCircuitUnit* anchor = circuit->GetTeamUnit(unit->GetRetreatAnchor());
         const AIFloat3& waypoint = unit->GetRetreatWaypoint();
         constexpr float arrivalRadius = 128.f;
@@ -231,6 +239,17 @@ void CRetreatTask::OnUnitIdle(CCircuitUnit* unit)
 {
 	CCircuitAI* circuit = manager->GetCircuit();
 	const int frame = circuit->GetLastFrame();
+    AIFloat3 commanderStation;
+    if (circuit->GetCommanderControl() && circuit->GetCommanderControl()->RetreatStation(unit, commanderStation)) {
+        // Reaching repair range is not reaching safety from the T3. Keep the
+        // existing route owner; do not patrol back toward the threatened haven.
+        if (unit->GetPos(frame).SqDistance2D(commanderStation)>SQUARE(64.f)) Start(unit);
+        else {
+            if (unit->GetTravelAct()) unit->GetTravelAct()->StateFinish();
+            state=State::REGROUP;
+        }
+        return;
+    }
     // Idle can arrive while the first asynchronous route is pending. Preserve
     // that request; only arrival/expiry/failed validation consumes the stage.
     if (unit->GetRetreatAnchor() >= 0) {

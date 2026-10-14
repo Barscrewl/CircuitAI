@@ -31,7 +31,8 @@ public:
         float range = 0.f, arc = -1.f, reload = 1.f, burst = 0.f;
         float heightMod = 1.f, cylinder = 0.f, speed = 0.f, gravity = 0.f;
         float splash = 0.f, alphaScale = 1.f;
-        bool ballistic = false, high = false, forward = false, fake = false, guided = false;
+        float beamMinIntensity = 1.f, beamTargetBorder = 0.f;
+        bool ballistic = false, high = false, forward = false, fake = false, guided = false, instant = false, continuous = false;
         Weapon(); ~Weapon();
         Weapon(Weapon&&) noexcept; Weapon& operator=(Weapon&&) noexcept;
     };

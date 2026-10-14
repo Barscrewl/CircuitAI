@@ -5,6 +5,89 @@ description: 'Run a local BAR simulation with a fresh BARb build: stage, launch 
 
 # Playtest: local simulations
 
+## Choose the shortest sufficient run
+
+Use `experimental_balanced` first. Run `python -m unittest discover -s
+tools/playtest -p 'test_*.py'` after changing the harness. Start runtime work with
+the relevant supplied arena, then a rendered behavior spot-check, then the full
+affected regression matrix and serial performance comparisons at the end.
+
+- `ranged_arena.py --mode fast --speed 20`: no automatic photos; headless is
+  optional and requires the fixture's loaded/observer events. Keep actual VM
+  load checks. Fast-forward changes wall time, not scenario wave timing.
+- `--mode visual`: opt into arena photos or generic `--shots`; use this for
+  evidence of movement, cloak, positioning and build handover. Camera waits are
+  bounded and restore simulation speed on timeout.
+- `run_full_match_performance.py --mode performance --speed 20`: constant
+  requested speed, no screenshot slowdowns, balanced profile by default.
+  `--native-phases` enables additional attribution in a separate run. Use the
+  same mode, profiler flags and observation window for both builds. Record
+  achieved speed; requested 20x is not evidence the engine sustained 20x.
+- Full matches are not required after each small repair. Preserve their full
+  horizons for final economy/late-game regression and performance evidence.
+
+Checks may specify `complete_on` (`key`, `pattern`, `scope`) and
+`completion_grace_seconds` (default 10). This exits only after the event, all
+required expectations and the grace. Arena `completion_targets` waits until
+every scheduled group has been submitted, pending spawns have finished and
+those enemy types are gone. `completion_after_seconds` supplies an explicit
+observation duration. Use both only when both conditions are intended. Keep
+enough post-kill time to observe projectiles, death blasts and task handover.
+Do not opt fixed-duration performance checks into early completion.
+
+Population arenas may explicitly set `batch_spawn: true` to submit each wave
+together instead of waiting for one UnitCreated round trip per unit. Match
+callbacks to pending team/definition/position requests; require `fixture_ready`
+and reject missing units or spawn timeouts. Use identical batching for both
+pins. Dense commander controls prove 16 teams received nearby enemy contacts;
+D-gun shooter counts are separate observations because safe lanes and faction
+weapons differ. Do not require every commander to fire merely to measure its
+combat decision cost. Preserve casualty/population differences in the report.
+
+For commander work, `run_commander_regression.py` runs the correctness cases
+serially using their declared horizons, saves each launcher log and checkpoints
+the aggregate after every game. Use a fresh `--out` path. `--cases a,b` and
+`--stop-on-failure` narrow an iteration; the default selection covers the full
+commander correctness set. Run `t3_matrix.py` separately for the roster and
+defence/shore variants. Its DGUN, LINE and HOLD outcomes require a living
+observed commander and the post-event tail; LINE additionally requires position
+and damage evidence. Distant artillery cases deliberately assert safe holding.
+
+Staging seeds only bounded `ArchiveCache<number>.lua` metadata from the local
+BAR cache into each game's private cache directory. Recoil still validates
+archive paths, modification times and cache version. No cache is linked or
+written back to BAR, and pathfinding state is not shared. Missing, unstable or
+oversized metadata means a cold load. Keep `archive-cache-seed.json` receipts;
+compare loading separately from simulation CPU. Use equivalent cache conditions
+for paired runs. The runner refuses launches below 1.5 GiB free disk space.
+
+Use `same_as` with named regex groups to bind a follow-up to the same actor and
+target as an earlier expectation; `after_key` also checks temporal order.
+`after_minute` proves a condition persisted beyond a memory/expiry boundary.
+Do not replace a failed behavior check with a weaker log match. Correct fixture
+preconditions separately, retain the failed run, and explain the correction.
+The standard BAR observer currently depends on the pinned game's full damage
+and command callbacks. Missing attribution or a blocked widget hook is a
+fixture/compatibility failure, never evidence of zero damage or zero commands.
+
+The watcher has separate `--startup-seconds` (120), `--stall-seconds` (60) and
+`--shutdown-seconds` (6) limits. The lifecycle widget emits wall-clock heartbeats
+so quiet gameplay still proves frame progress. Fail fast by default. Do not use
+`--keep-going` for compile checks; retain it only for bounded failure diagnosis.
+Check the archived `result.json`, subprocess status and tactical outcome: all
+must pass. A kill never overrides a crash, invariant or missing observation.
+For supplied arenas, also evaluate the numerical assertions through
+`ranged_benchmark.summarize` (schema v10). The commander suite combines these
+with the watcher verdict. A watcher PASS alone does not prove casualty, damage,
+or response-time bounds. Early-completion analysis requires the archived check,
+completion frame and survival tail; fixed performance windows remain fixed.
+Retain launcher diagnostics for failures before a game report is created.
+Commander batches stop after a missing archive (startup/staging failure), even
+when collecting all tactical failures. Resolve the infrastructure problem and
+resume the unplayed selection with a fresh output file; never count those rows
+as played failures or successes. Reserve disk space for concurrent link outputs
+before starting a batch, in addition to the per-launch 1.5 GiB guard.
+
 For optimization work, apply the
 [performance contracts](../../../rjm.bar.docs/projects/circuitai/performance/engineering-guide.md) and
 use the [test definition index](../../../rjm.bar.docs/projects/circuitai/testing/README.md). Compare pinned
@@ -82,7 +165,7 @@ AngelScript compiles only when a game loads, and warnings are fatal. A
 failure leaves every AI idle for the whole game.
 ```bash
 python tools/playtest/playtest.py run --dir C:/bardev/barb-playtest-sim1 --dll <dll> \
-  --roles TECH --headless --shots "" --speed 20 --minutes 1 --wall-minutes 6 --keep-going
+  --roles TECH --headless --shots "" --speed 20 --minutes 1 --wall-minutes 6
 grep -a ': ERR \+:\|: WARN :\|Lib exception\|SCRIPT CRASH' C:/bardev/barb-playtest-sim1/infolog.txt
 grep -ac 'rules loaded' C:/bardev/barb-playtest-sim1/infolog.txt   # = the number of TECH AIs
 ```
@@ -128,11 +211,14 @@ python tools/playtest/playtest.py run --dir C:/bardev/barb-playtest-simN --dll <
 ```
 
 **Running it**
-- Run with Bash `run_in_background: true`. Wait for `[playtest] report: <path>`
-  in its output, and take the run folder from that line, not from
-  `ls runs | tail`.
-- Killing the watcher (a timeout, TaskStop) leaves `spring.exe` running and
-  writes no report. Re-attach with `playtest.py watch --dir <dir> --checks <same>
+- Launch through the available shell tool and retain its process/session handle.
+  Poll that handle while doing independent work. Wait for
+  `[playtest] report: <path>` and use that exact archive, never another run's
+  newest folder. Do not assume a harness-specific background flag exists.
+- Normal completion and handled exceptions run identity-checked cleanup in
+  `finally`. Forced watcher termination can bypass it. Use
+  `playtest.py stop --dir <exact-owned-dir>` before abandoning a run, or reattach
+  with `playtest.py watch --dir <dir> --checks <same>
   --minutes <same> --keep-going --wall-minutes <N>` (`--no-stop` to only
   observe; without these it re-reads the log from the start and stops the
   game at once), or `stop`.
@@ -151,10 +237,9 @@ python tools/playtest/playtest.py run --dir C:/bardev/barb-playtest-simN --dll <
   for `ERROR:`, not only the exit code.
 
 **Flags that matter**
-- `--keep-going` for anything exploratory or long. Every checks file forbids
-  `[INVARIANT]`, and the default `--checks tech_opening` expects
-  `[Rule] opening.mex`, which today's TECH never logs, so without it the run
-  stops early.
+- Select checks appropriate to the scenario. Keep normal iteration and final
+  acceptance fail-fast. Use `--keep-going` only for bounded diagnosis after
+  retaining the strict failure; it never converts an invariant into a pass.
 - `--wall-minutes` always. The default (stop_minute x 1.5 + 4) cuts off slow
   16-AI or windowed games without saying so.
 - `--roles TECH`: a fast TECH-vs-TECH 1v1. `--roles all` (the default) is 16
@@ -305,10 +390,13 @@ Writing one: [references/widgets.md](../../../rjm.bar.docs/projects/circuitai/sk
 ## 8. Stop and clean up
 
 - `python tools/playtest/playtest.py stop --dir <dir>` only.
-  - It kills engines whose command line has that exact `--write-dir`, plus
-    `<dir>/playtest.pid`.
-  - A stale pid file can name an unrelated process: check it with
-    `tasklist //FI "PID eq N"` first.
+  - It requests graceful exit and allows a bounded replay/log flush, then
+    terminates only the verified engine handle if needed. The launch manifest
+    binds PID, creation time and executable to the canonical write directory.
+  - A numeric `playtest.pid` alone is never sufficient. Old manifests without
+    creation identity are deliberately refused; inspect ownership rather than
+    bypassing the check. Watch/run and supplied/full-match callers clean up on
+    exceptions. Always retain equivalent finally cleanup in a new caller.
 - Never `taskkill /IM spring.exe`: the user may be playing. Check with
   `tasklist //FI "IMAGENAME eq spring.exe"`, and read each engine's
   `--write-dir` via `Get-CimInstance Win32_Process`.
@@ -319,10 +407,42 @@ Writing one: [references/widgets.md](../../../rjm.bar.docs/projects/circuitai/sk
 
 ## Checks files, benchmarks
 
+- Commander correctness: `run_commander_regression.py --dll <pin>/SkirmishAI.dll
+  --data <pin>/data --out <session>/regression.json --headless`. Use `--cases`
+  for iteration; retain the complete case selection for final regression.
+- Commander performance: `run_commander_performance.py --baseline <pin>
+  --candidate <pin> --out <session>/performance.json --headless --attribution`.
+  Run it with no other game/build active. AB/BA idle controls, dense combat,
+  natural games and native attribution have different evidentiary value. The
+  runner deliberately leaves performance review pending after checks pass.
+  If the user explicitly keeps the BAR lobby open, `--allow-lobby` permits only
+  a Spring `--menu` process and retains its load in every environment record.
+  Other matches/builds still fail preflight. Report those timings as qualified,
+  never as an uncontended comparison; do not close the user's lobby yourself.
+  If existing invariants stop strict natural games before late-game coverage,
+  retain those failures first. `--natural-only --keep-going` runs bounded
+  diagnostic pairs to GameOver or the original horizon, preserving every FAIL.
+  The standalone full-match runner also accepts `--keep-going`. These runs
+  extend observation; they do not clear the invariant or replace strict tests.
+  After a focused repair, `--arenas-only --attribution` repeats the fixed
+  controls on the new pin without needlessly replaying strict natural games
+  that already stop on known issues. Use the new pin for subsequent full
+  natural diagnostics and identify all earlier-pin coverage explicitly.
+- Population fixtures must log `fixture_ready` before their steady-state
+  interval is used. Dense combat must report how many AI teams actually fired;
+  sixteen declared starting positions alone do not prove sixteen active fights.
+- Native iteration: `build_native_snapshot.py --session <session>/<build>
+  --reuse <completed-pin> --jobs 4`. Content hashes preserve both safety for
+  changed-but-older files and reuse for byte-identical restored headers. Keep
+  the current object cache until the next snapshot has copied it. Retain DLL,
+  matching symbols, source/data and logs; redundant `.full.dll` linker
+  intermediates and superseded object caches are disposable after publication.
+
 - `tools/playtest/checks/<name>.json`: `expect` (`key`, `pattern`,
   `by_minute`, `after_key`, `scope`), `forbid` (`key`, `pattern`,
-  `after_minute`), `pass_on` (`key`, `pattern`), `stop_minute`. A missing
-  `key` crashes watch: no report, and the engine is left running.
+  `after_minute`), `pass_on` (`key`, `pattern`), `complete_on` and `stop_minute`.
+  Validate checks before launch. Watcher exceptions still trigger cleanup and
+  retain `runner-error.json`; they must not be counted as played PASS results.
   - `expect` and `pass_on` default to scope `tech` (team 0's AI text after
     `:L::`). Widget and native lines need `"scope": "any"`.
   - `pass_on` only sets PASS; the game still plays on.

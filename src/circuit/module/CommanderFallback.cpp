@@ -30,13 +30,16 @@ static AIFloat3 F(Point p,float y=0) { return {p.x,y,p.z}; }
 // INV-199: commander control never directs it outside that perimeter.
 void CCommanderControl::CheckPerimeter(CCircuitUnit* unit,const State& s,const AIFloat3& goal,int frame,const char* source) const {
     if(!FallbackActive(s,frame)) return;
-    const AIFloat3 home=ai->GetSetupManager()->GetBasePos();
-    if(goal.SqDistance2D(home)>SQUARE(s.fallbackPerimeter+32.f))
-        ai->LOG("[INVARIANT] INV-199 commander fallback goal outside perimeter unit=%i source=%s goal=%.0f,%.0f perimeter=%.0f",
-            unit->GetId(),source,goal.x,goal.z,s.fallbackPerimeter);
+    const Point home=s.fallbackBoundary.anchor;
+    if(!s.fallbackBoundary.Contains(P(goal),32.f))
+        ai->LOG("[INVARIANT] INV-199 commander fallback goal outside perimeter unit=%i source=%s goal=%.0f,%.0f perimeter=%.0f home=%.0f,%.0f station=%.0f,%.0f planned=%i mode=%i",
+            unit->GetId(),source,goal.x,goal.z,s.fallbackBoundary.radius,home.x,home.z,
+            s.fallbackGoal.x,s.fallbackGoal.z,s.fallbackPlanned,int(s.mode));
 }
 
 void CCommanderControl::PlanFallback(CCircuitUnit* unit,State& s,int frame) {
+    const bool firstPlan=s.fallbackPlanned<0;
+    const bool heldRear=s.fallbackPlanned>=0 && s.fallbackPorc<0;
     s.fallbackPlanned=frame;
     const AIFloat3 pos=unit->GetPos(frame), home=ai->GetSetupManager()->GetBasePos();
     const Point threat=P(s.fallbackThreat);
@@ -86,17 +89,63 @@ void CCommanderControl::PlanFallback(CCircuitUnit* unit,State& s,int frame) {
         perimeter=p.distance2D(home)+options.fallbackOffset;
         break;
     }
-    if(chosen<0) goal.y=ai->GetMap()->GetElevationAt(goal.x,goal.z);
+    if(chosen<0) {
+        // Home is an anchor, not guaranteed cover: an incoming T3 can already
+        // reach it. Without a surviving porc, take a bounded rearward station
+        // instead of standing on the start point under fire. Replanned at the
+        // existing 1 Hz cadence; at most four reachability checks, no new army
+        // scan. The engine routes this withdrawal around obstacles, as it does
+        // the ordinary porc fallback (not a straight-line combat sidestep).
+        // Once the enemy crosses home, the home->threat axis reverses. A
+        // retreat must still move away from the threat relative to the unit.
+        // Keep the previous rear station as the origin while it remains behind
+        // us; lost LOS cannot pull that station forward or restart a march.
+        const Point away=commander::Normal(P(pos)-threat);
+        Point origin=heldRear?P(s.fallbackGoal):P(home);
+        if(commander::Dot(origin-P(pos),away)<0.f) origin=P(pos);
+        float clearance=heldRear?0.f:options.fallbackOffset;
+        clearance=std::max(clearance,s.fallbackReach+unit->GetCircuitDef()->GetRadius()+64.f
+            -commander::Length(threat-origin));
+        for(const auto& t:threats) clearance=std::max(clearance,
+            t.range+t.splash+unit->GetCircuitDef()->GetRadius()+64.f-commander::Length(t.pos-origin));
+        clearance=std::min(clearance,options.fallbackSearch);
+        for(float scale:{1.f,.75f,.5f,.25f}) {
+            AIFloat3 candidate=F(origin+away*(clearance*scale));
+            candidate.y=ai->GetMap()->GetElevationAt(candidate.x,candidate.z);
+            if(!OnMap(candidate) || !ai->GetTerrainManager()->CanReachAt(unit,candidate,64)) continue;
+            goal=candidate;perimeter=std::max(options.fallbackOffset,goal.distance2D(home));break;
+        }
+        goal.y=ai->GetMap()->GetElevationAt(goal.x,goal.z);
+    }
     // Keep a firing station chosen along the same line (Fallback sidesteps
     // out of the porc's own D-gun lane); replanning must not walk it back.
     if(chosen>=0 && chosen==s.fallbackPorc && s.fallbackGoal.SqDistance2D(goal)<=SQUARE(2.f*options.step+16.f)
         && s.fallbackGoal.SqDistance2D(home)<=SQUARE(perimeter)) goal=s.fallbackGoal;
-    if(chosen!=s.fallbackPorc || goal.SqDistance2D(s.fallbackGoal)>64.f*64.f) {
+    if(firstPlan || chosen!=s.fallbackPorc || goal.SqDistance2D(s.fallbackGoal)>64.f*64.f) {
         ai->LOG("[CommanderFallback] unit=%i line porc=%i goal=%.0f,%.0f perimeter=%.0f candidates=%i",
             unit->GetId(),chosen,goal.x,goal.z,perimeter,int(porcs.size()));
         s.route.clear();
+        // Do not abandon a reachable exit halfway through its journey merely
+        // because spotters died. The deadline is bounded by planned travel plus
+        // observation memory, and changes only with a materially new goal.
+        const float speed=std::max(1.f,ai->GetMilitaryManager()->GetRangedWorld()
+            ->CapabilitiesFor(unit->GetCircuitDef()).speed);
+        s.fallbackMoveUntil=frame+int((goal.distance2D(pos)/speed+options.sensorMemory)*FRAMES_PER_SEC);
     }
-    s.fallbackPorc=chosen; s.fallbackGoal=goal; s.fallbackPerimeter=perimeter;
+    s.fallbackPorc=chosen; s.fallbackGoal=goal; s.fallbackBoundary={P(home),perimeter};
+}
+
+bool CCommanderControl::RetreatStation(CCircuitUnit* unit,AIFloat3& goal) const {
+    if(!Handles(unit)) return false;
+    const auto found=commanders.find(unit->GetId());
+    if(found==commanders.end()) return false;
+    const auto& s=found->second;
+    const int frame=ai->GetLastFrame();
+    // Borrow only a freshly planned, reachable fallback point. The controller
+    // owns/invalidate it; RetreatTask keeps its task and repairer ownership.
+    // O(log C) state lookup, no extra threat or friendly-unit scan.
+    if(!FallbackActive(s,frame) || s.fallbackPlanned<0 || frame-s.fallbackPlanned>2*FRAMES_PER_SEC) return false;
+    goal=s.fallbackGoal;return true;
 }
 
 bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,int frame) {
@@ -114,14 +163,28 @@ bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,
             s.fallbackUntil=frame+int(options.fallbackHoldSeconds*FRAMES_PER_SEC);
             s.fallbackMetal=group.metal; s.fallbackThreat=F(group.centre);
             if(!s.fallback) {
-                s.fallback=true; s.fallbackPlanned=-10000; s.fallbackPorc=-1;
+                s.fallback=true; s.fallbackPlanned=-10000; s.fallbackPorc=-1; s.fallbackReach=0;
                 ai->LOG("[CommanderFallback] unit=%i on metal=%.0f group=%.0f,%.0f reach=%.0f frame=%i",
                     unit->GetId(),group.metal,group.centre.x,group.centre.z,range*options.fallbackRangeScale,frame);
             }
         }
     }
-    if(s.fallback && frame>=s.fallbackUntil) {
-        s.fallback=false; s.fallbackPorc=-1;
+    // Lost spotters do not make an ongoing withdrawal safe: a remembered
+    // artillery threat can still be landing shells between reloads. Retain the
+    // existing fallback owner/goal for the configured observation-memory
+    // window after actual damage. O(1), using the damage callback timestamp;
+    // no hidden target query or additional observation cadence (corves arena).
+    // Explicit policy disable wins over remembered damage and travel. The
+    // setter expires the lease; renewing it here would silently defer release
+    // until arrival (commander-fallback-disable arena). No new cadence/work.
+    if(options.fallback && s.fallback) s.fallbackUntil=std::max(s.fallbackUntil,
+        s.lastDamage+int(options.sensorMemory*FRAMES_PER_SEC));
+    if(options.fallback && s.fallback && frame<s.fallbackMoveUntil && pos.SqDistance2D(s.fallbackGoal)>64.f*64.f)
+        s.fallbackUntil=std::max(s.fallbackUntil,frame+int(options.fallbackHoldSeconds*FRAMES_PER_SEC));
+    // Intercept also extends remembered T3 fallback leases before this call;
+    // disabling policy must release regardless of which path renewed one.
+    if(s.fallback && (!options.fallback || frame>=s.fallbackUntil)) {
+        s.fallback=false; s.fallbackPorc=-1; s.fallbackReach=0; s.fallbackMoveUntil=-1;
         ai->LOG("[CommanderFallback] unit=%i off frame=%i",unit->GetId(),frame);
         if(task && s.mode==Mode::FALLBACK) {
             Transition(unit,s,Mode::SUPPORT,frame);
@@ -130,7 +193,11 @@ bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,
         return false;
     }
     if(!s.fallback) return false;
-    // Native retreat already withdraws home; it stays authoritative.
+    if(!options.fallback)
+        ai->LOG("[INVARIANT] INV-201 disabled commander fallback retained unit=%i frame=%i",unit->GetId(),frame);
+    if(frame>=s.fallbackPlanned+FRAMES_PER_SEC) PlanFallback(unit,s,frame);
+    // Native retreat retains ownership, but uses this exact withdrawal point
+    // rather than stopping at its broad repair radius under the declined T3.
     if(!task && current->GetType()==IUnitTask::Type::RETREAT) return false;
     if(task && s.pending>=0) {
         // Let an issued shot resolve (bounded at one second) before moving.
@@ -140,7 +207,6 @@ bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,
             ai->GetAllyTeam()->GetCommanderShots().Release(ai->GetTeamId(),unit->GetId());
         } else return true;
     }
-    if(frame>=s.fallbackPlanned+FRAMES_PER_SEC) PlanFallback(unit,s,frame);
     if(!task) {
         // A safety withdrawal, like a defensive shot, may interrupt
         // no-disrupt construction; enemy reclaim was excluded by Tick.
@@ -157,8 +223,7 @@ bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,
     }
     s.budget=0; s.deployed=false;
     Transition(unit,s,Mode::FALLBACK,frame);
-    const AIFloat3 home=ai->GetSetupManager()->GetBasePos();
-    const bool inside=pos.SqDistance2D(home)<=SQUARE(s.fallbackPerimeter+64.f);
+    const bool inside=s.fallbackBoundary.Contains(P(pos),64.f);
     {
         // Disengage cloaked when it is funded: while travelling to the line,
         // and on the line while the threat outranges the commander's own
@@ -196,7 +261,7 @@ bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,
             station.y=ai->GetMap()->GetElevationAt(station.x,station.z);
             // The D-gun cannot fire submerged (firesubmersed=false), standing
             // spot included.
-            if(station.y<0 || (side!=0.f && (station.SqDistance2D(home)>SQUARE(s.fallbackPerimeter)
+            if(station.y<0 || (side!=0.f && (!s.fallbackBoundary.Contains(P(station))
                 || !Route(unit,pos,station)))) continue;
             const float travel=std::abs(side)*options.step/moveSpeed;
             for(int index:seeds) {
@@ -214,7 +279,7 @@ bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,
         if(best.target>=0 && best.value>=minValue) {
             const float spendable=ai->GetEconomyManager()->GetEnergyCur()-std::max(0.f,reserve);
             if(bestPos.SqDistance2D(pos)<16.f*16.f) {
-                if(unit->IsDGunReady(frame,spendable) && frame>=s.retry) { Fire(unit,s,best,frame); return true; }
+                if(unit->IsDGunReady(frame,spendable) && frame>=s.retry && Fire(unit,s,best,frame)) return true;
             } else {
                 // Hold the clear lane between shots; PlanFallback keeps it.
                 s.fallbackGoal=bestPos; Move(unit,s,bestPos,frame); return true;

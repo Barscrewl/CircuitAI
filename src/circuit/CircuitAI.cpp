@@ -1299,6 +1299,7 @@ int CCircuitAI::UnitDamaged(CCircuitUnit* unit, ICoreUnit::Id attackerId, int we
 
 int CCircuitAI::UnitDestroyed(CCircuitUnit* unit, CEnemyInfo* attacker)
 {
+	unit->MarkDestroying();
 	destroyed.insert(unit->GetId());
 	const int lostId = unit->GetId();
 	allyTeam->GetNuclearHistory().Prune(lastFrame, [lostId](int owner) { return owner != lostId; });

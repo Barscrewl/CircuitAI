@@ -3,7 +3,7 @@
   "unit": "armcom",
   "side": "armada",
   "role": "FRONT",
-  "description": "Demo: single T3 waves (Marauder, Titan, Thor, Juggernaut, Behemoth) walk through a laser line at an Armada commander. Team 0 has 6000 E/s and 24k extra storage, two repairing construction turrets, forward Eyes, and rebuilds its line and scouting 10 s before each wave. Every T3 should die to the D-gun.",
+  "description": "Five T3 waves (Marauder, Titan, Thor, Juggernaut, Behemoth) walk through a laser line at an Armada commander. Team 0 has 6000 E/s and 24k extra storage, two repairing construction turrets, forward Eyes, and rebuilds its line and scouting 10 s before each wave. All five targets must die, a real commander D-gun shot must occur within the full wave sequence, and the commander must survive; early turret kills must not truncate later waves.",
   "map": "Comet Catcher Remake 1.8",
   "map_key": "comet",
   "starts": [
@@ -564,5 +564,12 @@
     "min_damage": 0
   },
   "checks": "commander-t3-waves",
-  "friendly_repair": true
+  "friendly_repair": true,
+  "completion_targets": [
+    "armmar",
+    "armbanth",
+    "armthor",
+    "corkorg",
+    "corjugg"
+  ]
 }

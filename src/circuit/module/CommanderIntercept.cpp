@@ -7,6 +7,7 @@
 #include "unit/CircuitUnit.h"
 #include "unit/CircuitWDef.h"
 #include "unit/enemy/EnemyManager.h"
+#include "unit/enemy/EnemyUnit.h"
 #include "setup/SetupManager.h"
 #include "spring/SpringCallback.h"
 #include "spring/SpringUnit.h"
@@ -14,8 +15,10 @@
 #include "CircuitAI.h"
 #include "util/Utils.h"
 #include "Log.h"
+#include "Damage.h"
 #include <cstdlib>
 #include <limits>
+#include <memory>
 
 namespace circuit {
 using springai::AIFloat3;
@@ -31,6 +34,14 @@ const CCommanderControl::Definition& CCommanderControl::DefinitionFor(CCircuitDe
         const auto& params=ud->GetCustomParams();
         const auto level=params.find("techlevel");
         d.t3=level!=params.end() && std::atoi(level->second.c_str())>=3 && def->IsMobile() && def->IsAttacker();
+        if(d.t3) {
+            const std::unique_ptr<springai::WeaponDef> blast(ud->GetDeathExplosion());
+            if(blast) {
+                d.blastRadius=blast->GetAreaOfEffect(); d.blastEdge=blast->GetEdgeEffectiveness();
+                const std::unique_ptr<springai::Damage> damage(blast->GetDamage());
+                if(damage) d.blastDamage=damage->GetTypes();
+            }
+        }
     }
     return it->second;
 }
@@ -58,7 +69,7 @@ bool CCommanderControl::CloakSafe(CCircuitUnit* unit,Point from,Point to,float s
             // growth let one long-lost enemy commander (BAR commanders carry
             // radar) cover the whole map and disable every T3 ambush (D-293).
             const float age=float(frame-enemy->GetLastSeen())/FRAMES_PER_SEC;
-            if(!los && !blip && age>options.sensorMemory) continue;
+            if(def->IsMobile() && !los && !blip && age>options.sensorMemory) continue;
             const float uncertainty=los?def->GetSpeed():blip?def->GetSpeed()+64.f:
                 def->GetSpeed()*std::max(1.f,age);
             sensors.push_back({P(enemy->GetPos()),d.radar>0?d.radar+uncertainty:0,
@@ -95,17 +106,55 @@ bool CCommanderControl::CloakSafe(CCircuitUnit* unit,Point from,Point to,float s
     return false;
 }
 
-void CCommanderControl::Fire(CCircuitUnit* unit,State& s,const commander::Line& line,int frame) {
+bool CCommanderControl::Fire(CCircuitUnit* unit,State& s,const commander::Line& line,int frame) {
     const auto pos=unit->GetPos(frame); const float range=unit->GetDGunRange()-12;
     auto* def=unit->GetCircuitDef();
     // INV-200: BAR D-guns have firesubmersed=false; a submerged order would
     // only waste the lease. Every caller filters water; this is the backstop.
     if(pos.y<0.f) {
         ai->LOG("[INVARIANT] INV-200 commander D-gun ordered while submerged unit=%i y=%.0f",unit->GetId(),pos.y);
-        return;
+        return false;
     }
     const float speed=std::max(1.f,def->GetDGunDef()->GetDef()->GetProjectileSpeed()*30.f);
     const float width=std::min(24.f,std::max(4.f,def->GetDGunDef()->GetAoe()*.25f));
+    // All three firing paths share this final admission check: an ordinary
+    // line shot or fallback shot must not bypass T3 death-blast protection.
+    // O(local contacts), only when issuing a shot; definitions are AI-owned
+    // immutable caches. Predict the same intersections used by shot claims.
+    if(options.t3Trade<=0) {
+        const auto& cap=ai->GetMilitaryManager()->GetRangedWorld()->CapabilitiesFor(def);
+        const int armor=std::max(0,def->GetDef()->GetArmorType());
+        float blast=0; bool t3=false;
+        for(const auto& c:contacts) {
+            if(c.friendly || c.blocker || !c.targetable || !c.t3) continue;
+            const float along=commander::Dot(c.pos-P(pos),line.direction);
+            const Point hit=c.pos+c.velocity*(std::max(0.f,along)/speed);
+            if(commander::Dot(hit-P(pos),line.direction)<0
+                || !commander::Intersects(hit-P(pos),line.direction,range,c.radius+width)) continue;
+            auto* enemy=ai->GetEnemyManager()->GetEnemyUnit(c.id);
+            auto* targetDef=enemy?enemy->GetCircuitDef():nullptr;
+            if(!targetDef) continue;
+            const auto& explosion=DefinitionFor(targetDef);
+            if(!explosion.t3) continue;
+            t3=true;
+            if(!explosion.blastDamage.empty()) blast+=commander::BlastDamage(
+                explosion.blastDamage[std::min(size_t(armor),explosion.blastDamage.size()-1)],
+                explosion.blastRadius,explosion.blastEdge,commander::Length(hit-P(pos))-cap.radius);
+        }
+        const float floor=s.t3Target>=0?s.t3MinHealth:options.t3Health;
+        // A funded, undetected cloak hides the aiming lease; firing reveals
+        // the commander and starts its lateral escape. Visible aiming gets
+        // the full additional second. Keep flight plus a post-impact tail.
+        const bool concealed=t3 && unit->GetUnit()->IsCloaked() && CloakSafe(unit,P(pos),P(pos),1.f);
+        const float exposedSeconds=range/speed+.3f+(concealed?0.f:1.f);
+        if(t3 && !commander::Survivable(unit->GetUnit()->GetHealth(),unit->GetUnit()->GetMaxHealth(),
+            Exposure(P(pos),P(pos),exposedSeconds,pos.y,concealed,
+                concealed && s.t3Target>=0?options.t3CloakedVolleyRisk:1.f)+blast,floor)) {
+            s.retry=frame+15; Transition(unit,s,Mode::ESCAPE,frame);
+            ai->LOG("[Commander] unit=%i blocked_shot=t3_survival target=%i blast=%.0f",unit->GetId(),line.target,blast);
+            return false;
+        }
+    }
     AIFloat3 aim(pos.x+line.direction.x*(range-4),0,pos.z+line.direction.z*(range-4));
     aim.y=std::max(0.f,ai->GetMap()->GetElevationAt(aim.x,aim.z));
     s.target=line.target; s.pending=frame; s.leaseUntil=frame+30;
@@ -120,6 +169,7 @@ void CCommanderControl::Fire(CCircuitUnit* unit,State& s,const commander::Line& 
     s.route.clear(); Transition(unit,s,Mode::PENDING,frame);
     TRY_UNIT(ai,unit,unit->GetUnit()->DGunPosition(aim,0,frame+30);)
     ai->LOG("[Commander] unit=%i shot_pending target=%i kills=%i value=%.1f energy=%.1f",unit->GetId(),line.target,line.kills,line.value,ai->GetEconomyManager()->GetEnergyCur());
+    return true;
 }
 
 // D-294: CCommanderControl::Intercept moved to CommanderT3.cpp (per-T3 engagement).

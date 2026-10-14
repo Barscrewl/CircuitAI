@@ -16,6 +16,24 @@ import time
 from benchmark_store import VALIDATION_ROOT, require_checkout
 
 
+def restore_source_times(source, cached, newest_object):
+    """Content checks decide reuse; source mtimes alone cannot establish it."""
+    changed_time=max(time.time(),newest_object+1)
+    counts={'changed':0,'reused':0}
+    for path in (source/'src').rglob('*'):
+        if not path.is_file():continue
+        prior=cached/'source'/path.relative_to(source)
+        identical=prior.is_file() and hashlib.sha256(path.read_bytes()).digest()==hashlib.sha256(prior.read_bytes()).digest()
+        # A file can be edited and restored byte-for-byte after the previous
+        # build. Keep its proven snapshot timestamp so Ninja does not rebuild
+        # every consumer of an unchanged header. Changed older files are still
+        # forced newer than every imported object, preventing stale binaries.
+        stamp=prior.stat().st_mtime if identical else changed_time
+        os.utime(path,(stamp,stamp))
+        counts['reused' if identical else 'changed']+=1
+    return counts
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--session', required=True)
@@ -100,12 +118,7 @@ def main():
         # changed files can therefore be older than A's objects. Timestamp-only
         # reuse is unsound: compare source content before importing that cache.
         newest=max((p.stat().st_mtime for p in (destination/'objects').glob('*.obj')),default=0)
-        changed_time=max(time.time(),newest+1)
-        for path in (source/'src').rglob('*'):
-            if not path.is_file(): continue
-            prior=cached/'source'/path.relative_to(source)
-            if not prior.is_file() or hashlib.sha256(path.read_bytes()).digest()!=hashlib.sha256(prior.read_bytes()).digest():
-                os.utime(path,(changed_time,changed_time))
+        print('SOURCE_REUSE='+json.dumps(restore_source_times(source,cached,newest)),flush=True)
     (destination / 'build.ninja').write_text('\n'.join(output) + '\n')
     image = 'ghcr.io/beyond-all-reason/recoil-build-amd64-windows:latest'
     command = ['docker', 'run', '--rm', '-v', f'{engine.as_posix()}:/build/src:ro',

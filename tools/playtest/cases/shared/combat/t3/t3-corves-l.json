@@ -3,7 +3,7 @@
   "unit": "armcom",
   "side": "armada",
   "role": "FRONT",
-  "description": "D-294 matrix: one corves walks through a light defence line at an Armada commander.",
+  "description": "D-294 matrix: one corves walks through a light defence line at an Armada commander. Safety objective: hold or withdraw alive; do not pursue the distant cannon or enter water for the ship.",
   "map": "Comet Catcher Remake 1.8",
   "map_key": "comet",
   "starts": [
@@ -164,7 +164,14 @@
     "max_losses": 40,
     "min_damage": 0
   },
-  "checks": "commander-t3-duel",
+  "checks": "commander-t3-artillery-hold",
+  "matrix_target": "corves",
+  "artillery_hold": true,
+  "artillery_axis": [
+    4000,
+    6300
+  ],
+  "completion_after_seconds": 120,
   "modoptions": {
     "scavunitsforplayers": 1
   }

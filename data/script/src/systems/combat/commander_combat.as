@@ -2,6 +2,7 @@
 
 namespace CommanderCombat {
     int appliedRole=-1;
+    string appliedSide;
     // Per-AI overrides (D-293). Any role, profile hook or message handler of
     // this AI may call Override(); it wins over the profile JSON and the
     // Global::Commander defaults and is re-applied after every role change.
@@ -13,10 +14,11 @@ namespace CommanderCombat {
             GenericHelpers::LogUtil("[Commander] rejected option "+key,1);
     }
     bool Override(const string &in key,float value) {
+        const bool accepted=aiBuilderMgr.SetCommanderCombatOption(key,value);
+        if(!accepted) { GenericHelpers::LogUtil("[Commander] rejected override "+key,1); return false; }
         const int index=overrideKeys.find(key);
         if(index<0) { overrideKeys.insertLast(key); overrideValues.insertLast(value); }
         else overrideValues[index]=value;
-        const bool accepted=aiBuilderMgr.SetCommanderCombatOption(key,value);
         GenericHelpers::LogUtil("[Commander] override "+key+"="+value+(accepted?"":" rejected"),1);
         return accepted;
     }
@@ -25,14 +27,17 @@ namespace CommanderCombat {
         const int index=overrideKeys.find(key);
         if(index<0) return;
         overrideKeys.removeAt(index); overrideValues.removeAt(index);
+        if(key.findFirst("t3.")==0) aiBuilderMgr.SetCommanderCombatOption("reset."+key,0.f);
         appliedRole=-1;
     }
     void Update() {
         // Configure once per role transition. Native observes only the maintained
         // commander registry; script does not scan units or issue combat orders.
         const int role=int(Global::AISettings::Role);
-        if(role!=appliedRole) {
+        const string side=Global::AISettings::Side.length()>0?Global::AISettings::Side:ai.GetSideName();
+        if(role!=appliedRole || side!=appliedSide) {
             appliedRole=role;
+            appliedSide=side;
             const bool front=role==int(AiRole::FRONT) || role==int(AiRole::TACTICAL);
             Option("enabled",Global::Commander::Enabled?1.f:0.f);
             Option("advance",front?1.f:0.f);
@@ -78,6 +83,20 @@ namespace CommanderCombat {
             Option("t3_dodge_seconds",Global::Commander::T3DodgeSeconds);
             Option("t3_hunt_leash",Global::Commander::T3HuntLeash);
             Option("t3_screen",Global::Commander::T3Screen);
+            Option("t3_hunt",Global::Commander::T3Hunt);
+            Option("t3_artillery_approach",Global::Commander::T3ArtilleryApproach);
+            Option("t3_trade",Global::Commander::T3Trade);
+            Option("t3_cloaked_volley_risk",Global::Commander::T3CloakedVolleyRisk);
+            Option("t3_retry_seconds",Global::Commander::T3RetrySeconds);
+            Option("t3_bait_count",Global::Commander::T3BaitCount);
+            Option("t3_bait_margin",Global::Commander::T3BaitMargin);
+            Option("t3_bait_distance",Global::Commander::T3BaitDistance);
+            Option("t3_bait_spacing",Global::Commander::T3BaitSpacing);
+            Option("t3_bait_timeout",Global::Commander::T3BaitTimeout);
+            const string baitName=aiSetupMgr.ConfigString("commander/combat/t3_bait_unit",
+                UnitHelpers::GetStaticLLTNameForSide(side));
+            CCircuitDef@ bait=ai.GetCircuitDef(baitName);
+            aiBuilderMgr.SetCommanderCombatOption("t3_bait_def",bait is null?-1.f:float(bait.id));
             for(uint i=0;i<overrideKeys.length();++i)
                 aiBuilderMgr.SetCommanderCombatOption(overrideKeys[i],overrideValues[i]);
             Global::Commander::FrontRadius=AiMax(100.f,aiSetupMgr.ConfigFloat("commander/combat/front_radius",Global::Commander::FrontRadius));

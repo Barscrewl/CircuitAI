@@ -1,4 +1,5 @@
 {
+  "batch_spawn": true,
   "name": "commander-population-16",
   "unit": "armcom",
   "side": "armada",

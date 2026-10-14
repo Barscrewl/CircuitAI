@@ -19,6 +19,8 @@ public:
     void MoveFailed(int id);
     void Damaged(CCircuitUnit* unit);
     bool Handles(CCircuitUnit* unit) const;
+    bool RetreatCloakFunded(CCircuitUnit* unit) const;
+    bool RetreatStation(CCircuitUnit* unit,springai::AIFloat3& goal) const;
     bool SetOption(const std::string& name,float value);
     float GetReserve() const { return reserve; }
     float GetDeficit() const;
@@ -33,15 +35,21 @@ private:
         int generation=0,seen=-10000,started=0,pending=-1,fired=-1,failed=0;
         int retry=0,target=-1,leaseUntil=0,next=0,lastLog=0,lastDamage=-1,frontFrame=-10000,frontYield=0;
         // D-293 fallback: held until fallbackUntil, porc line replanned once/second.
-        int fallbackUntil=-1,fallbackPlanned=-10000,fallbackPorc=-1;
-        float budget=0,fallbackMetal=0,fallbackPerimeter=0;
+        int fallbackUntil=-1,fallbackPlanned=-10000,fallbackPorc=-1,fallbackMoveUntil=-1;
+        float budget=0,fallbackMetal=0,fallbackReach=0;
+        commander::FallbackBoundary fallbackBoundary;
         bool cloak=false,deployed=false,invalidated=false,fallback=false;
         springai::AIFloat3 exit,goal,front{-1,0,-1},fallbackGoal,fallbackThreat;
         // D-294 T3 engagement: target, resolved plan, shot accounting, juke.
         int t3Target=-1,t3Approach=0,t3Commit=0,t3Shots=0,t3LastShot=-1,t3JukeUntil=-1,t3JukeSide=1;
-        int t3Progress=0,t3Ended=-1,t3Started=-1,t3Seen=-1,t3Declined=-1,t3DeclinedSeen=-1;
-        bool t3Cornered=false;
+        int t3Progress=0,t3Ended=-1,t3Started=-1,t3Seen=-1,t3Declined=-1,t3DeclinedSeen=-1,t3Reconsider=0;
+        bool t3Cornered=false,t3Artillery=false;
+        float fundingBudget=0;
+        int fundingUntil=-1,fundingTarget=-1;
         int t3Screens=0,t3ScreenUntil=0; // D-294 bait turrets ordered this engagement
+        int t3ScreenDef=-1,t3ScreenUnit=-1,t3ScreenCheck=0;
+        float t3ScreenProgress=0;
+        springai::AIFloat3 t3ScreenPos;
         int unseenUntil=0; // D-294: withdrawing cloaked from fire it cannot see
         float t3Closest=0,t3Juke=0,t3Standoff=0,t3MinHealth=0,t3Radius=0,t3Splash=0,t3Cost=0,t3Advance=0,t3Reach=0;
         springai::AIFloat3 t3Anchor,t3LastPos,t3Heading; // heading: last direction of travel
@@ -52,6 +60,7 @@ private:
         commander::Point pos,velocity;
         float range=0,damage=0,reload=1,delay=0,splash=0,speed=0,arc=-1,heightMod=0,height=0;
         bool projectile=false,guided=false,ballistic=false;
+        float beamRange=0,beamMinIntensity=1,beamClearance=0;
     };
     struct Projectile { commander::Point pos,velocity; float radius=0; int frame=0; };
     struct Options {
@@ -74,6 +83,9 @@ private:
         float t3Leash=900,t3HoldSeconds=4,t3DodgeSeconds=1.2f;
         float t3HuntLeash=1800; // artillery sits beyond the line; hunting it goes further
         float t3Screen=300; // friendly combat metal in the T3's reach before a 3+ shot kill
+        float t3Hunt=0,t3ArtilleryApproach=180,t3Trade=0,t3RetrySeconds=2;
+        float t3CloakedVolleyRisk=1; // script tunes uncertain new targeting; in-flight damage stays full
+        float t3BaitDef=-1,t3BaitCount=0,t3BaitMargin=150,t3BaitDistance=120,t3BaitSpacing=80,t3BaitTimeout=5;
     } options;
 public:
     // D-294 per-T3 strategy. Negative fields resolve automatically from the
@@ -83,8 +95,9 @@ public:
     struct T3Profile { float approach=-1,commit=-1,juke=-1,standoff=-1,health=-1,advance=-1; };
 private:
     std::map<std::string,T3Profile> t3Profiles;
+    std::map<std::string,T3Profile> configuredT3Profiles;
     void ReadProfiles();
-    bool SetProfileOption(const std::string& name,float value);
+    bool SetProfileOption(const std::string& name,float value,bool reset=false);
     CCircuitAI* ai;
     std::map<int,State> commanders;
     // IsDecoy() is the legacy *impersonated-definition* hint. Cache the actual
@@ -100,9 +113,17 @@ private:
     bool submergedContact=false; // D-294: a sonar-only contact under water within t3_distance
     struct PorcCandidate { springai::AIFloat3 pos; float edge=0,distance=0; int id=-1; };
     std::vector<PorcCandidate> porcs;
-    struct Definition { float radar=0,jammer=0,seismic=0,decloak=0; bool t3=false,stealth=false; };
+    struct Definition {
+        float radar=0,jammer=0,seismic=0,decloak=0,blastRadius=0,blastEdge=0;
+        bool t3=false,stealth=false;
+        std::vector<float> blastDamage; // immutable definition data, loaded only for T3
+    };
     std::map<int,Definition> definitions;
     const Definition& DefinitionFor(CCircuitDef* def);
+    float T3Leash(const State& s) const {
+        return s.t3Artillery && options.t3Hunt<=0 ? options.t3ArtilleryApproach
+            : s.t3Approach==T3_HUNT ? options.t3HuntLeash : options.t3Leash;
+    }
     struct Sensor { commander::Point pos; float radar=0,seismic=0; };
     std::vector<Sensor> sensors;
     int sensorFrame=-10000;
@@ -111,7 +132,7 @@ private:
     void Tick(CCircuitUnit* unit,State& state,int frame);
     void Observe(CCircuitUnit* unit,int frame);
     // moving: unguided ballistic shells mostly miss a moving commander (D-294).
-    float Exposure(commander::Point from,commander::Point to,float seconds,float height,bool moving=false) const;
+    float Exposure(commander::Point from,commander::Point to,float seconds,float height,bool moving=false,float newVolleyRisk=1.f) const;
     bool Route(CCircuitUnit* unit,const springai::AIFloat3& from,const springai::AIFloat3& to) const;
     void Move(CCircuitUnit* unit,State& state,const springai::AIFloat3& goal,int frame);
     void Conceal(CCircuitUnit* unit,State& state,bool value);
@@ -122,7 +143,7 @@ private:
     bool Intercept(CCircuitUnit* unit,State& state,int frame);
     void EndT3(CCircuitUnit* unit,State& state,int frame,const char* reason);
     void Decline(CCircuitUnit* unit,State& state,const commander::Contact& target,int frame,const char* reason);
-    void Fire(CCircuitUnit* unit,State& state,const commander::Line& line,int frame);
+    bool Fire(CCircuitUnit* unit,State& state,const commander::Line& line,int frame);
     bool FallbackActive(const State& state,int frame) const { return state.fallback && frame<state.fallbackUntil; }
     // Engine reachability indexes sectors by position without bounds checks
     // (KI register, GetClosestSector). Reject garbage/off-map points first.

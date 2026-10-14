@@ -5,6 +5,7 @@
     {"key":"policy","pattern":"\\[Commander\\] policy role=2","scope":"any","by_minute":1}
   ],
   "forbid":[
+    {"key":"blocker_lost","pattern":"\\[RangedArena\\].*death id=\\d+ team=0 unit=armestor","scope":"any"},
     {"key":"shot","pattern":"\\[Commander\\].*shot_pending","scope":"any"},
     {"key":"script","pattern":": ERR\\s+:|SCRIPT CRASH|Lib exception","scope":"any"},
     {"key":"invariant","pattern":"\\[INVARIANT\\]","scope":"any"},

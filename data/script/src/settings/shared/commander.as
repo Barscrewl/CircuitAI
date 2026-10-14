@@ -29,4 +29,9 @@ namespace Global { namespace Commander {
     // Friendly combat metal that must be inside the T3's reach before a kill
     // needing three or more D-gun hits (it soaks the T3's guns).
     float T3Screen=300.f;
+    // Short local opportunities only; a remote artillery hunt or commander
+    // trade requires an explicit policy override.
+    float T3Hunt=0.f, T3ArtilleryApproach=180.f, T3Trade=0.f, T3RetrySeconds=2.f;
+    float T3CloakedVolleyRisk=0.25f; // future retargeting only; incoming salvos/death blasts retain full risk
+    float T3BaitCount=4.f, T3BaitMargin=150.f, T3BaitDistance=120.f, T3BaitSpacing=80.f, T3BaitTimeout=5.f;
 } }

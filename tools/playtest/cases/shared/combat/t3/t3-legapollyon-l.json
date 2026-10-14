@@ -165,6 +165,10 @@
     "min_damage": 0
   },
   "checks": "commander-t3-duel",
+  "matrix_target": "legapollyon",
+  "completion_targets": [
+    "legapollyon"
+  ],
   "modoptions": {
     "scavunitsforplayers": 1
   }

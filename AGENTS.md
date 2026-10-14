@@ -6,7 +6,48 @@ These instructions apply to the entire repository. `AGENTS.md` is the sole repos
 
 Use `experimental_balanced` as the primary profile for simulations and regression checks unless the user specifies otherwise. Run other profiles as compatibility coverage when shared code changes; do not substitute them for balanced-profile verification.
 
+## Simulation iteration and lifecycle
+
+Apply `skills/playtest/SKILL.md` before using or changing the simulation harness.
+Start with focused checks and short supplied arenas; use `--mode fast` and a
+high requested speed (normally 20). Use `--mode visual` explicitly for rendered
+evidence, and `--mode performance` for constant-condition cost comparisons.
+Record achieved speed, not only the requested multiplier. Run broader regression
+and serial pinned before/after performance tests after the focused checks pass.
+
+Functional scenarios may opt into `complete_on` plus a survival grace interval;
+completion requires all scheduled waves and required observations. Never shorten
+fixed performance windows or treat one early kill as completion of a multi-wave
+test. Fail fast by default; `--keep-going` is a bounded diagnostic choice, not
+the standard compile-check mode. Preserve original failures and launcher logs.
+Always use the runner's identity-checked stop/cleanup, including on cancellation;
+never kill all Spring processes or trust a numeric PID alone. Leave no owned
+simulation idle after its result. See the playtest skill for watchdogs, observer
+compatibility, evidence storage and the harness regression command.
+
 ## Performance requirements for every change
+
+Commander correctness suites can be run with
+`python tools/playtest/run_commander_regression.py --dll <pin>/SkirmishAI.dll --data <pin>/data --out <benchmark-session>/regression.json --headless`.
+It validates the selected checks before launch, retains per-case diagnostics,
+and requires process success, an archived PASS and the arena's numerical
+assertions. A watcher PASS alone does not clear damage, casualty or response
+time limits. Use `--cases` and
+`--stop-on-failure` while iterating; run the complete suite, T3 matrix and
+separate serial performance comparisons at the end. A suite entry is a
+designed scenario, not evidence that it has passed.
+
+For serial commander cost comparisons after correctness, use
+`tools/playtest/run_commander_performance.py --baseline <pin> --candidate <pin> --out <benchmark-session>/performance.json --headless --attribution`.
+It retains AB/BA supplied controls, full natural games and separate native
+attribution. Review CPU, commands, populations and environment records before
+making a performance claim; a successful runner exit is only correctness clearance.
+Use `build_native_snapshot.py --reuse <completed-pin>` for iterative native
+builds. Reuse validates source content, including restored headers, instead of
+trusting file dates. Do not run timing comparisons alongside builds or games.
+If the user explicitly keeps the BAR lobby open, `--allow-lobby` records that
+exception without permitting another match/build. Qualify the measurements as
+contended; do not describe them as uncontended performance clearance.
 
 Treat performance as a design constraint for every runtime change, including
 C++, AngelScript, JSON tuning, Lua widgets and cross-AI messaging. Review cost
@@ -279,6 +320,9 @@ This is the implementation target for every AngelScript and profile change.
 | `tools/knowledge/check_script_api.py` | Verifies every `aiXxx.Member` the AngelScript policy uses is registered in `src/circuit/script/*.cpp`, and with `--dll <installed SkirmishAI.dll>` that the registration strings are inside that binary and the file is a stripped ~7 MB build. Run before every launch; a script deployed ahead of its DLL leaves every AI standing at frame 0. |
 | `skills/ai-not-moving/SKILL.md` | The runbook for "the commander does not move at game start": find the last game's `ERR` lines in `infolog.txt`, the message-to-cause table, script/DLL parity with the checker, the deploy rules (ship script and DLL together; never copy from the Recoil install dir mid-build), what to do when there are no `ERR` lines, where to record the case. |
 | `tools/playtest/` | The playtest loop: stage a pinned DLL/data into an isolated write directory, launch, watch, archive the original checks/log/report and screenshots under `runs/<UTC-id>/`. Cases and checks are categorized by domain and area; old short names and explicit paths still resolve. AIR and scorecard runners allocate unique categorized directories by default. Doc: `tools/playtest/README.md`. |
+| `tools/playtest/engine_process.py`, `tools/playtest/widgets/playtest_lifecycle.lua`, `tools/playtest/test_runner_lifecycle.py` | Identity-checked engine handles, wall-clock shutdown/heartbeat, and runner lifecycle/verdict regression tests. |
+| `tools/playtest/run_commander_regression.py`, `tools/playtest/run_commander_performance.py` | Check-driven commander scenarios and serial pinned cost comparisons with full natural-game horizons. |
+| `tools/playtest/build_native_snapshot.py`, `tools/playtest/test_build_native_snapshot.py` | Read-only engine integration against a pinned source snapshot, with content-validated compiler-cache reuse. |
 | `tools/playtest/storage.py`, `tools/playtest/storage-aliases.json` | D-178: canonical case/check resolution with legacy aliases, unique game allocation, immutable result publication and benchmark indexing. New raw games use `../CircuitAI.benchmarks/build-theatres/games/<domain>/<area>/<scenario>/<map>/<UTC-id>/`; existing raw directories are retained. |
 | `tools/playtest/cases/`, `tools/playtest/checks/` | Reusable scenario/check definitions under `<domain>/<area>/`. Never mix raw engine outputs with definitions. Naming rules are in each directory's README. |
 | `../rjm.bar.docs/projects/circuitai/test-storage.md`, `../rjm.bar.docs/projects/circuitai/test-storage-moves.md`, `../rjm.bar.docs/projects/circuitai/test-storage-migration.json` | Storage conventions, linked migration inventory and one-time byte-preservation audit for the definition moves and historical benchmarks/images. |
@@ -651,7 +695,7 @@ symbolising `SkirmishAI.dll` stack offsets.
 Use the cheapest focused validation available in this repository, then broaden according to risk.
 
 - Run diagnostics for edited C++ or AngelScript files.
-- During simulations, provide ongoing in-game behaviour updates and analysis with actual screenshots. Use rendered runs for visual evidence; headless log checks alone do not satisfy this requirement. Show screenshots while the match is running and preserve them with the report.
+- Use a focused rendered `--mode visual` run when validating movement, positioning, cloak or construction behavior; show relevant screenshots during that run and retain them. Fast automated checks and performance comparisons do not need screenshots or slow viewing windows. Headless runs require verified observer startup and coverage; missing observer events are a failure, not proof of success.
 - For configuration changes, parse the changed JSON and check referenced UnitDef names/build edges against the effective BAR data pipeline.
 - Use `git diff --check` before finishing.
 - **Always publish completed builds to `C:\bardev\bar-RecoilEngine\build-amd64-windows\install\AI\Skirmish\BARb\stable`.** This is the required build output, not the live game installation. Stage the stripped `SkirmishAI.dll`, its matching `SkirmishAI.dbg`, and the current `data/` contents together. A scratch build, pinned playtest DLL or update archive does not replace this step. Verify script/DLL API parity there before reporting completion.

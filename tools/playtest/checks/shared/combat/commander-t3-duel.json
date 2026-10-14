@@ -1,5 +1,11 @@
 {
   "stop_minute": 5,
+  "complete_on": {
+    "key": "complete",
+    "pattern": "\\[RangedArena\\].* scenario_complete",
+    "scope": "any"
+  },
+  "completion_grace_seconds": 10,
   "expect": [
     {
       "key": "loaded",

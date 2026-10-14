@@ -184,5 +184,8 @@
     "max_losses": 40,
     "min_damage": 0
   },
-  "checks": "commander-t3-duel"
+  "checks": "commander-t3-artillery-hold",
+  "matrix_target": "legelrpcmech",
+  "artillery_hold": true,
+  "completion_after_seconds": 120
 }

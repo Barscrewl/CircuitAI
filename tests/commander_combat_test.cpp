@@ -64,6 +64,12 @@ int main(int argc,char** argv) {
     assert(std::abs(Separation({0,0},{100,0},{50,100},{},1)-100)<.001f);
     assert(std::abs(Separation({0,0},{0,0},{50,0},{},0)-50)<.001f);
     assert(Separation({0,0},{100,0},{200,0},{100,0},1)>199);
+    // Death explosions use the commander's armour damage and surface distance.
+    assert(BlastDamage(2800,1280,0,1500)==0);
+    assert(BlastDamage(2800,1280,1,640)==2800);
+    assert(std::abs(BlastDamage(2800,1280,0,640)-1400)<.01f);
+    assert(!Survivable(1900,3700,BlastDamage(2800,1280,0,300),.2f));
+    assert(Survivable(3700,3700,BlastDamage(2800,1280,0,300),.2f));
     contacts={Enemy(10,100,0),Enemy(20,200,0)};
     assert(ScoreLine(contacts,{}, {1,0},250,500,8,0,12,20).requiredHit);
     contacts[0].stopAfter=true;
@@ -83,6 +89,40 @@ int main(int argc,char** argv) {
     assert(group.seed==1 && group.metal==500);                    // larger cluster wins
     attackers={{{300,0},200},{{-300,0},200}};
     assert(StrongestGroup(attackers,{},600,100).seed==0);         // ties keep engine order
+    // The shared base can relocate between 1 Hz plans, while the commander
+    // continues to hold the same station. An unrelated retreat must not shift
+    // its admissible sidesteps or invalidate its already planned rear goal.
+    Point base={1800,960},station={251,1921};
+    FallbackBoundary boundary{base,Length(station-base)};
+    base={2200,960};
+    assert(boundary.Contains(station,32));
+    const FallbackBoundary shifted={base,boundary.radius};
+    assert(!shifted.Contains(station,32));
+    assert(boundary.Contains(boundary.anchor+Point{boundary.radius,0},.01f));
+    assert(!boundary.Contains(boundary.anchor+Point{boundary.radius+33,0},32));
+    // A new plan explicitly replaces both fields, including the relocated base.
+    boundary={base,Length(station-base)};
+    assert(boundary.Contains(station,32));
+    // A ready missile 2 seconds away cannot hit during a .3-second shot.
+    assert(ImpactVolleys(.3f,6.f,0.f,2.f)==0.f);
+    assert(ImpactVolleys(.3f,6.f,0.f,0.f)>1.f); // a ready beam can
+    assert(ImpactVolleys(.3f,6.f,4.f,2.2f)==1.f); // missile launched 2 s ago
+    assert(ImpactVolleys(.3f,6.f,4.f,3.f)==0.f); // not yet in the window
+    assert(ImpactVolleys(.3f,6.f,3.f,2.f)==0.f); // already passed
+    assert(ImpactVolleys(2.f,1.f,.5f,4.f)==2.f); // two earlier salvos in flight
+    // Concealment policy affects future acquisition, never an observed reload's
+    // earlier projectiles. A zero policy weight still counts those salvos.
+    assert(ImpactVolleys(.3f,6.f,4.f,2.2f,0.f)==1.f);
+    assert(ImpactVolleys(2.f,1.f,.5f,4.f,.25f)==2.f);
+    assert(ImpactVolleys(.3f,6.f,0.f,0.f,.25f)==ImpactVolleys(.3f,6.f,0.f,0.f)*.25f);
+    assert(BeamIntensity(0,900,0)==1.f);
+    assert(BeamIntensity(900,900,0)==.5f);
+    assert(BeamIntensity(900,900,.8f)==.8f);
+    assert(BeamIntensity(900,900,1)==1.f); // non-beam metadata preserves damage
+    assert(BeamIntensity(-20,900,0)==1.f); // overlapping collision volumes
+    assert(CollisionHits(40,520)==6.f);
+    assert(!Survivable(3700,3700,1200*CollisionHits(40,520),.2f));
+    assert(CollisionHits(0,520)==1.f);
     if(argc>1 && std::string(argv[1])=="--benchmark") {
         std::vector<Attacker> crowd; for(int i=0;i<400;++i) crowd.push_back({{value(rng)*.25f,value(rng)*.25f},100});
         float groupMetal=0;

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from benchmark_store import RAW_ROOT
 import storage
+import playtest
 from air_arena import lua
 
 HERE = Path(__file__).resolve().parent
@@ -39,7 +40,7 @@ def prepare(args):
     stage = command + ['stage','--dir',str(directory),'--dll',str(args.dll),'--data',str(args.data),
         '--map',case['map'],'--map-file',str(starts),'--role',role,'--roles','all','--ally-spots',case.get('ally_spots','1'),
         '--side',case.get('side','armada'),'--game',args.game,
-        '--engine','recoil_2026.07.04','--speed',str(args.speed),'--minutes',str(args.minutes),
+        '--engine','recoil_2026.07.04','--speed',str(args.speed),'--mode',getattr(args,'mode','fast'),'--minutes',str(args.minutes),
         '--shots','','--width','1280','--height','720','--lean-render','--bonus','0',
         '--ai-option','profile='+args.profile,'--ai-option','random_seed='+str(args.seed),
         '--modoption','deathmode=neverend','--modoption','startenergy='+str(case.get('start_energy',1000000)),
@@ -139,17 +140,40 @@ def prepare(args):
         source=source[:start]+'\n Global::AISettings::Role='+fixture_role+'; // commander fixture role\n'+source[start:]
         if case.get('enemy_commander_home'):
             # D-294: ...and its own commander control would deploy it with the T3.
-            source=source[:start]+'\n if (ai.teamId==1 && ai.frame<2*SECOND) CommanderCombat::Override("enabled",0.f); // keep enemy commander home\n'+source[start:]
+            source=source[:start]+'\n if (ai.teamId=='+str(case.get('enemy_team',1))+' && ai.frame<2*SECOND) CommanderCombat::Override("enabled",0.f); // keep enemy commander home\n'+source[start:]
         # D-293: exercise the per-AI script override on team 0 only; it must
         # win over the profile JSON that CommanderCombat::Update applies.
         for key,value in case.get('commander_overrides',{}).items():
             source=source[:start]+'\n if (ai.teamId==0 && ai.frame<2*SECOND) CommanderCombat::Override("'+key+'",'+repr(float(value))+'f); // per-AI override fixture\n'+source[start:]
+        declarations=''
+        events=''
+        for index,event in enumerate(case.get('commander_override_events',[])):
+            key=event['key']
+            if not re.fullmatch(r'[a-zA-Z0-9_.]+',key):raise ValueError('Invalid commander option key')
+            flag='_CommanderFixtureEvent'+str(index)
+            declarations+='bool '+flag+'=false;\n'
+            action=('CommanderCombat::ClearOverride("'+key+'");' if event.get('clear') else
+                    'CommanderCombat::Override("'+key+'",'+repr(float(event['value']))+'f);')
+            events+='\n if(ai.teamId==0 && ai.frame>='+str(int(event['seconds']))+'*SECOND && !'+flag+') { '+flag+'=true; '+action+' }\n'
+        if case.get('commander_lifecycle_probe'):
+            declarations+='int _CommanderFixtureOperation=-1; bool _CommanderFixtureCompared=false;\n'
+            events+='''
+ if(ai.teamId==0 && ai.frame>=10*SECOND && _CommanderFixtureOperation<0)
+     _CommanderFixtureOperation=aiBuilderMgr.GetCommanderOperation();
+ if(ai.teamId==0 && ai.frame>=20*SECOND && !_CommanderFixtureCompared) {
+     _CommanderFixtureCompared=true;
+     AiLog(_CommanderFixtureOperation==aiBuilderMgr.GetCommanderOperation()
+         ? "[RangedArena] lifecycle_operation_preserved"
+         : "[RangedArena] ERROR unrelated_loss_changed_operation");
+ }
+'''
+        source=source[:start]+events+source[start:]
         if case.get('commander_energy_test'):
             source=source[:start]+'''\n
  if (ai.teamId==0 && ai.frame==22*SECOND)
      TeamEconomy::SendEnergy(1,TeamEconomy::OwnEnergy(TeamEconomy::CURRENT)); // declared one-time bank drain
 '''+source[start:]
-        path.write_text(source)
+        path.write_text(declarations+source)
     if case.get('trace_spam'):
         # Supplied buildings did not come through TECH's reserved layout.
         # Its geometry/economy Tick cannot judge this isolated production
@@ -184,6 +208,9 @@ def prepare(args):
                 data=data[:match.start(2)]+block+data[match.end(2):]
             path.write_bytes(data)
     case.update(variant=args.variant,profile=args.profile,seed=args.seed,minutes=args.minutes,speed=args.speed,headless=args.headless)
+    case['mode'] = getattr(args, 'mode', 'fast')
+    if case['mode'] != 'visual':
+        case['photos'] = []
     if case.get('fireline_observer'):
         # Read task ownership in the real host; never issue combat commands.
         profile=staged/'script'/args.profile/'main.as'
@@ -214,6 +241,8 @@ def prepare(args):
               ((['enemy factories and mobile builders frozen','scripted enemy path'] if case.get('production')
                 else ['frozen economic builders/factories','scripted enemy path'])
                if args.profile.startswith('experimental_') else ['native legacy economy remains active'])}
+    if case.get('commander_trace'):
+        pins['diagnostics']['CIRCUIT_COMMANDER_TRACE']='1'
     if case.get('production'):
         pins['overrides'] += ['team 0 factories and static assistants active; mobile builders '+('active' if case.get('builders') else 'frozen')]
     if case.get('commander_front_work'):
@@ -240,18 +269,27 @@ def main():
     parser.add_argument('--game',default='Beyond All Reason test-31479-433a460')
     parser.add_argument('--seed',type=int,default=2071)
     parser.add_argument('--minutes',type=int,default=4)
-    parser.add_argument('--speed',type=int,default=8)
+    parser.add_argument('--speed',type=int,default=20)
+    parser.add_argument('--mode',choices=['fast','visual','performance'],default='fast')
     parser.add_argument('--headless',action='store_true')
     parser.add_argument('--stage-only',action='store_true')
     args=parser.parse_args();directory,command=prepare(args)
     if args.stage_only: return 0
     launch=command+['launch','--dir',str(directory),'--engine','recoil_2026.07.04']
     if args.headless: launch+=['--headless']
-    subprocess.run(launch,check=True)
+    # Validate before spawning; cleanup must also run if the watcher cannot start.
     case=json.loads((directory/'ranged-arena.json').read_text())
+    playtest.validate_checks(case.get('checks','ranged-arena'))
     watch=command+['watch','--dir',str(directory),'--role',case.get('role','FRONT'),'--checks',case.get('checks','ranged-arena'),
         '--minutes',str(args.minutes),'--wall-minutes','8']
-    if args.variant=='baseline': watch+=['--keep-going']
-    return subprocess.run(watch,check=False).returncode
+    try:
+        environment=dict(os.environ)
+        if case.get('commander_trace'):
+            if args.mode=='performance':raise ValueError('Commander trace is diagnostic, not a performance input')
+            environment['CIRCUIT_COMMANDER_TRACE']='1'
+        subprocess.run(launch,check=True,env=environment)
+        return subprocess.run(watch,check=False).returncode
+    finally:
+        subprocess.run(command+['stop','--dir',str(directory)],check=True)
 
 if __name__=='__main__':sys.exit(main())

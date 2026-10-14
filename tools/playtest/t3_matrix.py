@@ -7,7 +7,7 @@ whether the D-gun landed the killing blow, D-gun hits, commander survival and
 lowest health, and time to kill. Results go to the benchmark checkout.
 
   python tools/playtest/t3_matrix.py --dll <pin>/SkirmishAI.dll --data <pin>/data \
-      [--units corkorg,corjugg] [--lines l,h,w,n] [--speed 4] [--headless]
+      [--units corkorg,corjugg] [--lines l,h,w,n] [--speed 20] [--headless]
 """
 import argparse
 import datetime
@@ -36,8 +36,8 @@ NAVAL = {'coresuppt3'}
 SCAV = {'corves', 'coresuppt3', 'legapollyon'}
 
 EYES = [(4000, 5500, 'armeyes'), (4000, 5950, 'armeyes')]
-# Artillery (max range from the unit pages) shells the line from outside turret
-# reach: the commander must hunt it.
+# Siege scenarios now require survival without a long exposed pursuit. Close
+# opportunistic artillery engagements are separate supplied cases.
 SIEGE = {'corcat': 1350, 'legeallterrainmech': 1380, 'armvang': 1450, 'legelrpcmech': 3100}
 LINES = {
     'l': [(3760, 4900, 'armllt'), (3880, 4900, 'armllt'), (4120, 4900, 'armllt'), (4240, 4900, 'armllt'),
@@ -66,7 +66,7 @@ def case_for(unit, line):
     groups.append({'unit': unit, 'team': 1, 'count': 1, 'position': spawn, 'after_seconds': 25})
     if siege:
         # Spotting both ways: the enemy camera (outside turret reach) lets the
-        # artillery shell the line; ours lets the commander see what to hunt.
+        # artillery shell the line; ours lets the commander assess the threat.
         groups.append({'unit': 'armeyes', 'team': 1, 'count': 1, 'position': [4600, 5250], 'after_seconds': 20})
         groups.append({'unit': 'armeyes', 'team': 0, 'count': 1, 'position': [4650, 5450], 'after_seconds': 12})
     name = f't3-{unit}-{line}'
@@ -121,7 +121,8 @@ def sea_case(unit):
     return name, case
 
 
-CHECK = {'stop_minute': 5, 'expect': [
+CHECK = {'stop_minute': 5, 'complete_on': {'key':'complete','pattern':r'\[RangedArena\].* scenario_complete','scope':'any'},
+    'completion_grace_seconds':10, 'expect': [
     {'key': 'loaded', 'pattern': '\\[RangedArena\\].* loaded', 'scope': 'any', 'by_minute': 1},
     {'key': 'plan', 'pattern': '\\[CommanderT3\\] unit=\\d+ target=\\d+ def=\\w+ plan', 'scope': 'any', 'by_minute': 4},
     {'key': 'dead_t3', 'pattern': '\\[RangedArena\\].* death id=\\d+ team=1 unit=', 'scope': 'any', 'by_minute': 5}],
@@ -134,16 +135,23 @@ CHECK = {'stop_minute': 5, 'expect': [
 FRAME = re.compile(r'\[f=(-?\d+)\]')
 
 
-def score(infolog):
+def score(infolog, case=None):
     """Score one run. The front commander is the one the fixture spawned."""
     res = {'t3': None, 'spawn': None, 'death': None, 'dgun_hits': 0, 'other_damage': 0, 'killing_weapon': None,
-           'commander': None, 'commander_dead': None, 'commander_min_hp': None, 'plan': None, 'fallback': 0}
-    for line in open(infolog, encoding='utf-8', errors='replace'):
+           'commander': None, 'commander_dead': None, 'commander_min_hp': None, 'plan': None, 'fallback': 0,
+           'last_alive_frame':None,'fatal':False,'held_line':True,'complete_frame':None,'pursued_artillery':False}
+    def lines():
+        with Path(infolog).open(encoding='utf-8',errors='replace') as stream:
+            yield from stream
+    for line in lines():
         m = FRAME.search(line)
         f = int(m[1]) if m else -1
-        if (s := re.search(r'spawn id=(\d+) team=0 unit=armcom ', line)) and res['commander'] is None:
+        if re.search(r'\[INVARIANT\]|: ERR\s+:|SCRIPT CRASH|Lib exception|Access violation|has crashed|Fatal:',line):
+            res['fatal']=True
+        if 'scenario_complete' in line:res['complete_frame']=f
+        if (s := re.search(r'spawn id=(\d+) team=0 unit=(?:armcom|corcom|legcom) ', line)) and res['commander'] is None:
             res['commander'] = s[1]
-        elif s := re.search(r'spawn id=(\d+) team=1 unit=(\w+)', line):
+        elif (s := re.search(r'spawn id=(\d+) team=1 unit=(\w+)', line)) and (not case or not case.get('matrix_target') or s[2]==case['matrix_target']):
             res['t3'], res['spawn'], res['unit'] = s[1], f, s[2]
         elif (d := re.search(r'damage id=(\d+) team=1 amount=(-?\d+) attacker=(\d+) attackerTeam=0 .*weaponName=(\S+)', line)) and d[1] == res['t3']:
             # Credit only the commander under test: the base start commander
@@ -162,17 +170,35 @@ def score(infolog):
         elif res['commander'] and (c := re.search(r'commander id=' + res['commander'] + r' .* hp=(\d+) cloaked=', line)):
             hp = int(c[1])
             res['commander_min_hp'] = hp if res['commander_min_hp'] is None else min(res['commander_min_hp'], hp)
+            if hp>0:res['last_alive_frame']=f
+            if case and (p:=re.search(r' x=(-?\d+) z=(-?\d+) ',line)):
+                origin=case['groups'][0]['position']
+                if (int(p[1])-origin[0])**2+(int(p[2])-origin[1])**2>case.get('line_radius',800)**2:
+                    res['held_line']=False
+                if case.get('artillery_hold') and res['spawn'] is not None and f>=res['spawn']:
+                    dest=case.get('artillery_axis',case['enemy_destination']);dx,dz=dest[0]-origin[0],dest[1]-origin[1]
+                    forward=((int(p[1])-origin[0])*dx+(int(p[2])-origin[1])*dz)/max(1,(dx*dx+dz*dz)**.5)
+                    if forward>case.get('max_artillery_advance',220):res['pursued_artillery']=True
         elif p := re.search(r'\[CommanderT3\] unit=(\d+) .*def=\w+ plan (.*)', line):
             if p[1] == res['commander'] and res['plan'] is None:
                 res['plan'] = p[2].strip()
         elif res['commander'] and re.search(r'\[CommanderFallback\] unit=' + res['commander'] + ' on', line):
             res['fallback'] += 1
     res['dgun_kill'] = bool(res['death'] and res['killing_weapon'] and 'disintegrator' in res['killing_weapon'])
-    res['survived'] = res['commander_dead'] is None
+    res['survived'] = bool(res['commander'] and res['commander_dead'] is None and res['last_alive_frame'] is not None)
     res['seconds_to_kill'] = round((res['death'] - res['spawn']) / 30, 1) if res['death'] and res['spawn'] else None
     # DGUN: the D-gun landed the killing blow. LINE: the defence killed it
     # first (cheap/fast T3) with the commander alive and on the line.
-    res['outcome'] = ('DGUN' if res['dgun_kill'] else 'LINE') if res['death'] and res['survived'] else 'FAIL'
+    observed = (res['death'] is not None and res['last_alive_frame'] is not None and
+                res['last_alive_frame'] >= res['death'] + 10*30)
+    res['outcome'] = 'FAIL'
+    if observed and res['survived'] and not res['fatal']:
+        if res['dgun_kill']:res['outcome']='DGUN'
+        elif case and res['held_line'] and res['other_damage']>0:res['outcome']='LINE'
+    if case and case.get('artillery_hold') and res['t3'] and res['survived'] and not res['fatal']:
+        if res['last_alive_frame']>=(case['completion_after_seconds']+10)*30 and not res['pursued_artillery']:
+            res['outcome']='HOLD'
+        else:res['outcome']='FAIL'
     res['pass'] = res['outcome'] != 'FAIL'
     return res
 
@@ -183,42 +209,74 @@ def main():
     ap.add_argument('--data', required=True)
     ap.add_argument('--units', default=','.join(u for u, _ in T3))
     ap.add_argument('--lines', default='l')
-    ap.add_argument('--speed', type=int, default=4)
+    ap.add_argument('--speed', type=int, default=20)
+    ap.add_argument('--mode',choices=['fast','visual','performance'],default='fast')
     ap.add_argument('--minutes', type=int, default=5)
     ap.add_argument('--headless', action='store_true')
     ap.add_argument('--out', required=True, help='results JSON (benchmark checkout)')
     args = ap.parse_args()
+    out = Path(args.out)
+    if out.exists():raise ValueError('Use a fresh output path; previous results are evidence')
     CASES.mkdir(parents=True, exist_ok=True)
     (CHECKS / 'commander-t3-duel.json').write_text(json.dumps(CHECK, indent=2) + '\n', newline='\n')
     order = {u: c for u, c in T3 + EXTRA}
     units = sorted(args.units.split(','), key=lambda u: -order.get(u, 0))
     results = []
-    out = Path(args.out)
+    out.parent.mkdir(parents=True,exist_ok=True)
     for unit in units:
         for line in args.lines.split(','):
             name, case = case_for(unit, line)
+            case['matrix_target']=unit
+            if unit in SIEGE and line!='s':
+                case.update(artillery_hold=True,completion_after_seconds=120,checks='commander-t3-artillery-hold')
+            elif unit=='corves':
+                # Vesuvius's 1000-range cannon should not provoke the disabled
+                # artillery hunt. Naval surface targets retain the duel check:
+                # a ship in the shallows can still be hit from a dry origin.
+                # Require survival without advancing toward its spawn; an
+                # incoming enemy's destination is behind us, not the front axis.
+                spawn=next(g['position'] for g in case['groups'] if g['team']==1 and g['unit']==unit)
+                case.update(artillery_hold=True,artillery_axis=spawn,completion_after_seconds=120,
+                    checks='commander-t3-artillery-hold')
+                case['description']+=' Safety objective: hold or withdraw alive; do not pursue the distant cannon.'
+            else:case['completion_targets']=[unit]
             if unit in SCAV:
                 case['modoptions'] = {'scavunitsforplayers': 1}  # load Scavenger unit defs
             (CASES / f'{name}.json').write_text(json.dumps(case, indent=2) + '\n', newline='\n')
             command = [sys.executable, str(HERE / 'ranged_arena.py'), '--case', name, '--dll', args.dll,
-                       '--data', args.data, '--minutes', str(args.minutes), '--speed', str(args.speed)]
+                       '--data', args.data, '--minutes', str(args.minutes), '--speed', str(args.speed),'--mode',args.mode]
             if args.headless:
                 command.append('--headless')
-            run = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace')
-            report = re.search(r'\[playtest\] report: (.*report\.md)', run.stdout)
+            diagnostic=out.parent/(out.stem+'-'+name+'-runner.txt')
+            print('Running '+name+'; log: '+str(diagnostic),flush=True)
+            # Keep progress and pre-report failures on disk while the engine
+            # runs; do not retain an entire launcher transcript in memory.
+            with diagnostic.open('w',encoding='utf-8') as output:
+                run = subprocess.run(command,stdout=output,stderr=subprocess.STDOUT,check=False)
+            report=None
+            with diagnostic.open(encoding='utf-8',errors='replace') as output:
+                for text in output:
+                    match=re.search(r'\[playtest\] report: (.*report\.md)',text)
+                    if match:report=match
             row = {'unit': unit, 'cost': order.get(unit), 'line': LINE_NAMES[line], 'case': name,
-                   'report': report[1].strip() if report else None}
+                   'report': report[1].strip() if report else None,'runner_returncode':run.returncode,'archive_verdict':None,
+                   'runner_log':str(diagnostic)}
             if report:
                 infolog = Path(report[1].strip()).parent / 'infolog.txt'
                 if infolog.exists():
-                    row.update(score(infolog))
-            row['verdict'] = row.get('outcome', 'FAIL')
+                    row.update(score(infolog,case))
+                archive=infolog.parent/'result.json'
+                if archive.exists():row['archive_verdict']=json.loads(archive.read_text()).get('verdict')
+            row['pass']=bool(row.get('pass') and run.returncode==0 and row['archive_verdict']=='PASS')
+            row['verdict'] = row.get('outcome', 'FAIL') if row['pass'] else 'FAIL'
+            if not report:print('Runner failed before report: '+str(diagnostic),flush=True)
             results.append(row)
             print(f"{unit:<20} {row['line']:<7} {row['verdict']}  dgun_kill={row.get('dgun_kill')} hits={row.get('dgun_hits')} "
                   f"survived={row.get('survived')} min_hp={row.get('commander_min_hp')} t={row.get('seconds_to_kill')} "
                   f"fallback={row.get('fallback')} plan={row.get('plan')}", flush=True)
-            out.write_text(json.dumps({'generated': datetime.datetime.utcnow().isoformat() + 'Z', 'dll': args.dll,
+            out.write_text(json.dumps({'generated': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'dll': args.dll,
                                        'results': results}, indent=2) + '\n')
+            if not report:return 1 # Preserve the incomplete batch; repair infrastructure before retrying.
     return 0 if all(r['verdict'] != 'FAIL' for r in results) else 1
 
 

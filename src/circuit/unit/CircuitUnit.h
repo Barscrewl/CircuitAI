@@ -122,6 +122,8 @@ public:
 
 	void SetIsDead() { isDead = true; }
 	bool IsDead() const { return isDead; }
+    void MarkDestroying() { destroying = true; }
+    bool IsDestroying() const { return destroying; }
 
 	void SetDamagedFrame(int frame) { damagedFrame = frame; }
 	int GetDamagedFrame() const { return damagedFrame; }
@@ -275,6 +277,7 @@ private:
 	CEnemyInfo* target;
 	int targetTile;
 	int priorityTarget = -1; // ID only: never retain a dead enemy wrapper.
+    bool destroying = false; // set before destruction callbacks; IsDead keeps its existing unregister semantics
     springai::AIFloat3 retreatWaypoint;
     int retreatAnchor = -1;
     int retreatWaypointUntil = -1;

@@ -15,6 +15,18 @@ inline Point operator*(Point a, float s) { return {a.x*s,a.z*s}; }
 inline float Dot(Point a, Point b) { return a.x*b.x+a.z*b.z; }
 inline float Length(Point a) { return std::sqrt(Dot(a,a)); }
 inline Point Normal(Point a) { const float n=Length(a); return n>0.001f?a*(1.f/n):Point{}; }
+struct FallbackBoundary {
+    // One value snapshot: another unit can relocate the shared base between
+    // the commander's 1 Hz plans. Never pair this radius with that live base.
+    // O(1), no allocations; replaced as a whole by PlanFallback. Regression:
+    // commander_combat_test and the sixteen-AI dense fallback arena.
+    Point anchor;
+    float radius=0;
+    bool Contains(Point point,float margin=0) const {
+        const Point delta=point-anchor;
+        return Dot(delta,delta)<=(radius+margin)*(radius+margin);
+    }
+};
 struct Contact {
     int id=-1;
     Point pos, velocity; // elmos and elmos/second
@@ -24,6 +36,26 @@ struct Contact {
     bool t3=false; // D-294: tagged once by the observer (in-LOS T3 definition)
 };
 struct Line { float value=0; int kills=0, target=-1; bool blocked=false; Point direction; bool requiredHit=false; };
+// Exposure counts impacts inside the decision window, not launches. Reload
+// evidence also bounds salvos already in flight; beams use zero flight time.
+inline float BeamIntensity(float distance,float range,float minimum) {
+    return range>0.f?std::max(minimum,1.f-std::max(0.f,distance)/(2.f*range)):1.f;
+}
+inline float CollisionHits(float radius,float speed) {
+    // noExplode projectiles apply damage every simulation frame inside the
+    // target volume. Bound a central crossing, including the first contact.
+    return 1.f+std::ceil(2.f*std::max(0.f,radius)*30.f/std::max(1.f,speed));
+}
+inline float ImpactVolleys(float seconds,float reload,float delay,float flight,float newVolleyRisk=1.f) {
+    reload=std::max(.1f,reload); delay=std::max(0.f,delay);
+    const float first=delay+flight;
+    const float future=seconds>=first?(1.f+(seconds-first)/reload)*std::clamp(newVolleyRisk,0.f,1.f):0.f;
+    if(delay<=0.f || flight<=0.f) return future;
+    const float latest=flight-(reload-delay);
+    const float low=std::max(0.f,std::ceil((latest-seconds)/reload));
+    const float high=std::floor(latest/reload);
+    return future+std::max(0.f,high-low+1.f);
+}
 struct ShotClaim { int team,owner,generation,target,until; float damage; };
 class ShotClaims {
 public:
@@ -136,6 +168,12 @@ inline float MinimumValue(float base, float aggression, float weight) {
     return base*std::clamp(1.f-aggression*weight,.25f,2.f);
 }
 inline bool Affordable(float energy,float cost) { return std::isfinite(energy) && energy>=cost; }
+// Recoil GameHelper explosion falloff, using a conservative surface distance.
+inline float BlastDamage(float damage,float radius,float edge,float surfaceDistance) {
+    if(radius<=0 || surfaceDistance>radius) return 0;
+    const float d=std::max(0.f,surfaceDistance), e=std::clamp(edge,0.f,1.f);
+    return std::max(0.f,damage)*(e==1.f || d<1.f ? 1.f : (radius+.001f-d)/(radius+.001f-d*e));
+}
 inline bool Survivable(float health,float maximum,float damage,float reserve) {
     return std::isfinite(damage) && health-damage>=maximum*reserve;
 }

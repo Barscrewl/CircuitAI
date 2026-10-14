@@ -3,7 +3,7 @@
   "unit": "armcom",
   "side": "armada",
   "role": "FRONT",
-  "description": "Funded FRONT T3 interception without support; actual cloak before approaching a Behemoth.",
+  "description": "Funded FRONT T3 interception without support; actual cloak before approaching a Behemoth. Isolate cloak/detection with the friendly-screen admission gate disabled only in this fixture; screen admission has separate bait/line cases.",
   "map": "Comet Catcher Remake 1.8",
   "map_key": "comet",
   "starts": [
@@ -65,5 +65,9 @@
     4300,
     4400
   ],
-  "commander_initial": true
+  "commander_initial": true,
+  "commander_overrides": {
+    "t3_screen": 0
+  },
+  "enemy_commander_home": true
 }

@@ -164,5 +164,9 @@
     "max_losses": 40,
     "min_damage": 0
   },
-  "checks": "commander-t3-duel"
+  "checks": "commander-t3-duel",
+  "matrix_target": "legeheatraymech",
+  "completion_targets": [
+    "legeheatraymech"
+  ]
 }

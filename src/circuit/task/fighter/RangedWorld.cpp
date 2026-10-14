@@ -84,7 +84,16 @@ const CRangedWorld::Capabilities& CRangedWorld::CapabilitiesFor(CCircuitDef* def
         w.burst=std::max(wd->GetBeamTime(),wd->GetSalvoDelay()*std::max(0,wd->GetSalvoSize()-1));
         w.alphaScale=float(std::max(1,wd->GetSalvoSize())*std::max(1,wd->GetProjectilesPerShot()));
         w.splash=wd->GetAreaOfEffect(); w.heightMod=wd->GetHeightMod(); w.cylinder=wd->GetCylinderTargetting();
-        w.ballistic=std::string(wd->GetType())=="Cannon";
+        const std::string weaponType=wd->GetType();
+        w.ballistic=weaponType=="Cannon";
+        w.instant=weaponType=="BeamLaser" || weaponType=="LightningCannon" || weaponType=="Melee";
+        w.continuous=wd->IsNoExplode();
+        // Immutable per-definition metadata: two callbacks once per beam,
+        // retained for this AI lifetime; no live weapon calls in risk scoring.
+        if(weaponType=="BeamLaser") {
+            w.beamMinIntensity=wd->GetMinIntensity();
+            w.beamTargetBorder=std::max(0.f,wd->GetTargetBorder());
+        }
         w.guided=wd->IsTracks();
         w.high=w.def && w.def->IsHighTrajectory();
         w.speed=wd->GetProjectileSpeed();

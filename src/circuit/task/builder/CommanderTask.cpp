@@ -20,6 +20,7 @@ void CCommanderTask::AssignTo(CCircuitUnit* unit) {
     IUnitTask::AssignTo(unit);
 }
 void CCommanderTask::Restore(CCircuitUnit* unit) {
+    if(unit->IsDead() || unit->IsDestroying()) return;
     TRY_UNIT(manager->GetCircuit(),unit,
         unit->TrySetFireState(static_cast<CCircuitDef::FireT>(oldFire));
         unit->TrySetMoveState(static_cast<CCircuitDef::MoveT>(oldMove));

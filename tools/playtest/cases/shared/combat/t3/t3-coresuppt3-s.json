@@ -155,6 +155,10 @@
     "min_damage": 0
   },
   "checks": "commander-t3-duel",
+  "matrix_target": "coresuppt3",
+  "completion_targets": [
+    "coresuppt3"
+  ],
   "modoptions": {
     "scavunitsforplayers": 1
   }

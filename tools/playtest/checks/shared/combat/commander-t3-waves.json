@@ -11,7 +11,7 @@
       "key": "shot",
       "pattern": "\\[Commander\\].*shot_confirmed",
       "scope": "any",
-      "by_minute": 2
+      "by_minute": 8
     },
     {
       "key": "dead_armmar",
@@ -70,5 +70,11 @@
       "pattern": "\\[RangedArena\\].* death id=\\d+ team=0 unit=armcom",
       "scope": "any"
     }
-  ]
+  ],
+  "complete_on": {
+    "key": "complete",
+    "pattern": "\\[RangedArena\\].* scenario_complete",
+    "scope": "any"
+  },
+  "completion_grace_seconds": 10
 }
