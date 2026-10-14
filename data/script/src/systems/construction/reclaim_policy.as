@@ -35,6 +35,25 @@ namespace TechReclaim {
     int lastTarget = -1;          // ... for this target id (read by Audit)
     dictionary refusedLogged;     // id -> true: the energy-storage refusal is logged once per target
     dictionary deferLogged;       // id -> frame: a deferral is logged at most every 30 s per target
+    // The deferred state the "should have been reclaimed by now" invariants
+    // read (D-076: one owner): id -> frame the gate last deferred that target,
+    // and source -> frame it last deferred any target of that path. Both O(1).
+    // A deferral is current for ReclaimDeferredStaleSeconds after the last ask
+    // (the rows re-ask every 3-5 s); cleared the moment the gate admits.
+    dictionary deferredAt;
+    dictionary deferredBySource;
+    bool IsDeferred(int id)
+    {
+        int64 at = -100000;
+        if (!deferredAt.get("" + id, at)) return false;
+        return ai.frame - int(at) <= int(Global::RoleSettings::Tech::ReclaimDeferredStaleSeconds) * SECOND;
+    }
+    bool IsDeferredBy(const string &in source)
+    {
+        int64 at = -100000;
+        if (!deferredBySource.get(source, at)) return false;
+        return ai.frame - int(at) <= int(Global::RoleSettings::Tech::ReclaimDeferredStaleSeconds) * SECOND;
+    }
     dictionary audited;           // id -> true: the audit line is written once per target
 
     // Script reclaims in flight, parallel arrays (swap-removed, no per-tick allocation).
@@ -102,6 +121,8 @@ namespace TechReclaim {
         }
         string why;
         if (!Fits(target, why)) {
+            deferredAt.set(key, int64(ai.frame));
+            deferredBySource.set(source, int64(ai.frame));
             int64 last = -100000;
             deferLogged.get(key, last);
             if (ai.frame - int(last) >= 30 * SECOND) {
@@ -110,6 +131,7 @@ namespace TechReclaim {
             }
             return false;
         }
+        deferredAt.delete(key);
         lastSource = source;
         lastTarget = target.id;
         return true;

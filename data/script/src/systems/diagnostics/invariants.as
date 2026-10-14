@@ -288,10 +288,13 @@ namespace Invariants {
 
         // INV-006: no wind, solar or advanced solar stands InvariantReclaimSeconds
         // after an advanced fusion does (the owner's rule, D-077).
+        // D-290: never into an overflowing bank: while the reclaim gate is
+        // deferring energy reclaims (the bank has no room for the refund) the
+        // clock holds; the [RECLAIM] deferred line says why.
         const string side = Global::AISettings::Side;
         CCircuitDef@ afus = ai.GetCircuitDef(UnitHelpers::GetAdvFusionNameForSide(side));
         if (!MetalEconomy::Active() && afus !is null && afus.count - aiBuilderMgr.GetUnfinishedCount(afus) > 0) {
-            if (afusSince < 0) afusSince = ai.frame;
+            if (afusSince < 0 || TechReclaim::IsDeferredBy("energy.reclaim")) afusSince = ai.frame;
             else if (ai.frame - afusSince >= int(Global::RoleSettings::Tech::InvariantReclaimSeconds) * SECOND) {
                 int left = 0;
                 array<string> names = { UnitHelpers::GetWindNameForSide(side), UnitHelpers::GetSolarNameForSide(side), UnitHelpers::GetAdvSolarNameForSide(side) };
@@ -702,11 +705,15 @@ namespace Invariants {
         }
 
         // INV-044 (D-114): with FrontReclaimAtCount land factories on the map, no
-        // land factory stands at the main base for FrontBaseReclaimSeconds
+        // land factory stands at the main base for FrontBaseReclaimSeconds.
+        // D-290 (owner: never reclaim into an overflowing bank): while the gate
+        // defers this lab's reclaim the clock holds (played 20261014T014008Z:
+        // an injected full bank deferred armalab 11560 for 17 minutes and this
+        // fired every minute); the lab is retired meanwhile, producing nothing.
         {
             CCircuitUnit@ bf = TechFactories::BaseLandFactory();
             if (bf is null) baseFactorySince = -1;
-            else if (baseFactorySince < 0) baseFactorySince = ai.frame;
+            else if (baseFactorySince < 0 || TechReclaim::IsDeferred(bf.id)) baseFactorySince = ai.frame;
             else if (ai.frame - baseFactorySince >= Global::RoleSettings::Tech::FrontBaseReclaimSeconds * SECOND && ai.frame - baseFactoryLog >= 60 * SECOND) {
                 baseFactoryLog = ai.frame;
                 Violation("INV-044", "front", bf.circuitDef.GetName() + " " + bf.id + " still stands at the main base with " + TechFactories::LandFactoryCount()
