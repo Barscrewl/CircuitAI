@@ -559,11 +559,17 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         // INV-206: an accepted assist Move leaves the unit moving or with a
         // pending worker query by its next decision. A rejected worker path or
         // MoveFailed counts a failure; a fresh danger hold clears the check.
-        if(!moving && !query && rejections==assistCheckRejections && !assistInvariantLogged
+        // The engine may also finish or drop a MOVE within one decision (an
+        // engine refusal this controller cannot tell from a lost command), so
+        // only three consecutive accepted moves that each left the unit idle
+        // are reported (8v8 20261014T015406Z: 30 single-decision hits).
+        if(!moving && !query && rejections==assistCheckRejections
             && pos.SqDistance2D(destination)>128.f*128.f) {
-            ai->LOG("[INVARIANT] INV-206 ranged assist move accepted but unit %d is neither moving nor querying",id);
-            assistInvariantLogged=true;
-        }
+            if(++assistIdleStreak>=3 && !assistInvariantLogged) {
+                ai->LOG("[INVARIANT] INV-206 ranged assist moves accepted but unit %d stays neither moving nor querying",id);
+                assistInvariantLogged=true;
+            }
+        } else assistIdleStreak=0;
         assistCheckFrame=-1;
     }
 
@@ -756,7 +762,12 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
             if(!c.def || !c.los || c.def->IsAbleToFly()) continue;
             if((c.mobile?!policy.allowMobile:!policy.allowStatic) || !(c.def->GetCategory()&def->GetTargetCategory())
                 || (c.def->GetCategory()&policy.avoidCategory)) continue;
-            const float distance=pos.SqDistance2D(c.pos);
+            // Target hysteresis: a moving fight re-ranks "nearest" every few
+            // seconds; without it (8v8 20261014T015406Z) a Starlight changed
+            // assist target 19-23 times in three minutes with destinations
+            // jumping 500-2000 elmos. Keep the current target unless another
+            // engaged contact is at least ~1.7x nearer (0.33 on squared distance).
+            const float distance=pos.SqDistance2D(c.pos)*(c.id==assistTarget?.33f:1.f);
             if(distance>=nearest) continue;
             int ally=-1;
             if(!world.Engaged(i,policy.assistMargin,&ally)) continue;
@@ -857,7 +868,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         if(!world.Safe(pos,chosen,policy.safetyMargin,true) || world.DangerSign(chosen,policy.safetyMargin)>0)
             ai->LOG("[INVARIANT] INV-205 ranged assist destination is covered unit=%d target=%d dest=%.0f,%.0f",id,c.id,chosen.x,chosen.z);
         if(c.id!=assistTarget) {
-            assistTarget=c.id; assistInvariantLogged=false;
+            assistTarget=c.id; assistInvariantLogged=false; assistIdleStreak=0;
             ai->LOG("RANGED: assist unit=%d target=%d ally=%d dest=%.0f,%.0f",id,c.id,assistAlly,chosen.x,chosen.z);
         }
     }
