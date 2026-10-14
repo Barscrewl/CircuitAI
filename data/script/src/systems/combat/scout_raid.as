@@ -56,6 +56,7 @@ namespace ScoutRaid {
             // readable after init (D-296); other sections are gone by now.
             jsonEnabled = aiSetupMgr.ConfigBool("scout_raid/enabled", false);
             configRead = true;
+            aiBattle.SetUnknownHazardRange(Global::ScoutRaid::UnknownHazardRange);
             string units;
             for (uint i = 0; i < Global::ScoutRaid::Units.length(); ++i) units += (i > 0 ? "," : "") + Global::ScoutRaid::Units[i];
             GenericHelpers::LogUtil("[ScoutRaid] enabled=" + (Global::ScoutRaid::Enabled && jsonEnabled) + " json=" + jsonEnabled
@@ -403,7 +404,19 @@ namespace ScoutRaid {
             bool hazardAhead = false;
             for (uint k = r.cursor; k < r.route.length() && k < r.cursor + 3; ++k)
                 if (aiBattle.GroundHazard(r.route[k], margin) > 0.0f) { hazardAhead = true; break; }
-            if (hazardAhead) { if (r.hazardSince < 0) r.hazardSince = ai.frame; }
+            if (hazardAhead) {
+                if (r.hazardSince < 0) {
+                    r.hazardSince = ai.frame;
+                    // A fast scout covers 130+ elmos per second: stop now, at
+                    // the first covered waypoint, rather than run on until the
+                    // budgeted replan. One extra MOVE per hazard episode.
+                    array<AIFloat3> hold = {pos};
+                    r.task.SetRoute(hold);
+                    r.route.resize(0); r.cursor = 0;
+                    r.nextReplan = AiMin(r.nextReplan, ai.frame + SECOND);
+                    GenericHelpers::LogUtil("[ScoutRaid] hazard ahead unit=" + r.id + " hold at (" + int(pos.x) + "," + int(pos.z) + ")", 1);
+                }
+            }
             else r.hazardSince = -1;
             const bool idleAtEnd = atEnd && r.target < 0;
             if ((targetLost || hazardAhead || stuck || idleAtEnd) && ai.frame >= r.nextReplan) {

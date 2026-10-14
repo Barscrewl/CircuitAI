@@ -1395,6 +1395,7 @@ void CInitScript::RegisterMgr()
     // D-296 scout raids: economy kind flags, observed ground hazard, raid route.
     r = engine->RegisterObjectMethod("CBattleAnalysis", "int GetGroundContactKind(int) const", asMETHOD(CBattleAnalysis, GetGroundContactKind), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "float GroundHazard(const AIFloat3& in, float)", asMETHOD(CBattleAnalysis, GroundHazard), asCALL_THISCALL); ASSERT(r >= 0);
+    r = engine->RegisterObjectMethod("CBattleAnalysis", "void SetUnknownHazardRange(float)", asMETHOD(CBattleAnalysis, SetUnknownHazardRange), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "array<AIFloat3>@ GetUnitRaidRoute(const CCircuitDef@, const AIFloat3& in, const AIFloat3& in, float, float)", asFUNCTION(CBattleAnalysis_GetUnitRaidRoute), asCALL_CDECL_OBJFIRST); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "int GetNavalContactCount() const", asMETHOD(CBattleAnalysis, GetNavalContactCount), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "AIFloat3 GetNavalContactPos(int) const", asMETHOD(CBattleAnalysis, GetNavalContactPos), asCALL_THISCALL); ASSERT(r >= 0);
