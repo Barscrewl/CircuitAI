@@ -140,6 +140,45 @@ namespace ScoutRaid {
         return best;
     }
 
+    bool LandPassable(const AIFloat3& in p)
+    {
+        return aiBattle.IsPassable(p, Lanes::LAND) || aiBattle.IsPassable(p, Lanes::BOT);
+    }
+
+    // Nearest passable ground near a point (the enemy start itself can be a
+    // cliff, border strip or lake centre: glitters (4000,9800) is impassable).
+    // Rings of 128 elmos, 16 bearings, outside observed armed coverage when
+    // possible. O(12*16) IsPassable lookups; results are cached per key.
+    dictionary snappedGoals;
+    AIFloat3 SnapGoal(const AIFloat3& in goal)
+    {
+        const string key = "" + int(goal.x) + "," + int(goal.z);
+        AIFloat3 cached;
+        if (snappedGoals.get(key, cached)) return cached;
+        AIFloat3 best = goal;
+        if (!LandPassable(goal) || aiBattle.GroundHazard(goal, Global::ScoutRaid::HazardMargin) > 0.0f) {
+            AIFloat3 fallback(-1.0f, 0.0f, -1.0f);
+            bool found = false;
+            for (int ring = 1; ring <= 12 && !found; ++ring) {
+                for (int k = 0; k < 16; ++k) {
+                    const float angle = float(k) * 0.392699f;
+                    AIFloat3 p = goal + AIFloat3(cos(angle), 0.0f, sin(angle)) * float(ring * 128);
+                    if (p.x < 64.0f || p.z < 64.0f || p.x > AiTerrainWidth() - 64.0f || p.z > AiTerrainHeight() - 64.0f) continue;
+                    if (!LandPassable(p)) continue;
+                    if (fallback.x < 0.0f) fallback = p;
+                    if (aiBattle.GroundHazard(p, Global::ScoutRaid::HazardMargin) > 0.0f) continue;
+                    best = p; found = true; break;
+                }
+            }
+            if (!found && fallback.x >= 0.0f) best = fallback;
+            best.y = aiBattle.Height(best);
+            GenericHelpers::LogUtil("[ScoutRaid] goal snapped from=(" + int(goal.x) + "," + int(goal.z) + ") to=("
+                + int(best.x) + "," + int(best.z) + ") passable=" + LandPassable(best), 1);
+        }
+        snappedGoals.set(key, best);
+        return best;
+    }
+
     AIFloat3 FallbackGoal(const AIFloat3& in from, const array<AIFloat3>& in starts)
     {
         AIFloat3 goal(-1.0f, 0.0f, -1.0f);
@@ -148,7 +187,7 @@ namespace ScoutRaid {
             const float d = MapHelpers::SqDist(from, starts[i]);
             if (d < nearest) { nearest = d; goal = starts[i]; }
         }
-        return goal;
+        return goal.x < 0.0f ? goal : SnapGoal(goal);
     }
 
     // Compact a 64-elmo grid route: turns, reversals and every WaypointSpacing.
@@ -206,17 +245,23 @@ namespace ScoutRaid {
         if (goal.x < 0.0f) return;
         array<AIFloat3>@ path = aiBattle.GetUnitRaidRoute(u.circuitDef, pos, goal,
             Global::ScoutRaid::HazardMargin, Global::ScoutRaid::HazardWeight);
+        bool direct = false;
         if (path is null || path.length() < 2) {
-            if (target >= 0) r.excluded = target;   // unreachable: try another next time
-            // Level 1: bounded by MaxRoutesPerSecond, and the first played run
-            // hid this exact failure behind level 2.
+            // No hazard-aware route (edge cell, fine corridor rejected, goal
+            // unreachable on the lane grid). Never leave a raider idle: issue a
+            // direct move and let the engine path it; the next replan (after
+            // the cooldown, from a new position) retries the hazard route.
+            // A targeted contact that stays unreachable is excluded.
+            if (target >= 0) r.excluded = target;
             GenericHelpers::LogUtil("[ScoutRaid] no route unit=" + r.id + " target=" + target
-                + " from=(" + int(pos.x) + "," + int(pos.z) + ") pass=" + aiBattle.IsPassable(pos, Lanes::BOT)
-                + " goal=(" + int(goal.x) + "," + int(goal.z) + ") pass=" + aiBattle.IsPassable(goal, Lanes::BOT)
-                + " hazard=" + aiBattle.GroundHazard(goal, Global::ScoutRaid::HazardMargin), 1);
-            return;
+                + " from=(" + int(pos.x) + "," + int(pos.z) + ") pass=" + LandPassable(pos)
+                + " goal=(" + int(goal.x) + "," + int(goal.z) + ") pass=" + LandPassable(goal)
+                + " hazard=" + aiBattle.GroundHazard(goal, Global::ScoutRaid::HazardMargin) + "; direct move", 1);
+            array<AIFloat3> straight = {pos, goal};
+            @path = straight;
+            direct = true;
         }
-        r.route = Compact(path);
+        r.route = direct ? path : Compact(path);
         r.cursor = 0;
         r.task.SetRoute(r.route);
         // A contact the engine will not accept as a priority target still
@@ -225,7 +270,7 @@ namespace ScoutRaid {
         if (target != r.target) r.hazardReplans = 0;
         r.target = target; r.targetPos = targetPos;
         GenericHelpers::LogUtil("[ScoutRaid] route unit=" + r.id + " target=" + target + " points=" + r.route.length()
-            + " goal=(" + int(goal.x) + "," + int(goal.z) + ")", 1);
+            + " goal=(" + int(goal.x) + "," + int(goal.z) + ") direct=" + direct, 1);
     }
 
     // Current observed ground contact of this id? O(G); only on replans.
