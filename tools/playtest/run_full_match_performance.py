@@ -225,7 +225,7 @@ def main():
     try:
         subprocess.run(cli+['launch','--dir',str(d),'--engine','recoil_2026.07.04']+(['--headless'] if a.headless else []),env=env,check=True)
         return subprocess.run(cli+['watch','--dir',str(d),'--role',role,'--checks',str(d/'full-match-checks.json'),
-            '--minutes',str(a.minutes+1),'--wall-minutes','180']+(['--keep-going'] if a.keep_going else [])).returncode
+            '--play-decided','--minutes',str(a.minutes+1),'--wall-minutes','180']+(['--keep-going'] if a.keep_going else [])).returncode
     finally:
         subprocess.run(cli+['stop','--dir',str(d)],check=True)
 

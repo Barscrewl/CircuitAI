@@ -136,7 +136,7 @@ bool CCommanderControl::Intercept(CCircuitUnit* unit,State& s,int frame) {
     const auto acceptIntercept=[&]() {
         // A reconsidered, now-safe T3 plan takes ownership from fallback.
         // Its own leash governs movement; retaining the old porc perimeter
-        // contradicts that handover (INV-199, detection/retry arena).
+        // contradicts that handover (INV-215, detection/retry arena).
         if(s.fallback) {
             ai->LOG("[CommanderFallback] unit=%i off reason=t3_intercept frame=%i",unit->GetId(),frame);
             s.fallback=false;s.fallbackUntil=-1;s.fallbackPorc=-1;s.route.clear();
@@ -485,7 +485,7 @@ bool CCommanderControl::Intercept(CCircuitUnit* unit,State& s,int frame) {
         TRY_UNIT(ai,unit,unit->CmdStop();)
     }
     if(task->GetAssignees().size()!=1 || !task->GetAssignees().count(unit) || unit->GetDGunAct()) {
-        ai->LOG("[INVARIANT] INV-198 commander T3 engagement has competing owner unit=%i",unit->GetId());
+        ai->LOG("[INVARIANT] INV-214 commander T3 engagement has competing owner unit=%i",unit->GetId());
         task->Resume(unit); return true;
     }
     acceptIntercept();

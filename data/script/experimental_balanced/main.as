@@ -107,6 +107,7 @@ namespace Main {
 		ArtilleryPolicy::Check();
         Lanes::Poll(); // complete async surveys for every role before consumers run
         AmphibiousOps::Tick();
+        ScoutRaid::Tick(); // D-296: no-op unless the profile JSON enables scout raids
 		Commands::DrawTick();   // the widget's map drawing, paced under the server's flood guard
 		// Update cached enemy threat information roughly every 10 seconds (300 frames).
 		//if ((ai.frame % (10 * SECOND)) == 0) {

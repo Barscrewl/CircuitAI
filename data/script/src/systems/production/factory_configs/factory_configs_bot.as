@@ -220,7 +220,12 @@ namespace BotConfigs {
             cfg.AddRole("assault",   array<string> = {"leginc", "legamph"});
             cfg.AddRole("artillery", array<string> = {"legbart", "legsrail"});
             cfg.AddRole("anti_air",  array<string> = {});
-            cfg.AddRole("support",   array<string> = {"legaceb", "legdecom", "legaradk", "legajamk", "leginfestor"});
+            // D-293: leginfestor omitted. Its only build option is itself, so native routes it to
+            // BuilderManager as a worker (counted as build power, given assist/guard tasks) and
+            // MilitaryManager never commands it: neither combat nor useful build power. Once
+            // legaradk/legajamk reached their limit of 1 it was the only unit left in this slot, so
+            // every support pick became a batch of Infestors. behaviour_leg.json also sets limit 0.
+            cfg.AddRole("support",   array<string> = {"legaceb", "legdecom", "legaradk", "legajamk"});
             cfg.AddRole("heavy",     array<string> = {"legadvaabot"});
 
             // Role-level approximation of factory_leg.json land tiers 0-5

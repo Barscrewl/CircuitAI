@@ -77,6 +77,10 @@ CBuilderScript::CBuilderScript(CScriptManager* scr, CBuilderManager* mgr)
 	r = engine->RegisterGlobalProperty("CBuilderManager aiBuilderMgr", manager); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CBuilderManager", "void ClearBuildRadii()", asMETHOD(CBuilderManager, ClearBuildRadii), asCALL_THISCALL); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CBuilderManager", "void SetBuildRadius(const CCircuitDef@, const AIFloat3& in, float)", asMETHOD(CBuilderManager, SetBuildRadius), asCALL_THISCALL); ASSERT(r >= 0);
+	// D-290: script-owned reclaim protection (TECH: energy storage); empty by default
+	r = engine->RegisterObjectMethod("CBuilderManager", "void SetReclaimProtected(const CCircuitDef@, bool)", asMETHOD(CBuilderManager, SetReclaimProtected), asCALL_THISCALL); ASSERT(r >= 0);
+	r = engine->RegisterObjectMethod("CBuilderManager", "bool IsReclaimProtected(const CCircuitDef@) const", asMETHOD(CBuilderManager, IsReclaimProtected), asCALL_THISCALL); ASSERT(r >= 0);
+	r = engine->RegisterObjectMethod("CBuilderManager", "void ClearReclaimProtected()", asMETHOD(CBuilderManager, ClearReclaimProtected), asCALL_THISCALL); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CBuilderManager", "float GetRecoveryMetal(CCircuitUnit@, float)", asMETHOD(CBuilderManager, GetRecoveryMetal), asCALL_THISCALL); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CBuilderManager", "IUnitTask@+ FindRecoveryTask(CCircuitUnit@, int, float, const CCircuitDef@, int groupLimit = 1, bool highestValue = false, float combatClearance = 0)", asMETHOD(CBuilderManager, FindRecoveryTask), asCALL_THISCALL); ASSERT(r >= 0);
 	r = engine->RegisterObjectMethod("CBuilderManager", "IUnitTask@+ DefaultMakeTask(CCircuitUnit@)", asMETHOD(CBuilderManager, DefaultMakeTask), asCALL_THISCALL); ASSERT(r >= 0);

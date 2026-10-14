@@ -644,7 +644,7 @@ void CCommanderControl::Tick(CCircuitUnit* unit,State& s,int frame) {
     }
     // One command owner is an executable invariant, not a Blocker assumption.
     if(unit->GetDGunAct()!=nullptr || task->GetAssignees().size()!=1 || task->GetAssignees().count(unit)!=1) {
-        ai->LOG("[INVARIANT] INV-198 commander combat has competing owner unit=%i",unit->GetId());
+        ai->LOG("[INVARIANT] INV-214 commander combat has competing owner unit=%i",unit->GetId());
         task->Resume(unit); return;
     }
     if(opportunity && ready && bestPos.SqDistance2D(pos)<16.f*16.f

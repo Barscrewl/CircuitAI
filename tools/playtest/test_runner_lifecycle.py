@@ -15,6 +15,7 @@ import playtest
 import t3_matrix
 import run_commander_regression
 import run_commander_performance
+import ranged_arena
 
 
 class RunnerTests(unittest.TestCase):
@@ -24,18 +25,68 @@ class RunnerTests(unittest.TestCase):
             info=root/'infolog.txt';info.write_text(initial)
             check=root/'checks.json';check.write_text(json.dumps(checks))
             args=argparse.Namespace(dir=directory,checks=str(check),role='FRONT',minutes=5,
-                wall_minutes=8,keep_going=options.pop('keep_going',False),no_stop=True,poll=.1,print_report=False,timeline_lines=20,
+                wall_minutes=8,keep_going=options.pop('keep_going',False),no_stop=options.pop('no_stop',True),poll=.1,print_report=False,timeline_lines=20,
                 startup_seconds=120,stall_seconds=60,**options)
             clock=[1000.0];remaining=iter(batches)
             def advance(_):
                 clock[0]+=step
                 with info.open('a') as out:out.write(next(remaining,''))
-            with patch.object(playtest,'engine_alive',return_value=alive), \
+            with patch.object(playtest,'engine_alive',side_effect=alive if isinstance(alive,list) else None,return_value=alive), \
+                 patch.object(playtest,'request_stop'), patch.object(playtest,'stop'), \
                  patch.object(playtest.time,'sleep',side_effect=advance), \
                  patch.object(playtest.time,'time',side_effect=lambda:clock[0]), \
                  contextlib.redirect_stdout(io.StringIO()):
                 result=playtest.watch(args)
             return result,(root/'report.md').read_text(),clock[0]-1000
+
+    def test_decided_game_ends_early_by_default(self):
+        result,report,elapsed=self.judge('[f=1800] [Playtest] decided: one alliance\n',{})
+        self.assertEqual(result,0)
+        self.assertIn('game decided at 1.0 min',report)
+        self.assertEqual(elapsed,0)
+
+    def test_decided_game_still_reads_shutdown_failure(self):
+        result,report,_=self.judge('[f=1800] [Playtest] decided: one alliance\n',{},
+            ['[f=1801] Fatal: shutdown failure\n'],alive=[True,False],no_stop=False)
+        self.assertEqual(result,1)
+        self.assertIn('shutdown failure',report)
+
+    def test_play_decided_preserves_later_wave_and_survival_tail(self):
+        result,report,elapsed=self.judge('[f=1800] [Playtest] decided: one alliance\n',
+            {'complete_on':{'pattern':'last_wave_complete'},'completion_grace_seconds':10},
+            ['[f=2100] last_wave_complete\n','[f=2400] survival\n'],play_decided=True)
+        self.assertEqual(result,0)
+        self.assertIn('frame 2400',report)
+        self.assertEqual(elapsed,2)
+
+    def test_stop_when_met_keeps_all_expectations(self):
+        result,report,elapsed=self.judge('[f=100] first\n',
+            {'expect':[{'key':'a','pattern':'first','scope':'any'},
+                       {'key':'b','pattern':'second','scope':'any'}]},
+            ['[f=200] second\n'],stop_when_met=True)
+        self.assertEqual(result,0)
+        self.assertIn('frame 200',report)
+        self.assertEqual(elapsed,1)
+
+    def test_arena_keeps_lobby_default_and_explicit_game_override(self):
+        # Stop at the first staging call: verify argv without staging a game.
+        for game in (None,'pinned-game'):
+            with self.subTest(game=game), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);case=root/'case.json'
+                case.write_text(json.dumps(dict(name='merge-smoke',map_key='comet',map='Comet',
+                    starts=[[100,100],[1000,1000]],ally_spots='1,2',modoptions={'experimentallegionfaction':1})))
+                args=argparse.Namespace(case='merge-smoke',seed=1,dll=root/'AI.dll',data=root/'data',
+                    game=game,speed=20,mode='fast',minutes=2,profile='experimental_balanced',headless=True)
+                with patch.object(ranged_arena.storage,'resolve_definition',return_value=case), \
+                     patch.object(ranged_arena.storage,'allocate',return_value=root), \
+                     patch.object(ranged_arena.subprocess,'run',side_effect=RuntimeError('staging captured')) as stage:
+                    with self.assertRaisesRegex(RuntimeError,'staging captured'):ranged_arena.prepare(args)
+                argv=stage.call_args.args[0]
+                self.assertEqual('--game' in argv,game is not None)
+                if game:self.assertEqual(argv[argv.index('--game')+1],game)
+                self.assertEqual(argv.count('experimentallegionfaction=1'),1)
+                self.assertEqual(argv[argv.index('--ally-spots')+1],'1,2')
+                self.assertEqual(argv[argv.index('--mode')+1],'fast')
 
     def test_completion_waits_for_all_expectations_and_survival(self):
         checks={'complete_on':{'pattern':'complete'},'completion_grace_seconds':10,

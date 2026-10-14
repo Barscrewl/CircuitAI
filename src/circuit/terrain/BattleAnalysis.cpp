@@ -17,6 +17,7 @@
 #include "unit/enemy/EnemyUnit.h"
 #include "CircuitAI.h"
 #include "util/Utils.h"
+#include "util/Performance.h"
 #include "spring/SpringMap.h"
 #include "spring/SpringCallback.h"
 #include "unit/ally/AllyUnit.h"
@@ -543,6 +544,7 @@ void CBattleAnalysis::Update(int frame)
 	EnsureGrid();
 	airContacts.clear();
     groundContacts.clear();
+    radarDots.clear();
     navalContacts.clear();
     observedWaterWeapons.assign(height.size(), 0.f);
 	const float dt = float(frame - lastDecay) / FRAMES_PER_SEC;
@@ -559,6 +561,13 @@ void CBattleAnalysis::Update(int frame)
 		const CEnemyUnit* e = kv.second;
 		const CCircuitDef* d = e->GetCircuitDef();
 		if (d == nullptr) {
+            // D-296: an unidentified dot is still an enemy to avoid. Same
+            // visibility rules as identified contacts; land only.
+            if (e->IsInRadarOrLOS() && !e->IsIgnore()
+                && !(e->GetData().losStatus & (SEnemyData::LosMask::HIDDEN | SEnemyData::LosMask::NEUTRAL
+                    | SEnemyData::LosMask::DYING | SEnemyData::LosMask::DEAD))
+                && std::isfinite(e->GetPos().x) && std::isfinite(e->GetPos().z) && Height(e->GetPos()) >= 0.f)
+                radarDots.push_back(e->GetPos());
 			continue;
 		}
 		const float m = d->GetCostM();
@@ -573,7 +582,21 @@ void CBattleAnalysis::Update(int frame)
         if (!d->IsAbleToFly() && observed && Height(e->GetPos()) >= 0.f) {
             const bool economy = !d->IsMobile() && (d->IsMex() || d->IsBuilder() || d->IsWind()
                 || d->GetMaxRange() <= 0.f);
-            groundContacts.push_back({e->GetPos(), m, economy, e->GetId(), d->GetId()});
+            // D-296: O(1) per contact, cached definition flags only.
+            int kind = 0;
+            if (!d->IsMobile()) {
+                if (d->IsMex()) kind |= K_MEX;
+                if (d->IsWind()) kind |= K_WIND;
+                if (d->IsAssist()) kind |= K_NANO;
+                if (kind == 0 && economy) kind |= K_OTHER_ECO;
+            }
+            // BAR lets construction turrets reclaim enemy units (modrules
+            // reclaim.allowEnemies = true): a static reclaimer's build distance
+            // is lethal to a scout (round 12: two Ticks reclaimed by cornanotc).
+            const float hazardRange = e->IsBeingBuilt() ? 0.f : std::max(
+                d->HasSurfToLand() ? d->GetMaxRange(CCircuitDef::RangeType::LAND) : 0.f,
+                (!d->IsMobile() && d->IsAbleToReclaim()) ? d->GetBuildDistance() : 0.f);
+            groundContacts.push_back({e->GetPos(), m, economy, e->GetId(), d->GetId(), kind, hazardRange});
         }
         if (observed && !d->IsAbleToFly() && d->IsMobile()
             && (d->IsFloater() || d->IsSubmarine()) && Height(e->GetPos()) < 0.f) {
@@ -693,6 +716,47 @@ float CBattleAnalysis::GetGroundContactCost(int i) const {
 }
 bool CBattleAnalysis::IsGroundContactEconomy(int i) const {
     return i >= 0 && i < int(groundContacts.size()) && groundContacts[i].economy;
+}
+int CBattleAnalysis::GetGroundContactKind(int i) const {
+    return i >= 0 && i < int(groundContacts.size()) ? groundContacts[i].kind : 0;
+}
+void CBattleAnalysis::EnsureGroundHazard(float margin)
+{
+    if (!std::isfinite(margin)) margin = 0.f;
+    margin = std::clamp(margin, 0.f, 2048.f);
+    if (groundHazardPublication == groundPublication && groundHazardMargin == margin
+        && observedGroundHazard.size() == height.size()) return;
+    // Lazy: only a caller (D-296 scout raids) pays, at most once per Update
+    // publication (1 s) per margin. O(G) clear + O(A * (r+margin)^2 / cell^2)
+    // paint over A armed observed ground contacts; no allocation after the
+    // first build (assign reuses capacity).
+    performance::Scope measured(circuit, performance::BATTLE_GROUND_HAZARD);
+    EnsureGrid();
+    groundHazardPublication = groundPublication; groundHazardMargin = margin;
+    observedGroundHazard.assign(height.size(), 0.f);
+    for (const auto& c : groundContacts) {
+        if (c.hazardRange <= 0.f) continue;
+        // Include cell discretisation, like the water-weapon layer.
+        ranged::PaintDisc(observedGroundHazard, gw, gh, float(cellSize), c.pos.x, c.pos.z,
+            c.hazardRange + margin + float(cellSize), 1.f);
+    }
+    // Unidentified dots (played: raiders ran into an LLT line that was only a
+    // dot until inside its range). Conservative radius; identification later
+    // replaces it with the real range. O(D * (r+margin)^2 / cell^2).
+    for (const auto& p : radarDots)
+        ranged::PaintDisc(observedGroundHazard, gw, gh, float(cellSize), p.x, p.z,
+            unknownHazardRange + margin + float(cellSize), 1.f);
+}
+void CBattleAnalysis::SetUnknownHazardRange(float range)
+{
+    const float value = std::isfinite(range) ? std::clamp(range, 0.f, 2048.f) : 700.f;
+    if (value != unknownHazardRange) { unknownHazardRange = value; groundHazardPublication = ~0u; }
+}
+float CBattleAnalysis::GroundHazard(const AIFloat3& pos, float margin)
+{
+    if (!std::isfinite(pos.x) || !std::isfinite(pos.z)) return 0.f;
+    EnsureGroundHazard(margin);
+    return observedGroundHazard.empty() ? 0.f : observedGroundHazard[Cell(pos)];
 }
 AIFloat3 CBattleAnalysis::GetNavalContactPos(int i) const {
     return i >= 0 && i < int(navalContacts.size()) ? navalContacts[i] : AIFloat3(-1.f, 0.f, -1.f);

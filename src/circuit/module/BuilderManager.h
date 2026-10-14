@@ -259,8 +259,29 @@ public:
         const auto found = buildRadii.find(definition->GetId());
         return found == buildRadii.end() || position.SqDistance2D(found->second.first) <= found->second.second;
     }
+    // D-290: script-owned set of definitions our builders never reclaim (TECH:
+    // energy storage). Mechanism only; empty unless a script fills it, so other
+    // roles and the legacy profiles are unchanged. Indexed by definition id:
+    // O(1) test per reclaim enqueue, one bit per definition. Not serialized:
+    // the role's InitHandler rebuilds it after load; a role switch clears it.
+    void SetReclaimProtected(const CCircuitDef* definition, bool isProtected) {
+        if ((definition == nullptr) || (definition->GetId() < 0)) return;
+        const auto index = static_cast<std::size_t>(definition->GetId());
+        if (index >= reclaimProtected.size()) {
+            if (!isProtected) return;
+            reclaimProtected.resize(index + 1, false);
+        }
+        reclaimProtected[index] = isProtected;
+    }
+    bool IsReclaimProtected(const CCircuitDef* definition) const {
+        if ((definition == nullptr) || (definition->GetId() < 0)) return false;
+        const auto index = static_cast<std::size_t>(definition->GetId());
+        return (index < reclaimProtected.size()) && reclaimProtected[index];
+    }
+    void ClearReclaimProtected() { reclaimProtected.clear(); }
 private:
     std::map<int, std::pair<springai::AIFloat3, float>> buildRadii;
+    std::vector<bool> reclaimProtected;  // D-290: by CCircuitDef::Id
 public:
 	friend class CBuilderScript;
 

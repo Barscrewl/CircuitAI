@@ -27,12 +27,12 @@ static AIFloat3 F(Point p,float y=0) { return {p.x,y,p.z}; }
 // fallback_metal within fallback_range_scale x the commander's weapon range
 // sends the commander back to the outermost allied porc behind it. While the
 // fallback holds, that porc (plus the stand-off) is the commander's perimeter.
-// INV-199: commander control never directs it outside that perimeter.
+// INV-215: commander control never directs it outside that perimeter.
 void CCommanderControl::CheckPerimeter(CCircuitUnit* unit,const State& s,const AIFloat3& goal,int frame,const char* source) const {
     if(!FallbackActive(s,frame)) return;
     const Point home=s.fallbackBoundary.anchor;
     if(!s.fallbackBoundary.Contains(P(goal),32.f))
-        ai->LOG("[INVARIANT] INV-199 commander fallback goal outside perimeter unit=%i source=%s goal=%.0f,%.0f perimeter=%.0f home=%.0f,%.0f station=%.0f,%.0f planned=%i mode=%i",
+        ai->LOG("[INVARIANT] INV-215 commander fallback goal outside perimeter unit=%i source=%s goal=%.0f,%.0f perimeter=%.0f home=%.0f,%.0f station=%.0f,%.0f planned=%i mode=%i",
             unit->GetId(),source,goal.x,goal.z,s.fallbackBoundary.radius,home.x,home.z,
             s.fallbackGoal.x,s.fallbackGoal.z,s.fallbackPlanned,int(s.mode));
 }
@@ -194,7 +194,7 @@ bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,
     }
     if(!s.fallback) return false;
     if(!options.fallback)
-        ai->LOG("[INVARIANT] INV-201 disabled commander fallback retained unit=%i frame=%i",unit->GetId(),frame);
+        ai->LOG("[INVARIANT] INV-217 disabled commander fallback retained unit=%i frame=%i",unit->GetId(),frame);
     if(frame>=s.fallbackPlanned+FRAMES_PER_SEC) PlanFallback(unit,s,frame);
     // Native retreat retains ownership, but uses this exact withdrawal point
     // rather than stopping at its broad repair radius under the declined T3.
@@ -218,7 +218,7 @@ bool CCommanderControl::Fallback(CCircuitUnit* unit,State& s,IUnitTask* current,
         TRY_UNIT(ai,unit,unit->CmdStop();)
     }
     if(unit->GetDGunAct()!=nullptr || task->GetAssignees().size()!=1 || task->GetAssignees().count(unit)!=1) {
-        ai->LOG("[INVARIANT] INV-198 commander fallback has competing owner unit=%i",unit->GetId());
+        ai->LOG("[INVARIANT] INV-214 commander fallback has competing owner unit=%i",unit->GetId());
         task->Resume(unit); return true;
     }
     s.budget=0; s.deployed=false;

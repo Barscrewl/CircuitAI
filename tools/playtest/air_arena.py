@@ -17,7 +17,7 @@ import storage
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 DLL = ROOT.parent / 'bar-RecoilEngine/build-amd64-windows/install/AI/Skirmish/BARb/stable/SkirmishAI.dll'
-GAME = 'Beyond All Reason test-31479-433a460'
+GAME = None  # the last lobby script's archive, resolved by playtest.py; a pinned name goes stale when BAR updates
 ENGINE = 'recoil_2026.07.04'
 ROSTERS = {
     'armada': {'t1': 'armthund', 't2': 'armpnix', 'fighter1': 'armfig', 'fighter2': 'armhawk', 'gunship': 'armkam', 'torpedo': 'armlance', 'scout': 'armpeep'},
@@ -48,6 +48,13 @@ def resolve_case(path, side, defender, seed, visibility=None):
     case = copy.deepcopy(case)
     if type(case.get('factory_production', False)) is not bool:
         raise ValueError('factory_production must be a boolean')
+    # Optional fixture lever: literal replacements of Global::RoleSettings::Air
+    # values in the staged copy, e.g. {"FirstBomberWaveMax": "10"} to pin the
+    # opening draw. Recorded in the manifest overrides; the pinned data is untouched.
+    settings = case.get('air_settings', {})
+    if type(settings) is not dict or any(not re.fullmatch(r'[A-Za-z_]\w*', k) or not isinstance(v, str)
+                                          or not re.fullmatch(r'-?[\w.]+', v) for k, v in settings.items()):
+        raise ValueError('air_settings must map setting names to literal value strings')
     case.update(side=side, defender=defender, seed=seed, scout=ROSTERS[side]['scout'])
     case.setdefault('visibility', 'radar')
     if visibility:
@@ -87,6 +94,15 @@ def checked_replace(path, old, new):
     if source.count(old) != 1:
         raise ValueError(f'{path}: expected one hook: {old}')
     path.write_text(source.replace(old, new))
+
+
+def override_air_setting(path, name, value):
+    """Replace the single `<type> <name> = <literal>;` declaration in the staged Air settings."""
+    source = path.read_text()
+    pattern = re.compile(r'^([ \t]*(?:const[ \t]+)?\w+[ \t]+' + re.escape(name) + r'[ \t]*=[ \t]*)[^;\n]+;', re.M)
+    if len(pattern.findall(source)) != 1:
+        raise ValueError(f'{path}: expected one declaration of Air setting {name}')
+    path.write_text(pattern.sub(lambda m: m.group(1) + value + ';', source, count=1))
 
 
 def archive_results(base):
@@ -198,7 +214,7 @@ def prepare(args):
     starts = base / 'arena-starts.as'
     starts.write_text('\n'.join(f'StartSpot(AIFloat3({x},0,{z}), AiRole::AIR, false),' for x, z, _ in homes))
     cmd = [sys.executable, str(HERE / 'playtest.py'), 'stage', '--dir', str(base), '--dll', str(args.dll),
-           '--map', args.map, '--map-file', str(starts), '--game', args.game, '--engine', args.engine,
+           '--map', args.map, '--map-file', str(starts), '--engine', args.engine,
            '--role', 'AIR', '--roles', 'all', '--side', args.side, '--ally-spots', '1', '--bonus', '0',
            '--speed', str(args.speed), '--minutes', str(args.minutes), '--shots', '', '--width', '1280', '--height', '720', '--lean-render',
            '--ai-option', 'profile=' + args.profile, '--ai-option', 'random_seed=' + str(args.seed),
@@ -208,6 +224,8 @@ def prepare(args):
            '--extra-widget', str(HERE / 'widgets/air_command_watch.lua')]
     if args.data:
         cmd += ['--data', str(args.data)]
+    if args.game:
+        cmd += ['--game', args.game]
     if case.get('factory_production', False):
         cmd += ['--modoption', 'startmetal=1000000', '--modoption', 'startmetalstorage=1000000']
     subprocess.run(cmd, check=True)
@@ -243,6 +261,9 @@ def prepare(args):
     if 'bool T1OpeningRaidEnabled = true;' in (role_settings_path(staged / 'src', 'Air')).read_text():
         checked_replace(role_settings_path(staged / 'src', 'Air'), 'bool T1OpeningRaidEnabled = true;', 'bool T1OpeningRaidEnabled = false;')
         overrides.append('T1 opening production gate disabled for supplied combat')
+    for name, value in case.get('air_settings', {}).items():
+        override_air_setting(role_settings_path(staged / 'src', 'Air'), name, value)
+        overrides.append(f'Air setting {name} = {value} (case air_settings)')
     if case.get('bomber_only', True):
         checked_replace(role_settings_path(staged / 'src', 'Air'), 'float BomberWaveFighterRatio = 1.0f;', 'float BomberWaveFighterRatio = 0.0f;')
         raid_file = staged / 'src/systems/air/air_raids.as'
@@ -342,9 +363,9 @@ def main():
                     folder = a.dir / f'{case}-{side}-{seed}'
                     command = [sys.executable, str(Path(__file__).resolve()), 'run', '--dir', str(folder),
                                '--case', case, '--side', side, '--defender', a.defender, '--seed', seed,
-                               '--dll', str(a.dll), '--map', a.map, '--game', a.game, '--engine', a.engine,
+                               '--dll', str(a.dll), '--map', a.map, '--engine', a.engine,
                                '--minutes', str(a.minutes), '--speed', str(a.speed), '--wall-minutes', str(a.wall_minutes)]
-                    for key in ('visibility', 'map_file', 'unit', 'fighters', 'checks', 'data', 'profile'):
+                    for key in ('visibility', 'map_file', 'unit', 'fighters', 'checks', 'data', 'profile', 'game'):
                         value = getattr(a, key)
                         if value is not None:
                             command += ['--'+key.replace('_','-'), str(value)]

@@ -34,7 +34,8 @@ from symbol_store import stage_symbols
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-BAR_DATA = LOCALAPPDATA / "Programs" / "Beyond-All-Reason" / "data"  # read-only
+# read-only; BAR_DATA_DIR overrides it for a machine-wide install (e.g. C:\Program Files\Beyond-All-Reason\data)
+BAR_DATA = Path(os.environ.get("BAR_DATA_DIR") or (LOCALAPPDATA / "Programs" / "Beyond-All-Reason" / "data"))
 BUILD_AI = Path(r"C:\bardev\bar-RecoilEngine\build-amd64-windows\install\AI\Skirmish\BARb\stable")
 DEFAULT_DIR = Path(r"C:\bardev\barb-playtest")
 AI_SHORT = "BARbTest"
@@ -670,6 +671,8 @@ def _watch(args):
     widget_loaded = False
     verdict = None
     reason = ""
+    decided_frame = None
+    decided_text = ""
     started = time.time()
     first_progress = None
     last_frame_time = started
@@ -711,6 +714,9 @@ def _watch(args):
                     frame = max(frame, event_frame)
                 if "[Playtest] widget loaded" in line:
                     widget_loaded = True
+                if decided_frame is None and "[Playtest] decided:" in line:
+                    decided_frame = event_frame
+                    decided_text = line.split("decided: ", 1)[-1][:120]
                 if re.search(r": ERR\s+:|SCRIPT CRASH|Lib exception|Access violation|has crashed|Fatal:", line) or "Fix compilation errors" in line:
                     errors.append(line)
                     verdict, reason = 'FAIL', 'script/engine error'
@@ -783,6 +789,18 @@ def _watch(args):
         if frame >= stop_frame:
             verdict = verdict or "PASS"
             reason = reason or "reached %.0f min" % stop_minute
+            finished = True
+        # A decided game (one ally team left with living units, reported once a
+        # minute by playtest_camera.lua) is not worth playing to stop_minute:
+        # nothing the AI does after that is evidence. --play-decided keeps the
+        # old behaviour for fixtures that need the loser's side to stay dead.
+        if decided_frame is not None and not getattr(args, 'play_decided', False):
+            verdict = verdict or "PASS"
+            reason = reason or "game decided at %.1f min (%s)" % (minute(decided_frame), decided_text)
+            finished = True
+        if getattr(args, 'stop_when_met', False) and expects and all(e["seen"] is not None and e["seen"][0] is not None for e in expects):
+            verdict = verdict or "PASS"
+            reason = reason or "all expectations met at %.1f min" % minute(frame)
             finished = True
         if not alive:
             # The engine can flush its final seconds while running_pids polls.
@@ -928,6 +946,8 @@ def add_watch_args(p):
     p.add_argument("--wall-minutes", default=None)
     p.add_argument("--keep-going", action="store_true", help="do not stop at the first failure")
     p.add_argument("--no-stop", action="store_true", help="leave the game running after the verdict")
+    p.add_argument("--play-decided", action="store_true", help="keep playing after one ally team is left alive (default: stop, the rest is not evidence)")
+    p.add_argument("--stop-when-met", action="store_true", help="stop as soon as every expect line has been seen (forbids after that point are not observed)")
     p.add_argument("--print-report", action="store_true")
     p.add_argument("--timeline-lines", type=int, default=400)
     p.add_argument('--startup-seconds', type=float, default=120)

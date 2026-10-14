@@ -70,6 +70,15 @@ namespace TechChain
     int pendingHave = -1;      // ... when the step's count was this; a higher count means it stood (played: a met order blocked the next for 120 s)
 
     bool Active() { return active && !done; }
+    // D-289: the def of the chain's current dear step (the step Next last
+    // worked on, stallStep), for the turret ladder; null when the chain is
+    // inactive or the step is not dear. O(1): no scan, one def lookup.
+    CCircuitDef@ CurrentFrameDef()
+    {
+        if (!Active() || stallStep < 0 || uint(stallStep) >= steps.length()) return null;
+        CCircuitDef@ d = ai.GetCircuitDef(steps[stallStep].defName);
+        return (d is null || d.costM < Global::RoleSettings::Tech::ChainParallelCostM) ? null : d;
+    }
     bool NukeRush() { return Active() && objective == "nuke"; }
     bool nukeLabReleased = false;
     int nukeRetiredLabId = -1;
@@ -219,8 +228,11 @@ namespace TechChain
             // actual build time and worker power, with room for the short walk;
             // truncating this task leaves a partly reclaimed store and no refund.
             const int refundSeconds = AiMax(60, int(storeDef.GetBuildTime() / u.circuitDef.GetBuildSpeed()) + 30);
+            // D-290: the refund must fit the bank once the store's own 3,000 is gone
+            if (!TechReclaim::Allowed(store, "nuke.storage")) return;
             IUnitTask@ reclaim = aiBuilderMgr.Enqueue(TaskB::Reclaim(Task::Priority::HIGH, store, refundSeconds * SECOND));
             if (reclaim is null) return;
+            TechReclaim::Track(store, reclaim, "nuke.storage");
             nukeStorageReleased = true;
             Lifecycle::Retire(store, "nuke opening: low bank; surplus assistance refunds storage (D-229)");
             aiBuilderMgr.AssignTask(u, reclaim);

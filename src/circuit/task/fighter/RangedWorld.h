@@ -56,6 +56,8 @@ public:
         bool screen; float radar, jammer, los;
         CCircuitDef* def=nullptr;
         float combatHealth=-1.f; // lazy, invalidated with the per-frame snapshot
+        float range=0.f;    // D-295: LAND weapon range of a screen definition
+        bool assist=false;  // D-295: definition itself assists (excluded as engager)
     };
     struct Slot { springai::AIFloat3 pos; float spacing, value; float radius=0.f; bool coordinated=false; };
 
@@ -76,6 +78,11 @@ public:
     bool FriendlySplash(int id, const springai::AIFloat3& target, float radius) const;
     bool FriendlyLine(const Weapon& weapon, int id, const springai::AIFloat3& from, const springai::AIFloat3& target) const;
     bool HasScreen(int id, const springai::AIFloat3& from, const springai::AIFloat3& target) const;
+    // D-295: is an allied screen (any team of our allyteam, from the friendly
+    // snapshot) already within its ground range + margin of this LOS ground
+    // contact? Memoised per contact per frame (and per margin); one local
+    // allies.Any per first call. Ally receives the engaging friend's unit id.
+    bool Engaged(int contact, float margin, int* ally=nullptr) const;
     float Range(const Weapon& weapon, const springai::AIFloat3& from, const springai::AIFloat3& to) const;
     bool Trajectory(const Weapon& weapon, const springai::AIFloat3& from, const springai::AIFloat3& to) const;
     void ReserveShot(int owner, int target, float damage, int until);
@@ -118,6 +125,13 @@ private:
     CCircuitAI* circuit;
     int frame = -1;
     float largestRange = 0.f, largestStaticRange = 0.f, largestSpacing = 0.f, largestFriendRadius = 0.f;
+    float largestScreenRange = 0.f; // D-295: bounds Engaged's local ally query
+    // D-295 memo: -1 unknown, 0 not engaged, k>0 engaged by friends[k-1].
+    // Owned by the callback thread; invalidated lazily when frame or margin
+    // differs. Assign is O(E) at most once per frame, only if an assister asks.
+    mutable std::vector<int> engagedMemo;
+    mutable int engagedFrame = -1;
+    mutable float engagedMargin = -1.f;
     float largestCohortHazard = 0.f;
     bool nonnegativeHazardCosts = true;
     bool finiteStaticHazards = true;

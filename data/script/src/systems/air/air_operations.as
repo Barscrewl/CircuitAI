@@ -1,3 +1,4 @@
+#include "air_escort_scout.as"
 // AIR-only ownership shared by T1 raids, advanced strikes and defensive sorties.
 // Store IDs, never long-lived non-owning unit handles.
 namespace AirOperations {
@@ -5,11 +6,19 @@ namespace AirOperations {
     bool rosterReady = false;
     array<CAirWaveTask@> operations;
     array<bool> offensive;
+    // D-291, parallel to operations: the immutable bomber IDs at launch, and
+    // whether the operation was ever seen ATTACKING (departed from assembly).
+    array<array<int>@> launched;
+    array<bool> struck;
     dictionary escorts; // unit ID -> owning wave (kept until the last bomber dies)
     dictionary bombers; // all live cohorts, not only AirWaves' newest operation
     void TrackBombers(IUnitTask@ owner, const dictionary &in cohort) {
         array<string>@ ids = cohort.getKeys();
-        for (uint i = 0; i < ids.length(); ++i) bombers.set(ids[i], @owner);
+        const int op = operations.findByRef(cast<CAirWaveTask>(owner));
+        for (uint i = 0; i < ids.length(); ++i) {
+            bombers.set(ids[i], @owner);
+            if (op >= 0) launched[op].insertLast(parseInt(ids[i]));
+        }
     }
     int BomberCount(const string &in name) {
         int count = 0;
@@ -52,6 +61,7 @@ namespace AirOperations {
     int AttachFighters(CAirWaveTask@ wave, bool attack = true)
     {
         operations.insertLast(wave); offensive.insertLast(attack);
+        launched.insertLast(array<int>()); struck.insertLast(false);
         return AttachAvailableFighters(wave);
     }
     // Shared ownership for bomber operations and defensive naval relief. The
@@ -146,10 +156,16 @@ namespace AirOperations {
         // aircraft; dead operations must not retain a growing ID/handle ledger.
         BomberCount("");
         for (int i = int(operations.length())-1; i >= 0; --i) {
-            if (operations[i] is null || operations[i].IsDead()) { operations.removeAt(i); offensive.removeAt(i); }
-            else if (offensive[i] && operations[i].GetState() == 5)
+            if (operations[i] is null || operations[i].IsDead()) {
+                operations.removeAt(i); offensive.removeAt(i); launched.removeAt(i); struck.removeAt(i);
+                continue;
+            }
+            const int state = operations[i].GetState();
+            if (state == 3) struck[i] = true; // ATTACKING: the cohort left assembly on its run
+            if (offensive[i] && state == 5)
                 Invariants::Violation("INV-116", "AIR", "offensive bomber operation entered return state");
         }
+        AirEscortScout::Tick();
         array<string>@ ids = escorts.getKeys();
         for (uint i = 0; i < ids.length(); ++i) {
             if (ai.GetTeamUnit(parseInt(ids[i])) is null) escorts.delete(ids[i]);
@@ -172,6 +188,44 @@ namespace AirOperations {
         for (uint i = 0; i < operations.length(); ++i)
             if (operations[i] !is null && !operations[i].IsDead() && tasks.findByRef(operations[i]) < 0) tasks.insertLast(operations[i]);
         escorts.deleteAll(); bombers.deleteAll(); operations.resize(0); offensive.resize(0);
+        launched.resize(0); struck.resize(0);
         for (uint i = 0; i < tasks.length(); ++i) tasks[i].Abort();
+        AirEscortScout::Reset();
+    }
+    // D-291: Air_MilitaryAiTaskRemoved hook. Native DequeueTask calls
+    // TaskRemoved before Stop (TaskModule.cpp), so the surviving members are
+    // still listed here. A bombing run is an offensive operation that reached
+    // ATTACKING with a real cohort; a zero-bomber abort at assembly is not one,
+    // and neither is a defensive sortie or a naval escort (not in operations).
+    // Cost: O(launched + members) once per removed AIR wave task.
+    void OnTaskRemoved(IUnitTask@ task)
+    {
+        CAirWaveTask@ wave = cast<CAirWaveTask>(task);
+        if (wave is null) return;
+        const int i = operations.findByRef(wave);
+        if (i < 0 || !offensive[i] || !struck[i] || launched[i].length() == 0) return;
+        // The abort that removes the task usually runs inside the last bomber's
+        // own UnitDestroyed (CAirWaveTask::RemoveAssignee aborts when units
+        // empty; CircuitAI.cpp unregisters the team unit only afterwards), so
+        // ai.GetTeamUnit still returns the dying bomber here. RemoveAssignee
+        // has already handed it to the idle task, so "still on the run" is
+        // `u.task is task`, never mere existence. A bomber transferred off the
+        // run alive is not on the bombing run either (D-291 follow-up).
+        if (wave.GetBomberCount() > 0) return;
+        for (uint b = 0; b < launched[i].length(); ++b) {
+            CCircuitUnit@ bomber = ai.GetTeamUnit(launched[i][b]);
+            if (bomber !is null && bomber.task is task) return; // a bomber is still flying the run
+        }
+        array<CCircuitUnit@>@ members = task.GetUnits();
+        array<int> fighters;
+        for (uint m = 0; m < members.length(); ++m) {
+            CCircuitUnit@ u = members[m];
+            IUnitTask@ owner;
+            if (u !is null && AirScreen::IsFighter(u.circuitDef) && escorts.get("" + u.id, @owner) && owner is task)
+                fighters.insertLast(u.id); // only this operation's escorts
+        }
+        GenericHelpers::LogUtil("[AIR][EscortScout] wipe op=" + i + " bombersLaunched=" + launched[i].length()
+            + " escorts=" + fighters.length(), 1);
+        AirEscortScout::Plan(wave, fighters, i);
     }
 }

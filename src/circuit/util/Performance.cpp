@@ -22,6 +22,7 @@ constexpr std::array<const char*, PHASE_COUNT> names{
     "ranged-enemies", "ranged-friends", "ranged-state",
     "unit-route", "unit-terrain-refresh", "unit-terrain-build",
     "unit-route-threat", "unit-route-obstacles", "unit-route-search",
+    "ranged-assist", "battle-ground-hazard",
     "commander-observe", "commander-decision",
     "commander-t3", "commander-fallback", "commander-deploy", "commander-handover", "commander-damage"
 };

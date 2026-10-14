@@ -5,6 +5,7 @@
 #include "shared/military.as"
 #include "shared/commander.as"
 #include "shared/spam.as"
+#include "shared/scout_raid.as"
 #include "shared/construction.as"
 #include "roles/tech.as"
 #include "roles/air.as"

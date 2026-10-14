@@ -109,10 +109,10 @@ bool CCommanderControl::CloakSafe(CCircuitUnit* unit,Point from,Point to,float s
 bool CCommanderControl::Fire(CCircuitUnit* unit,State& s,const commander::Line& line,int frame) {
     const auto pos=unit->GetPos(frame); const float range=unit->GetDGunRange()-12;
     auto* def=unit->GetCircuitDef();
-    // INV-200: BAR D-guns have firesubmersed=false; a submerged order would
+    // INV-216: BAR D-guns have firesubmersed=false; a submerged order would
     // only waste the lease. Every caller filters water; this is the backstop.
     if(pos.y<0.f) {
-        ai->LOG("[INVARIANT] INV-200 commander D-gun ordered while submerged unit=%i y=%.0f",unit->GetId(),pos.y);
+        ai->LOG("[INVARIANT] INV-216 commander D-gun ordered while submerged unit=%i y=%.0f",unit->GetId(),pos.y);
         return false;
     }
     const float speed=std::max(1.f,def->GetDGunDef()->GetDef()->GetProjectileSpeed()*30.f);
