@@ -81,6 +81,11 @@ Do not create or update repository changelog entries automatically. Only when
 the user explicitly requests a changelog, invoke
 `skills/maintain-changelog/SKILL.md`.
 
+When the user asks to open, update or describe a pull request, apply
+`skills/write-pull-request/SKILL.md`: it sets the title, the per-area tables
+with a verification column, the performance and docs lines, and the honesty
+rules the description must meet.
+
 Before searching for where something lives, read "Repository Map": it describes every file and folder referenced in this document, marks the active implementation against reference-only trees, and records which external paths are writable and which are read-only.
 
 ## Repository Map
@@ -104,8 +109,9 @@ reference-only material.
 | `../rjm.bar.docs/projects/circuitai/testing/README.md`, `../rjm.bar.docs/projects/circuitai/testing/catalog.json`, `../rjm.bar.docs/projects/circuitai/testing/index/` | Generated categorized inventory of designed scenarios, checks, unit suites, validators and runner families; execution evidence stays in the benchmark catalog. Regenerate with `tools/knowledge/index_test_cases.py`. |
 | `skills/convention-angelscript/references/` | Supporting detail for that skill: `idioms.md`, `performance-and-safety.md`, `version-compatibility.md`. |
 | `skills/maintain-changelog/SKILL.md` | Changelog entry format, timestamping, and file layout. Opt-in: invoke only when the user explicitly asks for a changelog. |
+| `skills/write-pull-request/SKILL.md` | Pull request title and description: short lead, one table per area with a Built / Checked / Symbolised / Played status column, performance and docs lines, open limits. Apply whenever the user asks to open or update a pull request. `references/example-batch-pr.md` is the annotated merged example. |
 | `skills/troubleshoot-bar-logs/SKILL.md` | BAR runtime log investigation: size discipline, crash-marker search, AI log filtering, and symbolising `SkirmishAI.dll` stack offsets. |
-| `.agents/skills/` | Symlinks that expose `skills/` to harnesses which discover skills under `.agents/` (`ai-not-moving`, `convention-angelscript`, `convention-cpp`, `maintain-changelog`, `playtest`, `troubleshoot-bar-logs`). Add a symlink here when adding a skill. |
+| `.agents/skills/` | Symlinks that expose `skills/` to harnesses which discover skills under `.agents/` (`ai-not-moving`, `convention-angelscript`, `convention-cpp`, `maintain-changelog`, `playtest`, `troubleshoot-bar-logs`, `write-pull-request`). Add a symlink here when adding a skill. |
 
 ### External benchmark storage
 
