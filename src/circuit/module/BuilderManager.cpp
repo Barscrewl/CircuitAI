@@ -567,8 +567,14 @@ int CBuilderManager::UnitCreated(CCircuitUnit* unit, CCircuitUnit* builder)
 						unit->GetCircuitDef()->GetDef()->GetName(), unit->GetId());
 			}
 		} else {
-			// reclaim lost unit
-			AssignTask(builder, Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, unit)));
+			// reclaim lost unit; D-290: a reclaim-protected frame is finished instead
+			IBuilderTask* recover = Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, unit));
+			if (recover == nullptr) {
+				recover = Enqueue(TaskB::Repair(IBuilderTask::Priority::HIGH, unit));
+			}
+			if (recover != nullptr) {
+				AssignTask(builder, recover);
+			}
 		}
 	} else {
 		if ((taskB->GetBuildType() == IBuilderTask::BuildType::RESURRECT) && !unit->GetCircuitDef()->IsMobile()) {
@@ -1107,9 +1113,16 @@ IBuilderTask* CBuilderManager::Enqueue(const TaskB::SBuildTask& ti)
 				if ((it != reclaimUnits.end()) && (it->second != nullptr)) {  // TODO: Rework RegisterReclaim() that puts nullptr into reclaimUnits
 					return it->second;
 				}
+				CCircuitUnit* own = circuit->GetTeamUnit(ti.ref.target->GetId());
+				// D-290: a script-protected definition of ours is never reclaimed.
+				// Refused before MarkSlotRecycled so its layout ground stays held.
+				// Every caller handles nullptr (the frame-adoption path repairs).
+				if ((own != nullptr) && IsReclaimProtected(own->GetCircuitDef())) {
+					circuit->LOG("RECLAIM: refused protected %s(%i)", own->GetCircuitDef()->GetDef()->GetName(), own->GetId());
+					return nullptr;
+				}
 				task = new CBReclaimTask(this, ti.priority, ti.ref.target, ti.timeout);
 				// D-101: our own structure reclaimed on purpose: its layout ground is freed when it goes
-				CCircuitUnit* own = circuit->GetTeamUnit(ti.ref.target->GetId());
 				if ((own != nullptr) && (own->GetCircuitDef() != nullptr) && !own->GetCircuitDef()->IsMobile()) {
 					circuit->GetTerrainManager()->MarkSlotRecycled(own->GetCircuitDef(), own->GetPos(circuit->GetLastFrame()));
 				}
@@ -1333,6 +1346,9 @@ int CBuilderManager::TurretsOnReclaim(int targetId, float margin, bool apply, bo
 	if ((target == nullptr) || target->IsDead()) {
 		return -1;
 	}
+	if (IsReclaimProtected(target->GetCircuitDef())) {
+		return 0;  // D-290: never reclaimed, so no turret is pulled onto it
+	}
 	const int frame = circuit->GetLastFrame();
 	const AIFloat3& tpos = target->GetPos(frame);
 	const auto requested = reclaimUnits.find(target);
@@ -1381,6 +1397,15 @@ int CBuilderManager::TurretsOnReclaim(int targetId, float margin, bool apply, bo
 		if (!apply) {
 			continue;
 		}
+		if (join == nullptr) {
+			// Enqueue before detaching the turret: a refused reclaim (D-290)
+			// must leave it on its current task, not stranded with none.
+			join = Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, target, FRAMES_PER_SEC * 300));
+			if (join == nullptr) {
+				--off;
+				break;
+			}
+		}
 		if (t != nullptr) {
 			ITaskModule* previousManager = t->GetManager();
 			t->RemoveAssignee(u);
@@ -1391,9 +1416,6 @@ int CBuilderManager::TurretsOnReclaim(int targetId, float margin, bool apply, bo
 			// Match the existing enemy-reclaim ownership handoff, with O(1) owners
 			// and no extra engine commands.
 			if (previousManager != this) previousManager->GetIdleTask()->RemoveAssignee(u);
-		}
-		if (join == nullptr) {
-			join = Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, target, FRAMES_PER_SEC * 300));
 		}
 		join->AssignTo(u);
 		join->Start(u);
@@ -2496,7 +2518,10 @@ void CBuilderManager::Watchdog()
 				float maxHealth = u->GetMaxHealth();
 				float buildPercent = (maxHealth - u->GetHealth()) / maxHealth;
 				CCircuitDef* cdef = unit->GetCircuitDef();
-				if ((cdef->GetBuildTime() * buildPercent < maxCost) || cdef->IsMex() || (*cdef == *terraDef)) {
+				// D-290: a reclaim-protected frame (TECH: energy storage) is finished, never torn down
+				if ((cdef->GetBuildTime() * buildPercent < maxCost) || cdef->IsMex() || (*cdef == *terraDef)
+					|| IsReclaimProtected(cdef))
+				{
 					Enqueue(TaskB::Repair(IBuilderTask::Priority::NORMAL, unit));
 				} else {
 					Enqueue(TaskB::Reclaim(IBuilderTask::Priority::NORMAL, unit));

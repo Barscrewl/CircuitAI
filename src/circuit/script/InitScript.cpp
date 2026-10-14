@@ -160,6 +160,17 @@ static CScriptArray* CBattleAnalysis_GetUnitTerrainRoute(CBattleAnalysis* battle
     return array;
 }
 
+// D-296: scout raid route over the observed ground-hazard layer.
+static CScriptArray* CBattleAnalysis_GetUnitRaidRoute(CBattleAnalysis* battle, const CCircuitDef* def,
+        const AIFloat3& from, const AIFloat3& to, float hazardMargin, float hazardWeight)
+{
+    auto* cache=static_cast<CScriptManager::STypeInfoCache*>(asGetActiveContext()->GetEngine()->GetUserData());
+    const auto points=battle->GetUnitRaidRoute(def,from,to,hazardMargin,hazardWeight);
+    auto* array=CScriptArray::Create(cache->vec3Array,static_cast<asUINT>(points.size()));
+    for (asUINT i=0;i<array->GetSize();++i) *static_cast<AIFloat3*>(array->At(i))=points[i];
+    return array;
+}
+
 static CScriptArray* CPolygon_GetVerts(geom::CPolygon* poly)
 {
 	asIScriptEngine* engine = asGetActiveContext()->GetEngine();
@@ -1381,6 +1392,10 @@ void CInitScript::RegisterMgr()
     r = engine->RegisterObjectMethod("CBattleAnalysis", "AIFloat3 GetGroundContactPos(int) const", asMETHOD(CBattleAnalysis, GetGroundContactPos), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "float GetGroundContactCost(int) const", asMETHOD(CBattleAnalysis, GetGroundContactCost), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "bool IsGroundContactEconomy(int) const", asMETHOD(CBattleAnalysis, IsGroundContactEconomy), asCALL_THISCALL); ASSERT(r >= 0);
+    // D-296 scout raids: economy kind flags, observed ground hazard, raid route.
+    r = engine->RegisterObjectMethod("CBattleAnalysis", "int GetGroundContactKind(int) const", asMETHOD(CBattleAnalysis, GetGroundContactKind), asCALL_THISCALL); ASSERT(r >= 0);
+    r = engine->RegisterObjectMethod("CBattleAnalysis", "float GroundHazard(const AIFloat3& in, float)", asMETHOD(CBattleAnalysis, GroundHazard), asCALL_THISCALL); ASSERT(r >= 0);
+    r = engine->RegisterObjectMethod("CBattleAnalysis", "array<AIFloat3>@ GetUnitRaidRoute(const CCircuitDef@, const AIFloat3& in, const AIFloat3& in, float, float)", asFUNCTION(CBattleAnalysis_GetUnitRaidRoute), asCALL_CDECL_OBJFIRST); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "int GetNavalContactCount() const", asMETHOD(CBattleAnalysis, GetNavalContactCount), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "AIFloat3 GetNavalContactPos(int) const", asMETHOD(CBattleAnalysis, GetNavalContactPos), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CBattleAnalysis", "int GetAllyAssetCount()", asMETHOD(CBattleAnalysis, GetAllyAssetCount), asCALL_THISCALL); ASSERT(r >= 0);
@@ -1664,6 +1679,8 @@ void CInitScript::RegisterCRouteTask(asIScriptEngine* engine)
     r = engine->RegisterObjectMethod("CRouteTask", "void SetMoveCompaction(bool)", asMETHOD(CRouteTask, SetMoveCompaction), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CRouteTask", "void SetRowSpacing(float)", asMETHOD(CRouteTask, SetRowSpacing), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CRouteTask", "bool SetNavalTarget(int)", asMETHOD(CRouteTask, SetNavalTarget), asCALL_THISCALL); ASSERT(r >= 0);
+    r = engine->RegisterObjectMethod("CRouteTask", "bool SetLandTarget(int)", asMETHOD(CRouteTask, SetLandTarget), asCALL_THISCALL); ASSERT(r >= 0); // D-296
+    r = engine->RegisterObjectMethod("CRouteTask", "int GetPriorityTarget() const", asMETHOD(CRouteTask, GetPriorityTarget), asCALL_THISCALL); ASSERT(r >= 0); // D-296
     r = engine->RegisterObjectMethod("CRouteTask", "void SetRepairThreshold(float)", asMETHOD(CRouteTask, SetRepairThreshold), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CRouteTask", "void SetCombatRetreat(bool)", asMETHOD(CRouteTask, SetCombatRetreat), asCALL_THISCALL); ASSERT(r >= 0);
     r = engine->RegisterObjectMethod("CRouteTask", "bool SetSeaTarget(int)", asMETHOD(CRouteTask, SetSeaTarget), asCALL_THISCALL); ASSERT(r >= 0);

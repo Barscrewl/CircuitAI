@@ -205,6 +205,7 @@ namespace RoleTech
 	{
         aiBuilderMgr.recoverConstruction = true;
         TechFortifications::Reset();
+        TechReclaim::ProtectEnergyStorage();   // D-290 (owner): TECH never reclaims an energy storage, on any path
 
 		// Apply TECH role settings
 		aiTerrainMgr.SetAllyZoneRange(Global::RoleSettings::Tech::AllyRange);
@@ -930,17 +931,19 @@ namespace RoleTech
 			if (yt !is null) return yt;
 		}
 		CCircuitDef@ clusterNano = TechFactories::Nano();
-        if (TechChain::NukeRush() && facDef.GetName() == TechChain::DefFor("nano")) {
-            // Nanos enter through the factory manager, not the mobile-builder
-            // rule table. Route this opening's assistants through its policy
-            // here as well, including before a reclaim ever transfers them.
-            IUnitTask@ rushAssist = Tech_TurretAssist(u, true);
-            if (rushAssist !is null) return rushAssist;
-        }
 		if (clusterNano !is null && facDef.GetName() == clusterNano.GetName() && TechFactories::ClusterOfTurret(u) !is null)
 		{
 			IUnitTask@ ft = TechFactories::TurretFocus(u, true);
 			if (ft !is null) return ft;
+		}
+		// D-289: every other TECH construction turret runs the one ladder
+		// (frames in reach, then a producing factory in reach); null leaves
+		// native's default (repair, feature reclaim, wait). The nuke opening's
+		// own branch (D-229) is step 2 of the ladder.
+		if (!facDef.IsMobile() && UnitHelpers::IsT1Nano(facDef.GetName()))
+		{
+			IUnitTask@ tw = Tech_TurretWork(u, true);
+			if (tw !is null) return tw;
 		}
 
 		// D-076: a retiring factory produces nothing (played: the T1 lab built a
@@ -1991,43 +1994,102 @@ namespace RoleTech
 		return "armmex";
 	}
 
+	// D-289 (owner: "if nothing in range is worth assisting that is high
+	// priority, the fallback should be factory assist"): one ladder for every
+	// TECH construction turret, asked from the factory side (Tech_FactoryAiMakeTask:
+	// turrets are the native factory manager's assistants, D-119) and from the
+	// builder side (rows turret.assist, turret.any, turret.factory, turret.wait,
+	// after a reclaim pull moved the turret). In order:
+	//   1 a reclaim of ours in reach the D-290 gate allows (builder side only;
+	//     PullTurrets moves factory-side turrets onto a reclaim)
+	//   2 high-priority frames in reach: the nuke opening's projects; else the
+	//     advanced fusion while the converters starve (D-107), the chain's current
+	//     dear frame, the advanced lab, the gantry, the T1 lab, then the D-065
+	//     economy order
+	//   3 any frame of ours in reach (exact: build distance + its model radius)
+	//   4 assist a producing, non-spam, non-retiring factory in reach
+	//      (Tech_TurretFactoryAssist)
+	//   then wait (builder side) or native's default (repair, feature reclaim, wait).
+	// Cost per ask: FindReclaimTargetFor O(reclaims); one FindUnfinishedNear O(N)
+	// at build distance + TurretFrameMaxRadius, cached per (turret, frame) and
+	// shared by steps 2 and 3; only when it finds a frame, the ordered
+	// FindUnfinishedFor scans (O(N) each, up to ~15). Step 4 is O(F) over
+	// Factory::factoryList plus one FindProducedNear O(N) factory side. The def
+	// lists are built once (side is fixed): no per-ask array allocation.
+	array<CCircuitDef@> turretOrderDefs;   // D-065 order behind the labs
+	array<CCircuitDef@> turretRushDefs;    // D-229 nuke-opening projects
+	bool turretOrderBuilt = false;
+	bool turretRushBuilt = false;
+	void Tech_TurretAddDefs(array<CCircuitDef@>@ defs, const array<string>@ names)
+	{
+		for (uint i = 0; i < names.length(); ++i) {
+			CCircuitDef@ d = ai.GetCircuitDef(names[i]);
+			if (d !is null) defs.insertLast(d);
+		}
+	}
+	int turretNearId = -1;
+	int turretNearAt = -1;
+	CCircuitUnit@ turretNear = null;   // valid only for (turretNearId, turretNearAt): never read across frames
+	CCircuitUnit@ Tech_TurretNearFrame(CCircuitUnit@ u)
+	{
+		if (turretNearId == u.id && turretNearAt == ai.frame) return turretNear;
+		turretNearId = u.id;
+		turretNearAt = ai.frame;
+		@turretNear = aiBuilderMgr.FindUnfinishedNear(u.GetPos(ai.frame),
+			u.circuitDef.GetBuildDistance() + Global::RoleSettings::Tech::TurretFrameMaxRadius, null);
+		return turretNear;
+	}
+	IUnitTask@ Tech_TurretRepair(CCircuitUnit@ target, bool factorySide, Task::Priority prio)
+	{
+		if (factorySide) return aiFactoryMgr.Enqueue(TaskS::Repair(prio, target));
+		// 30 s: a reclaim or a dearer frame that begins meanwhile is taken at the next ask
+		return aiBuilderMgr.Enqueue(TaskB::Repair(prio, target, 30 * SECOND));
+	}
+
+	// Steps 1-2. Also SUPPORT's turret assist (support_build.as) and rule turret.assist.
 	IUnitTask @Tech_TurretAssist(CCircuitUnit @u, bool factorySide = false)
 	{
 		if (u is null || u.circuitDef is null) return null;
-        if (TechChain::NukeRush()) {
-            // The retiring lab is a durable lifecycle target. Reclaim task
-            // entries can disappear when another worker's short task ends;
-            // keep the refund staffed until the lab itself is gone.
-            CCircuitUnit@ retiredLab = ai.GetTeamUnit(TechChain::nukeRetiredLabId);
-            // Match the existing reclaim dispatch / INV-008 envelope. The
-            // lab's model extends beyond its centre; using bare build distance
-            // here dropped edge turrets after their first reclaim task ended.
-            const float reach = u.circuitDef.GetBuildDistance() + Global::RoleSettings::Tech::ReclaimTurretMargin;
-            if (retiredLab !is null && MapHelpers::SqDist(u.GetPos(ai.frame), retiredLab.GetPos(ai.frame)) <= reach * reach)
-                return aiBuilderMgr.Enqueue(TaskB::Reclaim(Task::Priority::HIGH, retiredLab, 30 * SECOND));
-            // A silo is not in TECH's ordinary economic assist list. Native
-            // fallback can refuse a large frame while metal is low, leaving
-            // completed in-range turrets idle during the timed opening.
-            array<string> rushProjects = {TechChain::DefFor("alab"), TechChain::DefFor("nano"), TechChain::DefFor("mstor"), TechChain::DefFor("estor"),
-                TechChain::DefFor("fusion"), TechChain::DefFor("silo"), TechChain::DefFor("ap"),
-                TechChain::DefFor("wind"), TechChain::DefFor("solar")};
-            for (uint i = 0; i < rushProjects.length(); ++i) {
-                CCircuitDef@ rushDef = ai.GetCircuitDef(rushProjects[i]);
-                CCircuitUnit@ rushFrame = (rushDef is null) ? null : aiBuilderMgr.FindUnfinishedFor(u, rushDef);
-                if (rushFrame !is null)
-                    return factorySide ? aiFactoryMgr.Enqueue(TaskS::Repair(Task::Priority::HIGH, rushFrame))
-                        : aiBuilderMgr.Enqueue(TaskB::Repair(Task::Priority::HIGH, rushFrame, 30 * SECOND));
-            }
-            // The generic turret.any rule searches a 700-elmo neighbourhood,
-            // wider than a stationary nano can reach. Never strand this rush's
-            // power on an out-of-range mex while waiting for the next frame.
-            return factorySide ? aiFactoryMgr.Enqueue(TaskS::Wait(false, 2 * SECOND)) : TechBuild::Wait(2 * SECOND);
-        }
-		CCircuitUnit @reclaim = aiBuilderMgr.FindReclaimTargetFor(u);
-		if (reclaim !is null)
-		{
-			GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " reclaims " + reclaim.circuitDef.GetName(), 2);
-			return aiBuilderMgr.Enqueue(TaskB::Reclaim(Task::Priority::HIGH, reclaim, 120 * SECOND));
+		const bool nukeRush = TechChain::NukeRush();
+		// step 1: a reclaim of ours in reach (D-290: only one the gate allows now)
+		if (!factorySide) {
+			CCircuitUnit@ reclaim = null;
+			if (nukeRush) {
+				// The retiring lab is a durable lifecycle target. Reclaim task
+				// entries can disappear when another worker's short task ends;
+				// keep the refund staffed until the lab itself is gone. Match the
+				// INV-008 envelope: the lab's model extends beyond its centre.
+				CCircuitUnit@ retiredLab = ai.GetTeamUnit(TechChain::nukeRetiredLabId);
+				const float reach = u.circuitDef.GetBuildDistance() + Global::RoleSettings::Tech::ReclaimTurretMargin;
+				if (retiredLab !is null && MapHelpers::SqDist(u.GetPos(ai.frame), retiredLab.GetPos(ai.frame)) <= reach * reach)
+					@reclaim = retiredLab;
+			}
+			if (reclaim is null) @reclaim = aiBuilderMgr.FindReclaimTargetFor(u);
+			if (reclaim !is null && TechReclaim::Allowed(reclaim, "turret.join"))
+			{
+				if (LOG_LEVEL >= 2) GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " reclaims " + reclaim.circuitDef.GetName(), 2);
+				return aiBuilderMgr.Enqueue(TaskB::Reclaim(Task::Priority::HIGH, reclaim, (nukeRush ? 30 : 120) * SECOND));
+			}
+		}
+		// step 2: nothing under construction within build distance + the largest
+		// frame radius means no ordered scan below can find one
+		if (Tech_TurretNearFrame(u) is null) return null;
+		if (nukeRush) {
+			// A silo is not in TECH's ordinary economic assist list. Native
+			// fallback can refuse a large frame while metal is low, leaving
+			// completed in-range turrets idle during the timed opening.
+			if (!turretRushBuilt) {
+				turretRushBuilt = true;
+				const array<string> rush = {TechChain::DefFor("alab"), TechChain::DefFor("nano"), TechChain::DefFor("mstor"), TechChain::DefFor("estor"),
+					TechChain::DefFor("fusion"), TechChain::DefFor("silo"), TechChain::DefFor("ap"),
+					TechChain::DefFor("wind"), TechChain::DefFor("solar")};
+				Tech_TurretAddDefs(turretRushDefs, rush);
+			}
+			for (uint i = 0; i < turretRushDefs.length(); ++i) {
+				CCircuitUnit@ rushFrame = aiBuilderMgr.FindUnfinishedFor(u, turretRushDefs[i]);
+				if (rushFrame !is null) return Tech_TurretRepair(rushFrame, factorySide, Task::Priority::HIGH);
+			}
+			return null;
 		}
 		const string side = Global::AISettings::Side;
 		// D-107 (owner's rule): after the reclaim, the same switch as the air
@@ -2039,34 +2101,189 @@ namespace RoleTech
 			CCircuitUnit @afFrame = (af is null) ? null : aiBuilderMgr.FindUnfinishedFor(u, af);
 			if (afFrame !is null)
 			{
-				GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " assists the advanced fusion: the converters cannot stay on (D-107)", 2);
-				return aiBuilderMgr.Enqueue(TaskB::Repair(Task::Priority::HIGH, afFrame, 30 * SECOND));
+				if (LOG_LEVEL >= 2) GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " assists the advanced fusion: the converters cannot stay on (D-107)", 2);
+				return Tech_TurretRepair(afFrame, factorySide, Task::Priority::HIGH);
 			}
 		}
-		array<string> order = {
-			UnitHelpers::GetAdvEnergyConverterNameForSide(side),
-			UnitHelpers::GetT1NanoNameForSide(side),
-			UnitHelpers::GetAdvFusionNameForSide(side),
-			UnitHelpers::GetEnergyConverterNameForSide(side),
-			UnitHelpers::GetFusionNameForSide(side),
-			UnitHelpers::GetAdvSolarNameForSide(side),
-			UnitHelpers::GetSolarNameForSide(side),
-			UnitHelpers::GetWindNameForSide(side),
-			UnitHelpers::GetEnergyStorageNameForSide(side),
-			UnitHelpers::GetMetalStorageNameForSide(side),
-			Tech_T1MexName(side)
-		};
-		for (uint i = 0; i < order.length(); ++i)
+		// D-289: the chain's current dear frame (the rush's own target) first
 		{
-			CCircuitDef @def = ai.GetCircuitDef(order[i]);
-			if (def is null) continue;
-			CCircuitUnit @target = aiBuilderMgr.FindUnfinishedFor(u, def);
+			CCircuitDef@ dear = TechChain::CurrentFrameDef();
+			CCircuitUnit@ dearFrame = (dear is null) ? null : aiBuilderMgr.FindUnfinishedFor(u, dear);
+			if (dearFrame !is null)
+			{
+				if (LOG_LEVEL >= 2) GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " assists the chain's " + dear.GetName(), 2);
+				return Tech_TurretRepair(dearFrame, factorySide, Task::Priority::HIGH);
+			}
+		}
+		if (!turretOrderBuilt)
+		{
+			turretOrderBuilt = true;
+			const array<string> order = {
+				UnitHelpers::GetT2BotLabForSide(side),      // D-289: the labs, then the D-065 economy order
+				UnitHelpers::GetLandGantryForSide(side),
+				UnitHelpers::GetT1BotLabForSide(side),
+				UnitHelpers::GetAdvEnergyConverterNameForSide(side),
+				UnitHelpers::GetT1NanoNameForSide(side),
+				UnitHelpers::GetAdvFusionNameForSide(side),
+				UnitHelpers::GetEnergyConverterNameForSide(side),
+				UnitHelpers::GetFusionNameForSide(side),
+				UnitHelpers::GetAdvSolarNameForSide(side),
+				UnitHelpers::GetSolarNameForSide(side),
+				UnitHelpers::GetWindNameForSide(side),
+				UnitHelpers::GetEnergyStorageNameForSide(side),
+				UnitHelpers::GetMetalStorageNameForSide(side),
+				Tech_T1MexName(side)
+			};
+			Tech_TurretAddDefs(turretOrderDefs, order);
+		}
+		for (uint i = 0; i < turretOrderDefs.length(); ++i)
+		{
+			CCircuitUnit @target = aiBuilderMgr.FindUnfinishedFor(u, turretOrderDefs[i]);
 			if (target is null) continue;
-			GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " assists " + order[i], 2);
-			// 30 s: a reclaim that begins meanwhile is taken at the next ask.
-			return aiBuilderMgr.Enqueue(TaskB::Repair(Task::Priority::HIGH, target, 30 * SECOND));
+			if (LOG_LEVEL >= 2) GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " assists " + turretOrderDefs[i].GetName(), 2);
+			return Tech_TurretRepair(target, factorySide, Task::Priority::HIGH);
 		}
 		return null;
+	}
+
+	// Step 3: any structure of ours under construction in exact reach. The
+	// nearest frame (shared with step 2) names the def; FindUnfinishedFor applies
+	// the engine's reach (build distance + model radius). Replaces the 700-elmo
+	// search that handed out 30 s repairs no turret could execute. Not during the
+	// nuke opening (its build power stays on its own projects, D-229).
+	IUnitTask@ Tech_TurretAnyFrame(CCircuitUnit@ u, bool factorySide)
+	{
+		if (u is null || u.circuitDef is null || TechChain::NukeRush()) return null;
+		CCircuitUnit@ near = Tech_TurretNearFrame(u);
+		if (near is null || near.circuitDef is null) return null;
+		CCircuitUnit@ f = aiBuilderMgr.FindUnfinishedFor(u, near.circuitDef);
+		if (f is null) {
+			if (LOG_LEVEL >= 3) GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " nearest frame " + near.circuitDef.GetName() + " " + near.id + " is out of reach", 3);
+			return null;
+		}
+		return factorySide ? aiFactoryMgr.Enqueue(TaskS::Repair(Task::Priority::NORMAL, f))
+			: aiBuilderMgr.Enqueue(TaskB::Repair(Task::Priority::NORMAL, f, 30 * SECOND));
+	}
+
+	// D-289: the economy guard of step 4: production does not take the build
+	// power while the bank is nearly empty and a dear frame of ours is going up
+	// (that frame is starved already). Energy stalling is not a reason by
+	// default (played 20261013T234723Z: TECH's energy bank sat near zero from
+	// 8 to 14 min and the guard kept every turret idle beside a producing lab;
+	// native's static repair already pauses with CmdWait while energy is empty).
+	bool Tech_TurretFactoryGuarded(string &out why)
+	{
+		if (Global::RoleSettings::Tech::TurretFactorySkipOnEnergyStall && aiEconomyMgr.isEnergyStalling) { why = "energy stalling"; return true; }
+		const float stor = aiEconomyMgr.metal.storage;
+		if (stor > 0.0f && aiEconomyMgr.metal.current < Global::RoleSettings::Tech::TurretFactoryMinBankShare * stor
+			&& aiBuilderMgr.CountUnfinishedNear(Layout::BaseCentre(), Global::RoleSettings::Tech::EcoBuildPowerRadius,
+				Global::RoleSettings::Tech::ChainParallelCostM, null) > 0) { why = "bank low with a dear frame up"; return true; }
+		if (TechChain::NukeRush() && TechChain::nukeFundingSilo >= 0 && !Global::RoleSettings::Tech::TurretFactoryInNukeFunding) { why = "nuke silo funding"; return true; }
+		why = "";
+		return false;
+	}
+
+	// D-289: the factory a turret may assist: complete, producing (a FACTORY
+	// task in hand, not a wait), not a spam lab (D-119 / INV-049: its two turrets
+	// only), not retiring (D-076), its centre within build distance +
+	// TurretFactoryReachMargin (a guard repairs the factory's curBuild at its
+	// yard: Recoil BuilderCAI.cpp:931). Nearest; ties to the heavy-rush lab, then
+	// the lower id. O(F) over Factory::factoryList, no allocation.
+	CCircuitUnit@ Tech_TurretFactoryFor(CCircuitUnit@ u)
+	{
+		const float reach = u.circuitDef.GetBuildDistance() + Global::RoleSettings::Tech::TurretFactoryReachMargin;
+		const float reachSq = reach * reach;
+		const AIFloat3 here = u.GetPos(ai.frame);
+		CCircuitUnit@ best = null;
+		float bestSq = 1.0e30f;
+		for (uint i = 0; i < Factory::factoryList.length(); ++i) {
+			CCircuitUnit@ fac = Factory::factoryList[i];
+			if (fac is null || fac is u || fac.circuitDef is null || fac.task is null) continue;
+			if (fac.task.GetType() != int(Task::Type::FACTORY)) continue;
+			if (Lifecycle::IsRetiring(fac) || TechFactories::IsSpamLab(fac)) continue;
+			const float sq = MapHelpers::SqDist(here, fac.GetPos(ai.frame));
+			if (sq > reachSq) continue;
+			bool better = sq < bestSq;
+			if (!better && sq == bestSq && best !is null) {
+				const bool facHeavy = fac.id == TechHeavyRush::labId;
+				const bool bestHeavy = best.id == TechHeavyRush::labId;
+				better = (facHeavy && !bestHeavy) || (facHeavy == bestHeavy && fac.id < best.id);
+			}
+			if (better) { bestSq = sq; @best = fac; }
+		}
+		return best;
+	}
+
+	// Step 4. Builder side: an interruptible guard of the factory for
+	// TurretFactoryGuardSeconds, then the ladder runs again (a frame that starts
+	// in reach pre-empts it; FindMatchingGuard keeps an identical guard without a
+	// new command). Factory side: a repair of what the factory is producing.
+	dictionary turretFactoryLogged;   // "turret|factory" -> true: one line per pair
+	IUnitTask@ Tech_TurretFactoryAssist(CCircuitUnit@ u, bool factorySide)
+	{
+		if (u is null || u.circuitDef is null) return null;
+		string why;
+		if (Tech_TurretFactoryGuarded(why)) return null;
+		CCircuitUnit@ fac = Tech_TurretFactoryFor(u);
+		if (fac is null) return null;
+		IUnitTask@ t = null;
+		if (factorySide) {
+			CCircuitUnit@ buildee = aiBuilderMgr.FindProducedNear(fac.GetPos(ai.frame), TechFactories::LabYardRadius);
+			if (buildee is null) return null;   // between two units: native's default, asked again shortly
+			const float reach = u.circuitDef.GetBuildDistance() + Global::RoleSettings::Tech::TurretFactoryReachMargin;
+			if (MapHelpers::SqDist(u.GetPos(ai.frame), buildee.GetPos(ai.frame)) > reach * reach) return null;
+			@t = aiFactoryMgr.Enqueue(TaskS::Repair(Task::Priority::NORMAL, buildee));
+		} else {
+			// Not GuardHelpers::AssignWorkerGuard: it refuses a guard that lacks the
+			// BUILDER role, and a construction turret has none (no build options;
+			// behaviour.json role "support"), so every builder-side factory assist
+			// was refused (played: INV-200, 20261013T234555Z). The spam-lab rule it
+			// also enforces (INV-049) is applied by Tech_TurretFactoryFor. Same
+			// reuse as the helper: an identical healthy guard sends no new command.
+			const SServBTask guard = TaskB::Guard(Task::Priority::LOW, fac, true, Global::RoleSettings::Tech::TurretFactoryGuardSeconds * SECOND);
+			@t = aiBuilderMgr.FindMatchingGuard(u, guard);
+			if (t is null) @t = aiBuilderMgr.Enqueue(guard);
+		}
+		if (t !is null) {
+			const string key = u.id + "|" + fac.id;
+			if (!turretFactoryLogged.exists(key)) {
+				turretFactoryLogged.set(key, true);
+				GenericHelpers::LogUtil("[TECH][Turret] " + u.id + " assists factory " + fac.circuitDef.GetName() + " " + fac.id
+					+ " (" + (factorySide ? "factory side" : "builder side") + ", D-289)", 1);
+			}
+		}
+		return t;
+	}
+
+	// The whole ladder, steps 1-4 (the factory side; the builder side runs the
+	// same steps as rule rows). Records the turret's wait for INV-200.
+	IUnitTask@ Tech_TurretWork(CCircuitUnit@ u, bool factorySide)
+	{
+		IUnitTask@ t = Tech_TurretAssist(u, factorySide);
+		if (t is null) @t = Tech_TurretAnyFrame(u, factorySide);
+		if (t is null) @t = Tech_TurretFactoryAssist(u, factorySide);
+		// Factory side, a null with a factory candidate in reach is a factory
+		// between two units (or its buildee beyond reach): tried, not waiting.
+		bool waiting = (t is null);
+		if (waiting && factorySide && Tech_TurretFactoryFor(u) !is null) waiting = false;
+		Tech_TurretWaited(u, waiting);
+		return t;
+	}
+
+	// INV-200 state: turret id -> frame it started waiting (no ladder step
+	// answered); cleared when one does. Read once a second by Invariants::Tick,
+	// which walks only these entries.
+	dictionary turretWaitingSince;
+	void Tech_TurretWaited(CCircuitUnit@ u, bool waiting)
+	{
+		if (u is null) return;
+		const string key = "" + u.id;
+		if (!waiting) {
+			turretWaitingSince.delete(key);
+			Invariants::turretBlockedSince.delete(key);   // a later wait starts INV-200's clock afresh
+			return;
+		}
+		if (!turretWaitingSince.exists(key)) turretWaitingSince.set(key, int64(ai.frame));
 	}
 
 	IUnitTask @Tech_Commander_AiMakeTask(CCircuitUnit @u, IUnitTask @defaultTask, float metalIncome)
@@ -2744,7 +2961,7 @@ namespace RoleTech
 		if (Factory::IsT2LabBuildQueued() && aiEconomyMgr.metal.current < 100.0f && t1CtorCountForRecycle >= 3 && metalIncome <= 45.0f)
 		{
 			// Reclaim T1 Lab if T2 lab is queued and metal stored is low
-			if (Factory::primaryT1BotLab !is null)
+			if (Factory::primaryT1BotLab !is null && TechReclaim::Allowed(Factory::primaryT1BotLab, "recycle.t1"))   // D-290
 			{
 				// AIFloat3 labPos = Factory::primaryT1BotLab.GetPos(ai.frame);
 				IUnitTask @t = aiBuilderMgr.Enqueue(
@@ -2770,7 +2987,7 @@ namespace RoleTech
 				const SResourceInfo @metal = aiEconomyMgr.metal;
 				float freeStorage = ((metal is null) ? 0.0f : (metal.storage - metal.current));
 
-				if (labCostM > 0.0f && freeStorage >= labCostM)
+				if (labCostM > 0.0f && freeStorage >= labCostM && TechReclaim::Allowed(Factory::primaryT2BotLab, "recycle.t2"))   // D-290
 				{
 					IUnitTask @t2 = aiBuilderMgr.Enqueue(
 						TaskB::Reclaim(Task::Priority::NORMAL, Factory::primaryT2BotLab, 180 * SECOND));

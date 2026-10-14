@@ -368,6 +368,31 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
         const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
         float waterCost, float threatWeight, float maxWaterThreat)
 {
+    return UnitTerrainRoute(def, from, to, dry, landCost, waterCost, threatWeight, maxWaterThreat, nullptr, 0.f);
+}
+
+std::vector<AIFloat3> CBattleAnalysis::GetUnitRaidRoute(const CCircuitDef* def,
+        const AIFloat3& from, const AIFloat3& to, float hazardMargin, float hazardWeight)
+{
+    // D-296: a dry land route whose cells inside observed armed-ground
+    // coverage (+margin) cost hazardWeight extra each, on top of the legacy
+    // surface threat. Same synchronous search and UNIT_ROUTE accounting as
+    // GetUnitTerrainRoute; the overlay adds O(1) per cell to its threat fill.
+    if (!std::isfinite(hazardWeight) || hazardWeight < 0.f) return {};
+    EnsureGroundHazard(hazardMargin);
+    // One grid per definition: route with the unit's own MoveData depth only.
+    // The earlier dry-then-wet retry built two grids per def (8v8 full3: 29+29
+    // legscout builds, `unit-terrain-build` 0.297 ms/frame summed over 16 AIs,
+    // the largest phase). The grid is retained across height revisions.
+    return UnitTerrainRoute(def, from, to, false, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard,
+        std::min(hazardWeight, 1e6f), true);
+}
+
+std::vector<AIFloat3> CBattleAnalysis::UnitTerrainRoute(const CCircuitDef* def,
+        const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
+        float waterCost, float threatWeight, float maxWaterThreat, const Grid* hazard, float hazardValue,
+        bool retainTerrain)
+{
     performance::Scope routeScope(circuit, performance::UNIT_ROUTE);
     EnsureGrid();
     auto inside = [this](const AIFloat3& p) {
@@ -396,8 +421,10 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
     auto& t=cache.grid;
     const int frame=circuit->GetLastFrame();
     static const bool verify = std::getenv("CIRCUIT_VERIFY_UNIT_ROUTES") != nullptr;
-    bool rebuild = t.height.empty();
-    const bool refresh = rebuild || frame < cache.frame || frame-cache.frame>=60*FRAMES_PER_SEC;
+    bool rebuild = t.height.empty() || t.gw != gw || t.gh != gh || t.cellSize != cellSize;
+    // Raid routes keep an existing grid: on a 16-AI battle map the height
+    // revision changes every refresh, so the 60 s check rebuilt every time.
+    const bool refresh = rebuild || (!retainTerrain && (frame < cache.frame || frame-cache.frame>=60*FRAMES_PER_SEC));
     if (refresh) {
         performance::Scope refreshScope(circuit, performance::UNIT_TERRAIN_REFRESH);
         cache.frame=frame;
@@ -451,6 +478,9 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitTerrainRoute(const CCircuitDef* de
     performance::Scope threatScope(circuit, performance::UNIT_ROUTE_THREAT);
     threat.resize(height.size());
     for (size_t c=0;c<threat.size();++c) threat[c]=dry ? SurfThreat(CellPos(c)) : AmphThreat(CellPos(c));
+    if (hazard != nullptr && hazard->size() == threat.size()) {
+        for (size_t c=0;c<threat.size();++c) if ((*hazard)[c] > 0.f) threat[c]=std::max(threat[c],hazardValue);
+    }
     }
     // Exclude allied structures; the engine still resolves mobile traffic.
     auto& obstacles = unitRouteObstacles;

@@ -33,6 +33,7 @@ namespace Invariants {
         return valid;
     }
     dictionary inv53Idle;     // D-123: air constructor id -> samples in a row it did nothing
+    dictionary turretBlockedSince;   // D-289: INV-200 - waiting turret id -> first check with an assistable factory in reach
     void Violation(const string &in id, const string &in key, const string &in msg)
     {
         const string k = id + "|" + key;
@@ -287,10 +288,13 @@ namespace Invariants {
 
         // INV-006: no wind, solar or advanced solar stands InvariantReclaimSeconds
         // after an advanced fusion does (the owner's rule, D-077).
+        // D-290: never into an overflowing bank: while the reclaim gate is
+        // deferring energy reclaims (the bank has no room for the refund) the
+        // clock holds; the [RECLAIM] deferred line says why.
         const string side = Global::AISettings::Side;
         CCircuitDef@ afus = ai.GetCircuitDef(UnitHelpers::GetAdvFusionNameForSide(side));
         if (!MetalEconomy::Active() && afus !is null && afus.count - aiBuilderMgr.GetUnfinishedCount(afus) > 0) {
-            if (afusSince < 0) afusSince = ai.frame;
+            if (afusSince < 0 || TechReclaim::IsDeferredBy("energy.reclaim")) afusSince = ai.frame;
             else if (ai.frame - afusSince >= int(Global::RoleSettings::Tech::InvariantReclaimSeconds) * SECOND) {
                 int left = 0;
                 array<string> names = { UnitHelpers::GetWindNameForSide(side), UnitHelpers::GetSolarNameForSide(side), UnitHelpers::GetAdvSolarNameForSide(side) };
@@ -701,11 +705,15 @@ namespace Invariants {
         }
 
         // INV-044 (D-114): with FrontReclaimAtCount land factories on the map, no
-        // land factory stands at the main base for FrontBaseReclaimSeconds
+        // land factory stands at the main base for FrontBaseReclaimSeconds.
+        // D-290 (owner: never reclaim into an overflowing bank): while the gate
+        // defers this lab's reclaim the clock holds (played 20261014T014008Z:
+        // an injected full bank deferred armalab 11560 for 17 minutes and this
+        // fired every minute); the lab is retired meanwhile, producing nothing.
         {
             CCircuitUnit@ bf = TechFactories::BaseLandFactory();
             if (bf is null) baseFactorySince = -1;
-            else if (baseFactorySince < 0) baseFactorySince = ai.frame;
+            else if (baseFactorySince < 0 || TechReclaim::IsDeferred(bf.id)) baseFactorySince = ai.frame;
             else if (ai.frame - baseFactorySince >= Global::RoleSettings::Tech::FrontBaseReclaimSeconds * SECOND && ai.frame - baseFactoryLog >= 60 * SECOND) {
                 baseFactoryLog = ai.frame;
                 Violation("INV-044", "front", bf.circuitDef.GetName() + " " + bf.id + " still stands at the main base with " + TechFactories::LandFactoryCount()
@@ -780,6 +788,33 @@ namespace Invariants {
         // INV-015: a dear chain order does not wait for its first builder (D-084)
         if (TechChain::DearOrderPendingSeconds() >= Global::RoleSettings::Tech::InvariantDearOrderSeconds)
             Violation("INV-015", "dear", "a dear chain order has had no frame for " + int(Global::RoleSettings::Tech::InvariantDearOrderSeconds) + " s");
+
+        // INV-200 (D-289, owner): a construction turret does not sit idle or
+        // waiting while a producing factory it may assist stands in reach and
+        // the economy guard does not hold. Walks only the turrets the ladder
+        // left waiting (Tech_TurretWaited), O(waiting x F), once a second; the
+        // condition must hold InvariantTurretIdleSeconds in a row.
+        {
+            array<string>@ keys = RoleTech::turretWaitingSince.getKeys();
+            string guardWhy;
+            const bool guarded = keys !is null && keys.length() > 0 && RoleTech::Tech_TurretFactoryGuarded(guardWhy);
+            for (uint i = 0; keys !is null && i < keys.length(); ++i) {
+                CCircuitUnit@ tu = ai.GetTeamUnit(int(parseInt(keys[i])));
+                if (tu is null) { RoleTech::turretWaitingSince.delete(keys[i]); turretBlockedSince.delete(keys[i]); continue; }
+                bool idle = (tu.task is null) || int(tu.task.GetType()) == int(Task::Type::IDLE) || int(tu.task.GetType()) == int(Task::Type::WAIT);
+                if (!idle) {
+                    IBuilderTask@ bt = cast<IBuilderTask>(tu.task);
+                    idle = bt !is null && Task::BuildType(bt.GetBuildType()) == Task::BuildType::WAIT;
+                }
+                CCircuitUnit@ fac = (!idle || guarded) ? null : RoleTech::Tech_TurretFactoryFor(tu);
+                if (fac is null) { turretBlockedSince.delete(keys[i]); continue; }
+                int64 since = 0;
+                if (!turretBlockedSince.get(keys[i], since)) { turretBlockedSince.set(keys[i], int64(ai.frame)); continue; }
+                if (ai.frame - int(since) >= int(Global::RoleSettings::Tech::InvariantTurretIdleSeconds) * SECOND)
+                    Violation("INV-200", keys[i], "turret " + keys[i] + " waited " + int((ai.frame - int(since)) / SECOND) + " s with "
+                        + fac.circuitDef.GetName() + " " + fac.id + " producing in reach");
+            }
+        }
 
         // INV-008: every construction turret in range of a reclaim of ours is
         // on it (the owner's rule, D-078).

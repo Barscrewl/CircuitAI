@@ -99,6 +99,7 @@ namespace Main {
 		ArtilleryPolicy::Check();
         Lanes::Poll(); // complete async surveys for every role before consumers run
         AmphibiousOps::Tick();
+        ScoutRaid::Tick(); // D-296: no-op unless the profile JSON enables scout raids
 		Commands::DrawTick();   // the widget's map drawing, paced under the server's flood guard
 		// Refresh the cached enemy threat/cost layers the role quotas read.
 		Military::UpdateEnemyThreatCache();

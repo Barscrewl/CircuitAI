@@ -131,6 +131,19 @@ public:
     springai::AIFloat3 GetGroundContactPos(int index) const;
     float GetGroundContactCost(int index) const;
     bool IsGroundContactEconomy(int index) const;
+    // D-296: economy kind flags of a ground contact (static only), O(1).
+    enum ContactKind: int {K_MEX = 1, K_WIND = 2, K_NANO = 4, K_OTHER_ECO = 8};
+    int GetGroundContactKind(int index) const;
+    // D-296: observed armed-ground-weapon coverage dilated by margin, from the
+    // current ground snapshot; independent of profile threat multipliers.
+    // Lazily rebuilt at most once per Update publication (and per margin).
+    float GroundHazard(const springai::AIFloat3& pos, float margin);
+    // D-296: GetUnitTerrainRoute with that hazard layer as an additive cell
+    // penalty (hazardWeight per covered cell). Soft, not a block: the lane
+    // solver's ceiling only blocks water cells, and a hard land block would
+    // leave no route out of a fully covered start or to a ringed base.
+    std::vector<springai::AIFloat3> GetUnitRaidRoute(const CCircuitDef* def,
+        const springai::AIFloat3& from, const springai::AIFloat3& to, float hazardMargin, float hazardWeight);
     int GetNavalContactCount() const { return static_cast<int>(navalContacts.size()); }
     springai::AIFloat3 GetNavalContactPos(int index) const;
     // Completed allied extractors, geothermal plants and factories. Lazy value
@@ -225,7 +238,8 @@ private:
         int id = -1;
 	};
 	std::vector<AirContact> airContacts;
-    struct GroundContact { springai::AIFloat3 pos; float cost; bool economy; int id; int defId; };
+    struct GroundContact { springai::AIFloat3 pos; float cost; bool economy; int id; int defId;
+        int kind = 0; float hazardRange = 0.f; }; // D-296: ContactKind flags; LAND reach when armed
     std::vector<GroundContact> groundContacts;
     std::vector<springai::AIFloat3> navalContacts;
     std::vector<AirContact> allyAssets;
@@ -242,6 +256,20 @@ private:
 	};
 	using Grid = std::vector<float>;
     Grid observedWaterWeapons; // current weapon coverage, independent of profile threat multipliers
+    // D-296 lazy observed ground-weapon coverage (callback thread only).
+    // Owner: EnsureGroundHazard; invalidated by groundPublication or margin.
+    Grid observedGroundHazard;
+    unsigned int groundHazardPublication = ~0u;
+    float groundHazardMargin = -1.f;
+    void EnsureGroundHazard(float margin);
+    // retainTerrain (D-296 raid routes only): once a definition's grid exists it
+    // is never rebuilt for height-revision changes. Craters do not change a
+    // scout's passability in practice, and each rebuild costs O(G*8*K) corridor
+    // samples (~250 ms on Supreme). Amphibious/sea callers keep the 60 s refresh.
+    std::vector<springai::AIFloat3> UnitTerrainRoute(const CCircuitDef* def,
+        const springai::AIFloat3& from, const springai::AIFloat3& to, bool dry,
+        float landCost, float waterCost, float threatWeight, float maxWaterThreat,
+        const Grid* hazard, float hazardValue, bool retainTerrain = false);
     lane::Settings laneSettings;
     std::shared_ptr<const lane::Terrain> laneTerrain;
     // Synchronous callback-only scratch, never shared with lane workers.

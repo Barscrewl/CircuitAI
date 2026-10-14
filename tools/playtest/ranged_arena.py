@@ -48,6 +48,9 @@ def prepare(args):
         '--modoption','startenergystorage=1000000',
         '--extra-widget',str(HERE/'widgets/ranged_arena.lua'),
         '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua')]
+    # Declared per-case mod options (e.g. the Legion faction for legscout).
+    for key, value in case.get('modoptions', {}).items():
+        stage += ['--modoption', f'{key}={value}']
     if args.headless: stage += ['--headless']
     # No --game: playtest.py resolves the lobby's last game archive, so a
     # pinned archive name does not go stale when the installed BAR updates.
