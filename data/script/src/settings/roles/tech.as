@@ -368,6 +368,7 @@ namespace Tech {
             int TurretFactoryGuardSeconds = 10;             // D-289: builder-side factory guard timeout; the ladder is re-run after it, so a new frame in reach pre-empts within this
             float TurretFactoryMinBankShare = 0.05f;        // D-289: under this share of metal storage, with a dear frame of ours up, turrets do not feed unit production
             bool TurretFactoryInNukeFunding = false;        // D-289: during the D-229 silo funding window turrets do not feed unit production
+            bool TurretFactorySkipOnEnergyStall = false;    // D-289: true = no factory assist while energy stalls (off: the owner's fallback; native repair pauses on empty energy)
             float TurretFrameMaxRadius = 200.0f;            // D-289: a bound on any frame's model radius: one FindUnfinishedNear at build distance plus this pre-checks the ordered frame scans
             float InvariantTurretIdleSeconds = 20.0f;       // D-289: INV-200 - a turret waiting this long while a producing factory it may assist stands in reach is a violation
             float ChainEnergyFloatMax = 300.0f;             // D-079: ... or the bank at EcoConvertEnergyPercent with income over the pull by this now (played: the advanced fusion ordered 15 s after the fusion at +1,291)

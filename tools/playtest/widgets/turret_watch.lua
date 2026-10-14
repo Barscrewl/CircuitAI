@@ -19,8 +19,11 @@ local function census(frame)
         if d and d.isFactory and (progress or 0) >= 1 then labs = labs + 1 end
         if nano[def] and (progress or 0) >= 1 then
             n = n + 1
-            local cmds = Spring.GetUnitCommands(id, 1)
+            -- native static repair inserts WAIT ahead of its REPAIR while energy
+            -- is empty: classify by the command behind a leading WAIT
+            local cmds = Spring.GetUnitCommands(id, 2)
             local c = cmds and cmds[1]
+            if c and c.id == CMD.WAIT and cmds[2] then c = cmds[2] end
             if not c then
                 idle = idle + 1
             else
