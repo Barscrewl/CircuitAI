@@ -336,6 +336,7 @@ namespace Tech {
             float ReclaimProjectionSeconds = 0.0f;          // D-290: seconds of net metal inflow (income - pull) added to the bank before the refund lands; 0 = the bank now (the 1 s pause check covers inflow while reclaiming)
             bool ReclaimProtectEnergyStorage = true;        // D-290 (owner): TECH marks every energy storage def reclaim-protected natively (the watchdog repairs, never reclaims, such a frame)
             float InvariantReclaimOverflowSeconds = 5.0f;   // D-290: INV-209 - a script reclaim of ours still running this long while its refund cannot fit the bank is a violation
+            float ReclaimDeferredStaleSeconds = 30.0f;      // D-290: a gate deferral counts as current for this long after the last ask; INV-006 and INV-044 hold their clocks while one is current
             // D-289 (owner): construction turrets have one ladder: high-priority frames in reach, any
             // frame in reach, then assisting a producing (non-spam) factory in reach, then wait.
             float TurretFactoryReachMargin = 24.0f;         // D-289: a turret within its build distance plus this of a factory's centre assists it (a guard repairs curBuild at the yard: Recoil BuilderCAI.cpp:931)
