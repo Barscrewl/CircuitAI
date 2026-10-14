@@ -4,14 +4,16 @@
   "description": "D-291: as escort-scout-wipe plus visible flak covering one rear fan sector behind the enemy start; scouts must skip or nudge away from that sector",
   "bomber_only": false,
   "aircraft": [
-    {"unit":"$t2","count":20,"team":0,"once":true},
-    {"unit":"$fighter2","count":10,"team":0,"once":true},
-    {"unit":"$fighter1","count":10,"team":0,"once":true}
+    {"unit":"$fighter2","count":20,"team":0,"once":true},
+    {"unit":"$fighter1","count":20,"team":0,"once":true},
+    {"unit":"$t2","count":20,"team":0,"once":true}
   ],
-  "targets": [{"unit":"armafus","count":1,"position":[10600,2200],"once":true}],
+  "targets": [
+    {"unit":"armmmkr","count":4,"position":[10600,2500],"once":true},
+    {"unit":"armafus","count":8,"position":[10600,2200],"once":true}
+  ],
   "defenses": [
-    {"unit":"armflak","count":12,"position":[10600,2200],"after_seconds":120,"once":true},
-    {"unit":"armmercury","count":3,"position":[10300,2600],"after_seconds":120,"once":true},
+    {"unit":"armcir","count":2,"position":[10600,2700],"after_seconds":120,"once":true},
     {"unit":"armflak","count":3,"position":[11200,500],"after_seconds":120,"once":true}
   ],
   "refill_seconds": 30

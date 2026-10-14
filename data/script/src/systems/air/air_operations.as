@@ -204,8 +204,18 @@ namespace AirOperations {
         if (wave is null) return;
         const int i = operations.findByRef(wave);
         if (i < 0 || !offensive[i] || !struck[i] || launched[i].length() == 0) return;
-        for (uint b = 0; b < launched[i].length(); ++b)
-            if (ai.GetTeamUnit(launched[i][b]) !is null) return; // a bomber survives: not "all bombers dead"
+        // The abort that removes the task usually runs inside the last bomber's
+        // own UnitDestroyed (CAirWaveTask::RemoveAssignee aborts when units
+        // empty; CircuitAI.cpp unregisters the team unit only afterwards), so
+        // ai.GetTeamUnit still returns the dying bomber here. RemoveAssignee
+        // has already handed it to the idle task, so "still on the run" is
+        // `u.task is task`, never mere existence. A bomber transferred off the
+        // run alive is not on the bombing run either (D-291 follow-up).
+        if (wave.GetBomberCount() > 0) return;
+        for (uint b = 0; b < launched[i].length(); ++b) {
+            CCircuitUnit@ bomber = ai.GetTeamUnit(launched[i][b]);
+            if (bomber !is null && bomber.task is task) return; // a bomber is still flying the run
+        }
         array<CCircuitUnit@>@ members = task.GetUnits();
         array<int> fighters;
         for (uint m = 0; m < members.length(); ++m) {
