@@ -181,6 +181,54 @@ namespace ScoutRaid {
         return best;
     }
 
+    // Straight leg a->b sampled every WaypointSpacing (so the 3-waypoint hazard
+    // check and the hold apply to it); appends only clear samples and returns
+    // false at the first covered one. O(length / spacing) hazard lookups.
+    bool SampleLeg(const AIFloat3& in a, const AIFloat3& in b, float margin, array<AIFloat3>@ result)
+    {
+        const int steps = AiMax(1, int(a.distance2D(b) / Global::ScoutRaid::WaypointSpacing));
+        for (int i = 1; i <= steps; ++i) {
+            AIFloat3 p = a + (b - a) * (float(i) / float(steps));
+            p.y = aiBattle.Height(p);
+            if (aiBattle.GroundHazard(p, margin) > 0.0f) return false;
+            result.insertLast(p);
+        }
+        return true;
+    }
+
+    // Fallback when the lane grid has no route (played: glitters' halves are
+    // not connected for bots on the 64-elmo lane grid although the engine
+    // fords them). Never a blind two-point move through coverage: the straight
+    // line is sampled; if it crosses coverage, one lateral detour of up to
+    // 2400 elmos around the first covered sample is tried; otherwise the route
+    // stops at the last clear sample and the raider waits there (the owner's
+    // rule is "avoid all enemies"); the backoff replan retries later.
+    array<AIFloat3>@ DirectRoute(int unitId, const AIFloat3& in from, const AIFloat3& in goal, float margin)
+    {
+        array<AIFloat3> route = {from};
+        if (SampleLeg(from, goal, margin, route)) return route;
+        const AIFloat3 clear = route[route.length() - 1];
+        AIFloat3 dir = goal - from; dir.y = 0.0f;
+        const float len = dir.Length2D();
+        if (len > 1.0f) {
+            const AIFloat3 side(-dir.z / len, 0.0f, dir.x / len);
+            for (int k = 1; k <= 4; ++k) for (int s = -1; s <= 1; s += 2) {
+                AIFloat3 d = clear + side * float(s * k) * 600.0f;
+                if (d.x < 64.0f || d.z < 64.0f || d.x > AiTerrainWidth() - 64.0f || d.z > AiTerrainHeight() - 64.0f) continue;
+                if (!LandPassable(d) || aiBattle.GroundHazard(d, margin) > 0.0f) continue;
+                array<AIFloat3> legs;
+                if (!SampleLeg(clear, d, margin, legs) || !SampleLeg(d, goal, margin, legs)) continue;
+                for (uint i = 0; i < legs.length(); ++i) route.insertLast(legs[i]);
+                GenericHelpers::LogUtil("[ScoutRaid] detour unit=" + unitId + " around (" + int(clear.x) + "," + int(clear.z)
+                    + ") via (" + int(d.x) + "," + int(d.z) + ")", 1);
+                return route;
+            }
+        }
+        GenericHelpers::LogUtil("[ScoutRaid] blocked unit=" + unitId + " waits at (" + int(clear.x) + "," + int(clear.z)
+            + ") coverage ahead, no detour", 1);
+        return route;
+    }
+
     AIFloat3 FallbackGoal(const AIFloat3& in from, const array<AIFloat3>& in starts)
     {
         AIFloat3 goal(-1.0f, 0.0f, -1.0f);
@@ -264,8 +312,7 @@ namespace ScoutRaid {
                 + " from=(" + int(pos.x) + "," + int(pos.z) + ") pass=" + LandPassable(pos)
                 + " goal=(" + int(goal.x) + "," + int(goal.z) + ") pass=" + LandPassable(goal)
                 + " hazard=" + aiBattle.GroundHazard(goal, Global::ScoutRaid::HazardMargin) + "; direct move", 1);
-            array<AIFloat3> straight = {pos, goal};
-            @path = straight;
+            @path = DirectRoute(r.id, pos, goal, Global::ScoutRaid::HazardMargin);
             direct = true;
         }
         r.route = direct ? path : Compact(path);
