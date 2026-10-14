@@ -10,8 +10,8 @@
   ],
   "targets": [{"unit":"armafus","count":1,"position":[10600,2200],"once":true}],
   "defenses": [
-    {"unit":"armflak","count":12,"position":[10600,2200],"once":true},
-    {"unit":"armmercury","count":3,"position":[10300,2600],"once":true}
+    {"unit":"armflak","count":12,"position":[10600,2200],"after_seconds":120,"once":true},
+    {"unit":"armmercury","count":3,"position":[10300,2600],"after_seconds":120,"once":true}
   ],
-  "refill_seconds": 600
+  "refill_seconds": 30
 }
