@@ -590,8 +590,12 @@ void CBattleAnalysis::Update(int frame)
                 if (d->IsAssist()) kind |= K_NANO;
                 if (kind == 0 && economy) kind |= K_OTHER_ECO;
             }
-            const float hazardRange = d->HasSurfToLand() && !e->IsBeingBuilt()
-                ? d->GetMaxRange(CCircuitDef::RangeType::LAND) : 0.f;
+            // BAR lets construction turrets reclaim enemy units (modrules
+            // reclaim.allowEnemies = true): a static reclaimer's build distance
+            // is lethal to a scout (round 12: two Ticks reclaimed by cornanotc).
+            const float hazardRange = e->IsBeingBuilt() ? 0.f : std::max(
+                d->HasSurfToLand() ? d->GetMaxRange(CCircuitDef::RangeType::LAND) : 0.f,
+                (!d->IsMobile() && d->IsAbleToReclaim()) ? d->GetBuildDistance() : 0.f);
             groundContacts.push_back({e->GetPos(), m, economy, e->GetId(), d->GetId(), kind, hazardRange});
         }
         if (observed && !d->IsAbleToFly() && d->IsMobile()

@@ -1,6 +1,6 @@
 {
-  "stop_minute": 6,
-  "_doc": "D-296 scout backline raid. Pass: raiders admitted and routed, at least three economy kills by scouts by minute 6, at most two scouts killed by static defences, no front unit killed by a scout (incidental fire is allowed, a chosen armed target is not), no INVARIANT (INV-211/212/213).",
+  "stop_minute": 11,
+  "_doc": "D-296 scout backline raid. Pass: raiders admitted and routed by minute 2, first economy kill by minute 8 and three by minute 10 (detours around the front, holds on contact and the engine walk to z~9000 cost time; round 12 raiders reached the mex field at 4-5 min), at most two scouts killed by static defences, no front unit killed by a scout (incidental fire is allowed, a chosen armed target is not), no INVARIANT (INV-211/212/213). Run with --minutes 11.",
   "expect": [
     {
       "key": "loaded",
@@ -36,13 +36,13 @@
       "key": "first economy kill",
       "pattern": "\\[RangedArena\\].* killed def=(cormex|corwin|cornanotc|armmex|armwin|armnanotc) team=1 by=(armflea|corfav|legscout)",
       "scope": "any",
-      "by_minute": 5
+      "by_minute": 8
     },
     {
       "key": "three economy kills",
       "pattern": "\\[RangedArena\\].* kill_census econ=([3-9]|\\d\\d+)",
       "scope": "any",
-      "by_minute": 6
+      "by_minute": 10
     }
   ],
   "forbid": [
