@@ -60,6 +60,7 @@ namespace TeamEconomy {
     }
 
     bool SendMetal(int teamId, float amount) { return aiEconomyMgr.SendResourceTo(METAL, amount, teamId); }
+    bool SendEnergy(int teamId, float amount) { return amount>0.f && aiEconomyMgr.SendResourceTo(ENERGY,amount,teamId); }
 
     // one line per teammate, for the log
     string Describe(int teamId)

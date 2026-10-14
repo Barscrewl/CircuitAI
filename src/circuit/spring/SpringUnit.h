@@ -31,6 +31,9 @@ public:
 	void GetPosition(int unitId, float* position) const;
 	void GetVelocity(int unitId, float* velocity) const;
 	float GetCombatHealth(int unitId) const;
+    // Caller MUST establish current LOS (or own/allied ownership) first.
+    int GetVisibleWeaponReload(int unitId,int weaponId) const;
+    bool IsActiveSensor(int unitId) const; // own/allied or current LOS only
 
 private:
 	const struct SSkirmishAICallback* sAICallback;

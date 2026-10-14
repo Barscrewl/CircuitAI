@@ -38,7 +38,7 @@ class DeadlineTests(unittest.TestCase):
             args = argparse.Namespace(dir=directory, checks=str(checks), role="TECH",
                 minutes=3, wall_minutes=1, keep_going=True, no_stop=True,
                 poll=0, print_report=False, timeline_lines=10)
-            with patch.object(playtest, "running_pids", return_value=[]), \
+            with patch.object(playtest, "engine_alive", return_value=False), \
                     patch.object(playtest.time, "sleep") as sleep, \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(playtest.watch(args), 1)
@@ -58,7 +58,7 @@ class DeadlineTests(unittest.TestCase):
             args = argparse.Namespace(dir=directory, checks=str(checks), role="AIR",
                 minutes=23, wall_minutes=1, keep_going=True, no_stop=True,
                 poll=0, print_report=False, timeline_lines=10)
-            with patch.object(playtest, "running_pids", return_value=[]), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(playtest, "engine_alive", return_value=False), contextlib.redirect_stdout(io.StringIO()):
                 result = playtest.watch(args)
             return result, (root / "report.md").read_text(encoding="utf-8")
 
@@ -94,7 +94,7 @@ class DeadlineTests(unittest.TestCase):
             def next_batch(_):
                 with info.open("a") as stream:
                     stream.write("[f=0041400] second event\n")
-            with patch.object(playtest, "running_pids", return_value=[123]), \
+            with patch.object(playtest, "engine_alive", return_value=True), \
                     patch.object(playtest.time, "sleep", side_effect=next_batch), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(playtest.watch(args), 1)

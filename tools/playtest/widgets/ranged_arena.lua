@@ -1,9 +1,15 @@
 function widget:GetInfo() return {name="Ranged combat arena",layer=125,enabled=true,handler=true} end
 local cfg=VFS.Include("LuaUI/Config/ranged_arena.lua")
 local tracked,queue,pending,seen,orders,lastReload={}, {}, nil, {}, {}, {}
+local batchPending,batchCount,batchFrame={},0,0
+local priorDamage,damageHook
 local camera,photos=nil,{}
 local commandTypes,unitCommands={},{}
 local factorySamples,factoryIds={},{}
+local completed=false
+local fixtureReady=false
+local commanderShooters,commanderShooterCount={},0
+local combatInputs,combatInputCount={},0
 local function log(s) Spring.Echo("[RangedArena] frame="..Spring.GetGameFrame().." "..s) end
 -- Opt-in census fixtures (D-294/D-295/D-296). Observation only, no orders.
 -- caseUnits: cfg.units (list) or cfg.unit. Tallies are logged as one summary
@@ -32,7 +38,9 @@ local function site(g,x,z)
             local angle=direction*math.pi/8
             local px,pz=x+math.cos(angle)*ring*64,z+math.sin(angle)*ring*64
             local y=Spring.GetGroundHeight(px,pz)
-            local free=y>=0 and math.abs(y-reference)<=64
+            -- Ships and floating units spawn on water; everything else on land.
+            local naval=(UnitDefs[def.id].minWaterDepth or 0)>0 or UnitDefs[def.id].floatOnWater
+            local free=(y>=0 or naval) and math.abs(y-reference)<=64
             if free and mobile and not UnitDefs[def.id].canFly then free=Spring.TestMoveOrder(def.id,px,y,pz,0,0,0,true,true,false) end
             if free and not mobile then free=Spring.TestBuildOrder(def.id,px,y,pz,0)>0 end
             for _,p in ipairs(occupied) do if (px-p[1])^2+(pz-p[2])^2<(cfg.min_spawn_spacing or 96)^2 then free=false;break end end
@@ -100,17 +108,24 @@ local function command(id,def,team,cmd,params,options,tag,player,fromSynced,from
     end
 end
 function widget:Initialize()
-    -- BAR's barwidgets handler hands each widget a proxy table, so assigning
-    -- widgetHandler.UnitDamaged/UnitCommand here never reached the real
-    -- handler and UpdateCallIn then dropped this widget from both lists (no
-    -- `damage`/`orders`/`priority` lines in any 2026-10-14 arena run). The
-    -- callins are plain widget methods below; never registering specific
-    -- command ids receives every command.
+    -- Current BAR supplies a proxy: use real widget callins, never mutate that
+    -- proxy. Older pinned games expose the actual handler and truncate damage
+    -- arguments before dispatch. Only that verified table can preserve exact
+    -- weapon attribution. The public callback skips duplicate delivery there.
+    -- test_arena_observer.py exercises both contracts and restoration.
+    if type(rawget(widgetHandler,"UnitDamagedList"))=="table"
+        and type(rawget(widgetHandler,"UnitDamaged"))=="function" then
+        priorDamage=widgetHandler.UnitDamaged
+        damageHook=function(self,...) damage(...);return priorDamage(self,...) end
+        widgetHandler.UnitDamaged=damageHook
+        widgetHandler:UpdateCallIn("UnitDamaged")
+    end
     for _,name in ipairs(cfg.units or {cfg.unit}) do caseUnits[name]=true end
     for _,name in ipairs(cfg.econ_targets or {}) do econTargets[name]=true end
     log("loaded case="..cfg.name.." variant="..cfg.variant)
+    log("observer="..(damageHook and "full-damage" or "widget-callins"))
 end
-function widget:UnitDamaged(...) damage(...) end
+function widget:UnitDamaged(...) if not damageHook then damage(...) end end
 function widget:UnitCommand(...) command(...) end
 function widget:UnitCreated(id,def,team,builder)
     if cfg.factory_throughput and team==0 and UnitDefs[def].isFactory then factoryIds[id]=true end
@@ -120,7 +135,19 @@ function widget:UnitCreated(id,def,team,builder)
         log("spawn id="..id.." team="..team.." unit="..UnitDefs[def].name.." x="..math.floor(x).." z="..math.floor(z))
         return
     end
-    if pending and team==pending.g.team and UnitDefs[def].name==pending.g.unit then
+    local batchKey=team..":"..UnitDefs[def].name
+    local requests=batchPending[batchKey]
+    if requests and #requests>0 and not builder then
+        local x,_,z=Spring.GetUnitPosition(id)
+        local best,distance=1,math.huge
+        for i,p in ipairs(requests) do
+            local d=(x-p.x)^2+(z-p.z)^2
+            if d<distance then best,distance=i,d end
+        end
+        table.remove(requests,best);batchCount=batchCount-1
+        tracked[id]={team=team,def=def}
+        log("spawn id="..id.." team="..team.." unit="..UnitDefs[def].name.." x="..math.floor(x).." z="..math.floor(z))
+    elseif pending and team==pending.g.team and UnitDefs[def].name==pending.g.unit then
         tracked[id]={team=team,def=def};log("spawn id="..id.." team="..team.." unit="..UnitDefs[def].name.." x="..math.floor(pending.x).." z="..math.floor(pending.z));pending=nil
     elseif builder and (tracked[builder] or (cfg.builders and team==0)) then
         tracked[id]={team=team,def=def,child=true,parent=builder};log("child id="..id.." parent="..builder.." unit="..UnitDefs[def].name)
@@ -142,7 +169,7 @@ function widget:UnitDestroyed(id,def,team,attacker,attackerDef,attackerTeam)
     if tracked[id] then log("death id="..id.." team="..team.." unit="..UnitDefs[def].name.." cost="..UnitDefs[def].metalCost);tracked[id]=nil end
 end
 function widget:UnitFinished(id,def,team)
-    if (cfg.production or cfg.natural) and tracked[id] then
+    if (cfg.production or cfg.natural or cfg.commander_front_work) and tracked[id] then
         log("finished id="..id.." team="..team.." unit="..UnitDefs[def].name.." cost="..UnitDefs[def].metalCost)
     end
 end
@@ -150,8 +177,29 @@ function widget:GameFrame(f)
     if f==150 then
         if not cfg.natural then Spring.SendCommands("cheat 1") end
         log("ready")
+        -- Optional terrain probe for fixture design: ground height sampled
+        -- along each segment {x0,z0,x1,z1,steps}; negative is under water.
+        for _,p in ipairs(cfg.height_probe or {}) do
+            local parts={}
+            for i=0,p[5] do
+                local x=p[1]+(p[3]-p[1])*i/p[5];local z=p[2]+(p[4]-p[2])*i/p[5]
+                parts[#parts+1]=math.floor(x)..","..math.floor(z)..":"..math.floor(Spring.GetGroundHeight(x,z))
+            end
+            log("height_probe "..table.concat(parts," "))
+        end
     end
     if f<300 then return end
+    if f==300 and cfg.commander_initial then
+        for _,id in ipairs(Spring.GetAllUnits()) do
+            local def=Spring.GetUnitDefID(id)
+            if UnitDefs[def].customParams and UnitDefs[def].customParams.iscommander then
+                local x,_,z=Spring.GetUnitPosition(id)
+                local team=Spring.GetUnitTeam(id)
+                tracked[id]={team=team,def=def}
+                log("spawn id="..id.." team="..team.." unit="..UnitDefs[def].name.." x="..math.floor(x).." z="..math.floor(z))
+            end
+        end
+    end
     if cfg.rush_loss_steps then
         if not cfg.original_front and f>=cfg.rush_capture_seconds*30 then
             cfg.original_front={}
@@ -197,7 +245,11 @@ function widget:GameFrame(f)
         cfg.fixture_units_removed=true
         local ids={}
         for id,u in pairs(tracked) do
-            if u.team==0 and UnitDefs[u.def].name==cfg.remove_unit_name then ids[#ids+1]=id end
+            if u.team==(cfg.remove_unit_team or 0) and UnitDefs[u.def].name==cfg.remove_unit_name then
+                local x,_,z=Spring.GetUnitPosition(id)
+                local p=cfg.remove_unit_position
+                if not p or (x-p[1])^2+(z-p[2])^2<100^2 then ids[#ids+1]=id end
+            end
         end
         Spring.SelectUnitArray(ids,false);Spring.SendCommands("destroy");Spring.SelectUnitArray({},false)
         log("fixture_units_removed unit="..cfg.remove_unit_name.." count="..#ids)
@@ -223,11 +275,50 @@ function widget:GameFrame(f)
             end
         end
     end
-    if f%3==0 and not pending and #queue>0 then
+    -- Opt-in population fixtures submit a whole wave together. Register every
+    -- request before sending; asynchronous UnitCreated callbacks consume only
+    -- matching given units. Other fixtures retain their single-spawn ordering.
+    if cfg.batch_spawn and #queue>0 and batchCount==0 then
+        local commands={}
+        for _,p in ipairs(queue) do
+            local key=p.g.team..":"..p.g.unit
+            batchPending[key]=batchPending[key] or {}
+            table.insert(batchPending[key],p);batchCount=batchCount+1
+            commands[#commands+1]=string.format("give 1 %s %d @%d,%d,%d",p.g.unit,p.g.team,p.x,p.y,p.z)
+        end
+        queue={};batchFrame=f
+        Spring.SendCommands(commands)
+    elseif not cfg.batch_spawn and f%3==0 and not pending and #queue>0 then
         pending=table.remove(queue,1);pending.sent=f
         Spring.SendCommands(string.format("give 1 %s %d @%d,%d,%d",pending.g.unit,pending.g.team,pending.x,pending.y,pending.z))
     end
     if pending and f-pending.sent>300 then log("ERROR spawn_timeout="..pending.g.unit);pending=nil end
+    if batchCount>0 and f-batchFrame>300 then
+        log("ERROR batch_spawn_timeout remaining="..batchCount)
+        batchPending={};batchCount=0
+    end
+    if not fixtureReady and not pending and batchCount==0 and #queue==0 then
+        local ready=true
+        for _,g in ipairs(cfg.groups) do if not g.queued then ready=false;break end end
+        if ready then
+            fixtureReady=true
+            local supplied=0;for _,g in ipairs(cfg.groups) do supplied=supplied+g.count end
+            log("fixture_ready supplied="..supplied)
+        end
+    end
+    -- A fixture opts in explicitly. All waves must have been submitted before
+    -- completion; the Python watcher owns the post-event survival interval.
+    if not completed and (cfg.completion_targets or cfg.completion_after_seconds) and f%30==0 then
+        local ready = not pending and batchCount==0 and #queue==0
+        for _,g in ipairs(cfg.groups) do if not g.queued then ready=false end end
+        if cfg.completion_after_seconds then ready=ready and f>=cfg.completion_after_seconds*30 end
+        for _,name in ipairs(cfg.completion_targets or {}) do
+            for _,u in pairs(tracked) do
+                if u.team==(cfg.enemy_team or 1) and UnitDefs[u.def].name==name then ready=false end
+            end
+        end
+        if ready then completed=true;log("scenario_complete") end
+    end
     if f%30==0 then
         for id,u in pairs(tracked) do
             local d=UnitDefs[u.def]
@@ -242,11 +333,31 @@ function widget:GameFrame(f)
                 for _,c in ipairs(commands) do if c.id<0 then builds=builds+1 end end
                 log("factory id="..id.." unit="..d.name.." repeat="..tostring(states["repeat"] or false).." builds="..builds.." building="..tostring(Spring.GetUnitIsBuilding(id) or -1))
             end
-            if u.team==0 and d.canMove and (not u.child or cfg.observe_children) then
+            if (u.team==0 or (cfg.commander_all_teams and d.customParams and d.customParams.iscommander)) and d.canMove and (not u.child or cfg.observe_children) then
+                if cfg.commander_observation and d.customParams and d.customParams.iscommander then
+                    if cfg.commander_all_teams and not combatInputs[u.team] and Spring.GetUnitNearestEnemy(id,1000,false) then
+                        combatInputs[u.team]=true;combatInputCount=combatInputCount+1
+                        log("commander_combat_inputs="..combatInputCount.." team="..u.team)
+                    end
+                    local x,y,z=Spring.GetUnitPosition(id)
+                    local hp=Spring.GetUnitHealth(id)
+                    local state=Spring.GetUnitStates(id) or {}
+                    if cfg.commander_geometry then log("commander_geometry id="..id.." y="..tostring(y).." ground="..Spring.GetGroundHeight(x,z).." radius="..Spring.GetUnitRadius(id)) end
+                    log("commander id="..id.." x="..math.floor(x).." z="..math.floor(z).." hp="..math.floor(hp or 0)
+                        .." cloaked="..tostring(Spring.GetUnitIsCloaked(id)).." fire="..tostring(state.firestate))
+                    if cfg.commander_front_work and f<45*30 and z>4350 then
+                        log("ERROR commander_left_before_nano id="..id)
+                    end
+                end
                 for index,w in ipairs(d.weapons or {}) do
                     local reload=Spring.GetUnitWeaponState(id,index,"reloadFrame")
                     local key=id..":"..index
                     if reload and lastReload[key] and reload>lastReload[key] and reload>f then
+                        if cfg.commander_all_teams and d.customParams and d.customParams.iscommander
+                            and WeaponDefs[w.weaponDef].type=="DGun" and not commanderShooters[u.team] then
+                            commanderShooters[u.team]=true;commanderShooterCount=commanderShooterCount+1
+                            log("commander_shooters="..commanderShooterCount.." team="..u.team)
+                        end
                         local kind,_,target=Spring.GetUnitWeaponTarget(id,index)
                         local distance=-1
                         if kind==1 and target then
@@ -351,4 +462,19 @@ function widget:DrawScreen()
         camera=nil
     end
 end
-function widget:Shutdown() end
+function widget:Update()
+    if camera and Spring.DiffTimers(Spring.GetTimer(),camera.time)>5 then
+        log("screenshot timeout: restoring speed")
+        Spring.SendCommands({"setmaxspeed "..cfg.speed,"setminspeed "..cfg.speed})
+        camera=nil
+    end
+end
+function widget:Shutdown()
+    if camera then
+        Spring.SendCommands({"setmaxspeed "..cfg.speed,"setminspeed "..cfg.speed})
+        camera=nil
+    end
+    if damageHook and widgetHandler.UnitDamaged==damageHook then
+        widgetHandler.UnitDamaged=priorDamage;widgetHandler:UpdateCallIn("UnitDamaged")
+    end
+end

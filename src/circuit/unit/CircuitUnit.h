@@ -122,6 +122,8 @@ public:
 
 	void SetIsDead() { isDead = true; }
 	bool IsDead() const { return isDead; }
+    void MarkDestroying() { destroying = true; }
+    bool IsDestroying() const { return destroying; }
 
 	void SetDamagedFrame(int frame) { damagedFrame = frame; }
 	int GetDamagedFrame() const { return damagedFrame; }
@@ -134,6 +136,9 @@ public:
 	bool IsDisarmed(int frame);
 	bool IsWeaponReady(int frame);
 	bool IsDGunReady(int frame, float energy);
+    int GetDGunReloadFrame() const;
+    int GetRequestedFireState() const { return requestedFire; }
+    int GetRequestedMoveState() const { return requestedMove; }
 	bool IsShieldCharged(float percent);
 	bool IsJumpReady();
 	bool IsJumping();
@@ -238,6 +243,7 @@ private:
 	terrain::SArea* area;  // = nullptr if a unit flies
 
 	CDGunAction* dgunAct;
+    int requestedFire=CCircuitDef::FireType::OPEN, requestedMove=CCircuitDef::MoveType::MANEUVRE;
 	ITravelAction* travelAct;
 
 	int moveFails;
@@ -271,6 +277,7 @@ private:
 	CEnemyInfo* target;
 	int targetTile;
 	int priorityTarget = -1; // ID only: never retain a dead enemy wrapper.
+    bool destroying = false; // set before destruction callbacks; IsDead keeps its existing unregister semantics
     springai::AIFloat3 retreatWaypoint;
     int retreatAnchor = -1;
     int retreatWaypointUntil = -1;

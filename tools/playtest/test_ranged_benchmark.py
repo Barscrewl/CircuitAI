@@ -6,6 +6,45 @@ from ranged_benchmark import summarize
 
 
 class MeasurementsTest(unittest.TestCase):
+    def test_early_completion_requires_archived_survival_and_keeps_casualties(self):
+        for mode,tail,expected in [('fast','',True),('performance','',False),
+                ('fast','[RangedArena] frame=1210 death id=1 team=0 unit=armcom cost=2700\n',False)]:
+            with self.subTest(mode=mode,tail=tail), tempfile.TemporaryDirectory() as tmp:
+                path=Path(tmp);archive=path/'runs/test';archive.mkdir(parents=True)
+                (path/'ranged-arena.json').write_text(json.dumps(dict(name='early',unit='armcom',
+                    variant='ranged',seed=1,minutes=4,mode=mode,assertions=dict(min_kills=0,min_shooters=0))))
+                (path/'infolog.txt').write_text('[RangedArena] frame=1230 orders team=0 nonlua=12 lua=0\n'+tail)
+                (archive/'result.json').write_text(json.dumps(dict(verdict='PASS',reason='scenario complete with survival grace')))
+                (archive/'checks.json').write_text(json.dumps(dict(complete_on={'pattern':'complete'},completion_grace_seconds=10)))
+                (archive/'runner-timing.json').write_text('{"complete_frame":900}')
+                result=summarize(path)
+                self.assertEqual(result['passed'],expected)
+
+    def test_completion_marker_without_survival_tail_does_not_shorten_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);archive=path/'runs/test';archive.mkdir(parents=True)
+            (path/'ranged-arena.json').write_text(json.dumps(dict(name='early',unit='armcom',variant='ranged',seed=1,
+                minutes=4,assertions=dict(min_kills=0,min_shooters=0))))
+            (path/'infolog.txt').write_text('[RangedArena] frame=950 orders team=0 nonlua=12 lua=0\n')
+            (archive/'result.json').write_text(json.dumps(dict(verdict='PASS',reason='scenario complete with survival grace')))
+            (archive/'checks.json').write_text('{"complete_on":{"pattern":"complete"}}')
+            (archive/'runner-timing.json').write_text('{"complete_frame":900}')
+            self.assertIn('incomplete observation window',summarize(path)['failures'])
+
+    def test_explicit_enemy_team_excludes_allied_casualties(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)
+            (path/'ranged-arena.json').write_text(json.dumps(dict(name='energy',unit='armcom',
+                variant='ranged',seed=1,minutes=1,enemy_team=2,
+                assertions=dict(min_kills=1,min_shooters=0,min_damage=0))))
+            (path/'infolog.txt').write_text('''[RangedArena] frame=700 death id=2 team=2 unit=corak cost=43
+[RangedArena] frame=710 death id=3 team=1 unit=armwar cost=280
+[RangedArena] frame=1800 orders team=0 nonlua=12 lua=0
+''')
+            result=summarize(path)
+            self.assertEqual(result['enemy_kills'],1)
+            self.assertEqual(result['enemy_metal_destroyed'],43)
+
     def test_first_actual_shot_and_forward_progress_exclude_shutdown(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)

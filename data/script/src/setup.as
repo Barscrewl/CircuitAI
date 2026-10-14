@@ -28,6 +28,7 @@
 #include "manager/factory.as"
 #include "manager/economy.as"
 #include "systems/construction/metal_economy.as"
+#include "systems/combat/commander_combat.as"
 
 namespace Factory {
 	CCircuitDef@ AiGetFactoryToBuild(const AIFloat3& in pos, bool isStart, bool isReset) {

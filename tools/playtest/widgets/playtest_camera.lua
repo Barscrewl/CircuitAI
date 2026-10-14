@@ -138,13 +138,27 @@ function widget:DrawScreen()
 	if pending then pending.draws = pending.draws + 1 end
 end
 
+function widget:Shutdown()
+	if pending then
+		Spring.SendCommands({"setmaxspeed "..pending.speed,"setminspeed "..pending.speed})
+		pending=nil
+	end
+end
+
 function widget:Update()
 	if not pending then return end
 	-- Other spectator camera widgets can restore their own state after a jump.
 	-- Hold this explicit test camera only during the screenshot settling window.
 	Spring.SetCameraState({mode=1,px=pending.x,py=math.max(0,Spring.GetGroundHeight(pending.x,pending.z)),
 		pz=pending.z,height=pending.height,angle=0.8},0)
-	if pending.draws>=3 and Spring.DiffTimers(Spring.GetTimer(),pending.started)>=1 then
+	local elapsed = Spring.DiffTimers(Spring.GetTimer(),pending.started)
+	if elapsed >= 5 and pending.draws < 3 then
+		echo("screenshot timeout: restoring speed")
+		Spring.SendCommands({"setmaxspeed "..pending.speed,"setminspeed "..pending.speed})
+		pending=nil
+		return
+	end
+	if pending.draws>=3 and elapsed>=1 then
 		local state=Spring.GetCameraState()
 		echo(string.format("camera captured name=%s position=(%.0f,%.0f) height=%.0f",
 			tostring(state.name),state.px or -1,state.pz or -1,state.height or -1))

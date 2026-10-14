@@ -17,6 +17,15 @@
 
 namespace circuit {
 
+int CUnitAPI::GetVisibleWeaponReload(int unitId,int weaponId) const {
+    return sAICallback->Unit_Weapon_getReloadFrame(skirmishAIId,unitId,weaponId);
+}
+bool CUnitAPI::IsActiveSensor(int unitId) const {
+    return sAICallback->Unit_isActivated(skirmishAIId,unitId)
+        && !sAICallback->Unit_isBeingBuilt(skirmishAIId,unitId)
+        && !sAICallback->Unit_isParalyzed(skirmishAIId,unitId);
+}
+
 int CUnitAPI::GetFriendlyUnitIds(std::vector<int>& buffer) const
 {
 	buffer.resize(MAX_UNITS); // allocated/initialized once, not shrunk each frame

@@ -6,7 +6,7 @@ local endedAt=nil
 function widget:GameOver(winners)
  Spring.Echo("[FullMatchEnd] frame="..Spring.GetGameFrame().." winners="..table.concat(winners or {},","))
  endedAt=Spring.GetTimer()
- Spring.SendCommands("screenshot png")
+ if cfg.screenshots then Spring.SendCommands("screenshot png") end
 end
 function widget:Update()
  if endedAt and Spring.DiffTimers(Spring.GetTimer(),endedAt)>3 then Spring.SendCommands("quitforce") end
@@ -15,7 +15,7 @@ function widget:GameFrame(frame)
  if not endedAt and cfg.horizon_frame and frame>=cfg.horizon_frame then
   Spring.Echo("[FullMatchHorizon] frame="..frame)
   endedAt=Spring.GetTimer()
-  Spring.SendCommands("screenshot png")
+  if cfg.screenshots then Spring.SendCommands("screenshot png") end
  end
  if frame==300 or frame%1800==0 then
   local active=0
@@ -29,7 +29,7 @@ function widget:GameFrame(frame)
  end
  -- Lock only the spectator camera. No player units, resources or AI settings
  -- are changed. Screenshots use this same scene for reproducible FPS context.
- if frame>0 and frame%150==0 and not endedAt then
+ if cfg.screenshots and frame>0 and frame%150==0 and not endedAt then
   Spring.SetCameraState({mode=1,px=cfg.x,py=math.max(0,Spring.GetGroundHeight(cfg.x,cfg.z)),pz=cfg.z,height=cfg.height,angle=.9},0)
  end
 end

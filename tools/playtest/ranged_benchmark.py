@@ -111,7 +111,7 @@ def summarize(directory):
     watched = cfg.get('units', [cfg['unit']])
     losses = [d for d in deaths if d['team'] == '0' and d['unit'] in watched]
     unrelated = [d for d in deaths if d['team'] == '0' and d['unit'] not in watched]
-    kills = [d for d in deaths if d['team'] == '1']
+    kills = [d for d in deaths if d['team'] == str(cfg.get('enemy_team',1))]
     allied_losses = [d for d in deaths if d['team']=='0' and d['unit'] in cfg.get('support_units',[]) and int(d['frame'])<=30*cfg.get('support_deadline_seconds',cfg['minutes']*60)]
     checks = cfg.get('assertions', {})
     failures = []
@@ -140,12 +140,23 @@ def summarize(directory):
             failures.append('visible target firing response exceeded deadline')
     for name in cfg.get('sensor_units', []):
         if sensor_advance.get(name,0) < checks.get('min_sensor_advance',0): failures.append('sensor did not advance: '+name)
-    if last_frame < cfg['minutes']*1800-300: failures.append('incomplete observation window')
     archives = sorted((directory/'runs').glob('*/result.json'))
-    verdict = json.loads(archives[-1].read_text()).get('verdict') if archives else None
+    archived = json.loads(archives[-1].read_text()) if archives else {}
+    verdict = archived.get('verdict')
+    completed = False
+    if archives and verdict == 'PASS' and archived.get('reason') == 'scenario complete with survival grace' and cfg.get('mode') != 'performance':
+        checks_path=archives[-1].parent/'checks.json'
+        timing_path=archives[-1].parent/'runner-timing.json'
+        checks=json.loads(checks_path.read_text()) if checks_path.is_file() else {}
+        timing=json.loads(timing_path.read_text()) if timing_path.is_file() else {}
+        complete=timing.get('complete_frame')
+        completed=bool(checks.get('complete_on') and complete is not None
+            and last_frame>=complete+30*float(checks.get('completion_grace_seconds',10)))
+    if not completed and last_frame < cfg['minutes']*1800-300: failures.append('incomplete observation window')
     if verdict and verdict != 'PASS': failures.append('original watch verdict: '+verdict)
     if re.search(r'\[INVARIANT\]|\[RangedArena\].*ERROR|Error in.*ranged_arena', text): failures.append('runtime/fixture error')
-    result = dict(schema=8, case=cfg['name'], variant=cfg['variant'], seed=cfg['seed'], directory=str(directory),
+    result = dict(schema=10, case=cfg['name'], variant=cfg['variant'], seed=cfg['seed'], directory=str(directory),
+                  completed_with_survival_grace=completed,
                   measurement_deadline_frame=cfg['minutes']*1800,
                   first_damage_seconds=first/30 if first else None, raw_damage_including_overkill=damage,
                   shooters_fired=len(shooters), shots=len(shots), enemy_kills=len(kills), friendly_losses=len(losses),
@@ -168,7 +179,7 @@ def summarize(directory):
                   engine_ai_windows=samples, failures=failures, passed=not failures)
     # New analysis schema gets a new path. Earlier immutable measurements
     # remain valid evidence rather than being silently recomputed in place.
-    output = directory / 'ranged-measurements-v8.json'
+    output = directory / 'ranged-measurements-v10.json'
     if output.exists() and json.loads(output.read_text()) != result:
         raise RuntimeError('Refusing to overwrite a different measurement: ' + str(output))
     output.write_text(json.dumps(result, indent=2)+'\n')

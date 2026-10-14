@@ -20,14 +20,14 @@ if [ -z "$IMAGE" ]; then
 	echo "run_native_tests: the recoil-build-amd64-windows image is not present (run a docker build once)" >&2
 	exit 2
 fi
-tests=(callback_buffer_test resurrection_claim_test reservation_claim_test task_reference_test dormant_task_chain_test economy_index_test route_command_test reservation_candidates_test construction_recovery_test guard_command_test target_preference_test layout_ranking_test base_layout_geometry_test allied_reservations_test local_reservations_test lane_solver_test strategic_targeting_test terrain_route_test air_geometry_test metal_field_test enemy_reclaim_policy_test naval_geometry_test air_safety_test ranged_geometry_test ground_cohort_test local_rush_test water_survey_test)
+tests=(commander_combat_test callback_buffer_test resurrection_claim_test reservation_claim_test task_reference_test dormant_task_chain_test economy_index_test route_command_test reservation_candidates_test construction_recovery_test guard_command_test target_preference_test layout_ranking_test base_layout_geometry_test allied_reservations_test local_reservations_test lane_solver_test strategic_targeting_test terrain_route_test air_geometry_test metal_field_test enemy_reclaim_policy_test naval_geometry_test air_safety_test ranged_geometry_test ground_cohort_test local_rush_test water_survey_test)
 cmd=""
 for t in "${tests[@]}"; do
     extra=""
     if [ "$t" = lane_solver_test ] || [ "$t" = terrain_route_test ]; then extra="/src/src/circuit/terrain/LaneSolver.cpp"; fi
 	cmd="$cmd x86_64-w64-mingw32-g++ -std=c++20 -O1 -Wall -Wextra -static -pthread -I/src/src -I/src/src/circuit -I/src/src/lib /src/tests/$t.cpp $extra -o /out/$t.exe || exit 1;"
 done
-cmd="$cmd x86_64-w64-mingw32-g++ -std=c++20 -O1 -static -DAS_MAX_PORTABILITY -DANGELSCRIPT_EXPORT -I/src/src/lib/angelscript/include -I/src/src/lib/angelscript/add_on/scriptarray -I/src/src/lib/angelscript/add_on/scriptstdstring -I/src/src/lib/angelscript/add_on/scriptdictionary /src/tests/production_math_test.cpp /src/src/lib/angelscript/add_on/scriptarray/scriptarray.cpp /src/src/lib/angelscript/add_on/scriptstdstring/scriptstdstring.cpp /src/src/lib/angelscript/add_on/scriptdictionary/scriptdictionary.cpp /src/src/lib/angelscript/source/*.cpp -o /out/production_math_test.exe || exit 1;"
+cmd="$cmd x86_64-w64-mingw32-g++ -std=c++20 -O1 -static -DAS_MAX_PORTABILITY -DANGELSCRIPT_EXPORT -I/src/src/lib/angelscript/include -I/src/src/lib/angelscript/add_on/scriptarray -I/src/src/lib/angelscript/add_on/scriptstdstring -I/src/src/lib/angelscript/add_on/scriptdictionary /src/tests/production_math_test.cpp /src/src/lib/angelscript/add_on/scriptarray/scriptarray.cpp /src/src/lib/angelscript/add_on/scriptstdstring/scriptstdstring.cpp /src/src/lib/angelscript/add_on/scriptstdstring/scriptstdstring_utils.cpp /src/src/lib/angelscript/add_on/scriptdictionary/scriptdictionary.cpp /src/src/lib/angelscript/source/*.cpp -o /out/production_math_test.exe || exit 1;"
 cmd="$cmd x86_64-w64-mingw32-g++ -std=c++20 -O1 -static -DAS_MAX_PORTABILITY -DANGELSCRIPT_EXPORT -I/src/src/circuit -I/src/src/lib /src/tests/task_reference_vm_test.cpp /src/src/lib/angelscript/source/*.cpp -o /out/task_reference_vm_test.exe || exit 1;"
 MSYS2_ARG_CONV_EXCL='*' docker run --rm -v "$REPO:/src:ro" -v "$(cd "$OUT" && { pwd -W 2>/dev/null || pwd; }):/out" --entrypoint sh "$IMAGE" -c "$cmd" || { echo "run_native_tests: compile failed" >&2; exit 1; }
 rc=0
@@ -47,6 +47,7 @@ done
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/build_power_math.as" "$REPO/tests/build_power_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/metal_math.as" "$REPO/tests/metal_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/team_share_math.as" "$REPO/tests/team_share_math_tests.as" || rc=1
+"$OUT/production_math_test.exe" "$REPO/data/script/src/systems/team/commander_energy.as" "$REPO/tests/commander_energy_tests.as" --strings || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/sea_math.as" "$REPO/tests/sea_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/recovery_math.as" "$REPO/tests/recovery_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/sea_coast_math.as" "$REPO/tests/sea_coast_math_tests.as" || rc=1

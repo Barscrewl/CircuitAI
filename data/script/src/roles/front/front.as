@@ -13,6 +13,7 @@
 #include "../../systems/production/factory_production.as"
 #include "../../systems/combat/land_siege.as"
 #include "../../systems/construction/front_geothermal.as"
+#include "../../systems/construction/commander_front.as"
 // Builder state and helpers for enqueueing structures like nanos
 #include "../../manager/builder.as"
 #include "../../manager/economy.as"
@@ -550,6 +551,11 @@ namespace RoleFront {
     IUnitTask@ Front_BuilderAiMakeTask(CCircuitUnit@ builder) {
         GenericHelpers::LogUtil("[Front_BuilderAiMakeTask] called for builder", 3);
         if (builder is null) return null; // Defensive check
+
+        if(UnitHelpers::IsCommander(builder.circuitDef)) {
+            IUnitTask@ frontWork=CommanderFront::Work(builder);
+            if(frontWork !is null) return frontWork;
+        }
 
         // Select explicit geo work before asking native to enqueue another
         // energy task. Overriding an already-created task would leak work.

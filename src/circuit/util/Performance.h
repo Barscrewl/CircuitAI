@@ -18,6 +18,9 @@ enum Phase {
     UNIT_ROUTE_THREAT, UNIT_ROUTE_OBSTACLES, UNIT_ROUTE_SEARCH,
     RANGED_ASSIST, // D-295: nested in RANGED_DECISION
     BATTLE_GROUND_HAZARD, // D-296: lazy observed ground-weapon coverage
+    COMMANDER_OBSERVE, COMMANDER_DECISION,
+    COMMANDER_T3, COMMANDER_FALLBACK, COMMANDER_DEPLOY, COMMANDER_HANDOVER, // D-294 attribution
+    COMMANDER_DAMAGE, // immediate damage callback; separate root from scheduled decision
     PHASE_COUNT
 };
 extern const bool enabled;

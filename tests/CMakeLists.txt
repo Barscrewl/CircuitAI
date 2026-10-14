@@ -23,6 +23,10 @@ target_include_directories(circuit_enemy_reclaim_policy_test PRIVATE ../src)
 add_test(NAME circuit_enemy_reclaim_policy_test COMMAND circuit_enemy_reclaim_policy_test)
 
 if(BUILD_TESTING)
+    add_executable(circuit_commander_combat_test commander_combat_test.cpp)
+    target_compile_features(circuit_commander_combat_test PRIVATE cxx_std_20)
+    target_include_directories(circuit_commander_combat_test PRIVATE ../src/circuit)
+    add_test(NAME circuit_commander_combat_test COMMAND circuit_commander_combat_test)
     add_executable(circuit_task_reference_test task_reference_test.cpp)
     target_compile_features(circuit_task_reference_test PRIVATE cxx_std_20)
     target_include_directories(circuit_task_reference_test PRIVATE ../src/circuit ../src/lib)
@@ -69,11 +73,18 @@ if(BUILD_TESTING)
     add_test(NAME circuit_allied_reservations_test COMMAND circuit_allied_reservations_test)
     file(GLOB ANGELSCRIPT_SOURCES "../src/lib/angelscript/source/*.cpp")
     add_executable(circuit_production_math_test production_math_test.cpp ${ANGELSCRIPT_SOURCES}
-        ../src/lib/angelscript/add_on/scriptarray/scriptarray.cpp)
+        ../src/lib/angelscript/add_on/scriptarray/scriptarray.cpp
+        ../src/lib/angelscript/add_on/scriptstdstring/scriptstdstring.cpp
+        ../src/lib/angelscript/add_on/scriptstdstring/scriptstdstring_utils.cpp
+        ../src/lib/angelscript/add_on/scriptdictionary/scriptdictionary.cpp)
     target_compile_features(circuit_production_math_test PRIVATE cxx_std_20)
     target_include_directories(circuit_production_math_test PRIVATE ../src/lib/angelscript/include
-        ../src/lib/angelscript/add_on/scriptarray)
+        ../src/lib/angelscript/add_on/scriptarray
+        ../src/lib/angelscript/add_on/scriptstdstring ../src/lib/angelscript/add_on/scriptdictionary)
     target_compile_definitions(circuit_production_math_test PRIVATE ANGELSCRIPT_EXPORT AS_MAX_PORTABILITY)
+    add_test(NAME circuit_commander_energy_test COMMAND circuit_production_math_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/../data/script/src/systems/team/commander_energy.as"
+        "${CMAKE_CURRENT_SOURCE_DIR}/commander_energy_tests.as" --strings)
     add_test(NAME circuit_production_math_test COMMAND circuit_production_math_test
         "${CMAKE_CURRENT_SOURCE_DIR}/../data/script/src/helpers/math/production_math.as" "${CMAKE_CURRENT_SOURCE_DIR}/production_math_tests.as")
     add_test(NAME circuit_placement_math_test COMMAND circuit_production_math_test

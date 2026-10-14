@@ -7,6 +7,14 @@ metadata:
 
 # CircuitAI C++ conventions
 
+When changing commander control, use the [playtest skill](../playtest/SKILL.md)
+for focused scenarios, event completion, strict verdicts and final regression.
+Pin source, DLL, debug symbols and matching active data before games. Include
+damage-triggered decisions as well as scheduled updates when attributing cost;
+do not sum nested phase timers as independent CPU. Tactical exposure windows
+must model impact arrival, reload and already airborne salvos, and every path
+that can issue a D-gun order must share the same final safety admission check.
+
 Read [intent](../../../rjm.bar.docs/projects/circuitai/intent.md), applicable decisions and known issues first.
 Native code provides mechanisms; role priorities and tuning belong in active
 `data/` script/JSON. Expose new controls through registered bindings; a public

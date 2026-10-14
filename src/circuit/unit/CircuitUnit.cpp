@@ -216,9 +216,11 @@ bool CCircuitUnit::IsWeaponReady(int frame)
 	return isWeaponReady;
 }
 
+int CCircuitUnit::GetDGunReloadFrame() const { return dgun ? dgun->GetReloadFrame() : INT_MAX; }
+
 bool CCircuitUnit::IsDGunReady(int frame, float energy)
 {
-	return (dgun->GetReloadFrame() <= frame) && (dgunDef->GetCostE() < energy)
+	return dgun && (dgun->GetReloadFrame() <= frame) && (dgunDef->GetCostE() <= energy)
 		&& (!dgunDef->IsStockpile() || (unit->GetStockpile() > 0));
 }
 
@@ -565,6 +567,7 @@ void CCircuitUnit::CmdResurrectInArea(const AIFloat3& pos, float radius, short o
 void CCircuitUnit::CmdSetFireState(CCircuitDef::FireT state)
 {
 	unit->SetFireState(state);
+    requestedFire=state;
 }
 
 void CCircuitUnit::TrySetFireState(CCircuitDef::FireT state)
@@ -578,6 +581,7 @@ void CCircuitUnit::TrySetFireState(CCircuitDef::FireT state)
 void CCircuitUnit::CmdSetMoveState(CCircuitDef::MoveT state)
 {
 	unit->SetMoveState(state);
+    requestedMove=state;
 }
 
 void CCircuitUnit::TrySetMoveState(CCircuitDef::MoveT state)
