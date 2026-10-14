@@ -25,6 +25,7 @@ namespace ScoutRaid {
         // Covered-waypoint lookahead along the issued route (elmos; at least
         // the next three waypoints). Sensor-to-tick latency is 2-3 s.
         float LookaheadElmos = 1200.0f;
+        float LookaheadSeconds = 10.0f;     // or this many seconds of the def's speed, if larger
         float ChainRadius = 1500.0f;        // after a kill, prefer the next target this close
         int ReplanCooldownSeconds = 4;      // per raider
         // New-feature latency budget (D-296), not a cap on existing behaviour:
