@@ -51,8 +51,14 @@ namespace ScoutRaid {
     {
         if (!configRead) {
             // Configuration is fixed for this AI instance.
+            // Native CSetupManager::CloseConfig keeps the "scout_raid" section
+            // readable after init (D-296); other sections are gone by now.
             jsonEnabled = aiSetupMgr.ConfigBool("scout_raid/enabled", false);
             configRead = true;
+            string units;
+            for (uint i = 0; i < Global::ScoutRaid::Units.length(); ++i) units += (i > 0 ? "," : "") + Global::ScoutRaid::Units[i];
+            GenericHelpers::LogUtil("[ScoutRaid] enabled=" + (Global::ScoutRaid::Enabled && jsonEnabled) + " json=" + jsonEnabled
+                + " units=" + units + " max=" + Global::ScoutRaid::MaxRaiders + " keepNative=" + Global::ScoutRaid::KeepNativeScouts, 1);
         }
         return Global::ScoutRaid::Enabled && jsonEnabled;
     }

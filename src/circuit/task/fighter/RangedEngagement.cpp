@@ -635,7 +635,10 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         const auto& c=contacts[i];
         if(!c.los && !policy.allowRadar) continue;
         if((c.mobile && !policy.allowMobile)||(!c.mobile && !policy.allowStatic)) continue;
-        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) continue; // D-294: O(1)
+        // D-294: an avoided category cannot be verified on an unidentified radar
+        // dot, so a shooter that avoids anything takes no blind shot (played:
+        // Fatboys SET_TARGETed Tick radar dots before vision identified them).
+        if(policy.avoidCategory!=0 && (!c.def || (c.def->GetCategory()&policy.avoidCategory))) continue; // O(1)
         for(size_t wi=0;wi<caps.weapons.size();++wi) {
             const auto& w=caps.weapons[wi];
             if((c.def && !(w.category&c.def->GetCategory())) || c.pos.y< -20.f) continue;
@@ -732,7 +735,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         // a firing band around an apparently harmless unknown target.
         if(!c.def && !policy.advanceUnknownRadar) { ++unknownObjectives; return; }
         if((c.def && c.def->IsAbleToFly()) || (c.mobile?!policy.allowMobile:!policy.allowStatic)) return;
-        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) return; // D-294: never approach
+        if(policy.avoidCategory!=0 && (!c.def || (c.def->GetCategory()&policy.avoidCategory))) return; // D-294: never approach
         const float dist=pos.SqDistance2D(c.pos);
         if(dist<nearest && (!c.def || (c.def->GetCategory()&def->GetTargetCategory()))) { nearest=dist; objective=i; }
     };
@@ -770,7 +773,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         if (policy.holdFireline && !c.los) continue;
         if(!c.def && !policy.advanceUnknownRadar) { ++unknownObjectives; continue; }
         if((c.mobile?!policy.allowMobile:!policy.allowStatic) || (c.def && !(c.def->GetCategory()&def->GetTargetCategory()))) continue;
-        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) continue; // D-294
+        if(policy.avoidCategory!=0 && (!c.def || (c.def->GetCategory()&policy.avoidCategory))) continue; // D-294
         const float distance=pos.SqDistance2D(c.pos);
         if(distance<nearest) { nearest=distance; objective=i; }
     }
