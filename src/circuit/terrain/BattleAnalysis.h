@@ -262,10 +262,14 @@ private:
     unsigned int groundHazardPublication = ~0u;
     float groundHazardMargin = -1.f;
     void EnsureGroundHazard(float margin);
+    // retainTerrain (D-296 raid routes only): once a definition's grid exists it
+    // is never rebuilt for height-revision changes. Craters do not change a
+    // scout's passability in practice, and each rebuild costs O(G*8*K) corridor
+    // samples (~250 ms on Supreme). Amphibious/sea callers keep the 60 s refresh.
     std::vector<springai::AIFloat3> UnitTerrainRoute(const CCircuitDef* def,
         const springai::AIFloat3& from, const springai::AIFloat3& to, bool dry,
         float landCost, float waterCost, float threatWeight, float maxWaterThreat,
-        const Grid* hazard, float hazardValue);
+        const Grid* hazard, float hazardValue, bool retainTerrain = false);
     lane::Settings laneSettings;
     std::shared_ptr<const lane::Terrain> laneTerrain;
     // Synchronous callback-only scratch, never shared with lane workers.

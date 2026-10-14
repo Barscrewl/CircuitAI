@@ -36,6 +36,7 @@ namespace ScoutRaid {
         int nextReplan = 0;
         int hazardSince = -1;
         int hazardReplans = 0;
+        int routeFailures = 0;      // consecutive failed solves: exponential replan backoff
         bool queued = false;
     }
 
@@ -238,7 +239,6 @@ namespace ScoutRaid {
             if (target < 0) target = Choose(pos, pos, -1.0f, r.excluded, starts, front, range, targetPos);
         }
         const AIFloat3 goal = target >= 0 ? Standoff(pos, targetPos, range) : FallbackGoal(pos, starts);
-        r.nextReplan = ai.frame + Global::ScoutRaid::ReplanCooldownSeconds * SECOND;
         r.queued = false;
         r.hazardSince = -1;
         r.lastMove = ai.frame; r.lastPos = pos;
@@ -246,7 +246,13 @@ namespace ScoutRaid {
         array<AIFloat3>@ path = aiBattle.GetUnitRaidRoute(u.circuitDef, pos, goal,
             Global::ScoutRaid::HazardMargin, Global::ScoutRaid::HazardWeight);
         bool direct = false;
-        if (path is null || path.length() < 2) {
+        // Backoff: 4, 8, 16, 32, 60 s after consecutive failed solves, 4 s after
+        // a success (8v8 full3: 877 failed solves vs 114 routes on a flat 4 s).
+        const bool failed = path is null || path.length() < 2;
+        r.routeFailures = failed ? r.routeFailures + 1 : 0;
+        const int backoff = AiMin(60 * SECOND, Global::ScoutRaid::ReplanCooldownSeconds * SECOND * (1 << AiMin(4, r.routeFailures)));
+        r.nextReplan = ai.frame + backoff;
+        if (failed) {
             // No hazard-aware route (edge cell, fine corridor rejected, goal
             // unreachable on the lane grid). Never leave a raider idle: issue a
             // direct move and let the engine path it; the next replan (after

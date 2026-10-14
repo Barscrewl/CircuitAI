@@ -380,18 +380,18 @@ std::vector<AIFloat3> CBattleAnalysis::GetUnitRaidRoute(const CCircuitDef* def,
     // GetUnitTerrainRoute; the overlay adds O(1) per cell to its threat fill.
     if (!std::isfinite(hazardWeight) || hazardWeight < 0.f) return {};
     EnsureGroundHazard(hazardMargin);
-    const float weight = std::min(hazardWeight, 1e6f);
-    auto route = UnitTerrainRoute(def, from, to, true, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard, weight);
-    // A dry corridor rejects every cell below sea level. Glitters-style maps
-    // join their halves through fordable shallows, so fall back to the unit's
-    // own MoveData depth (same two-step order as AmphibiousOps::Travel).
-    if (route.empty()) route = UnitTerrainRoute(def, from, to, false, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard, weight);
-    return route;
+    // One grid per definition: route with the unit's own MoveData depth only.
+    // The earlier dry-then-wet retry built two grids per def (8v8 full3: 29+29
+    // legscout builds, `unit-terrain-build` 0.297 ms/frame summed over 16 AIs,
+    // the largest phase). The grid is retained across height revisions.
+    return UnitTerrainRoute(def, from, to, false, 1.f, 1.f, 1.f, 1e9f, &observedGroundHazard,
+        std::min(hazardWeight, 1e6f), true);
 }
 
 std::vector<AIFloat3> CBattleAnalysis::UnitTerrainRoute(const CCircuitDef* def,
         const AIFloat3& from, const AIFloat3& to, bool dry, float landCost,
-        float waterCost, float threatWeight, float maxWaterThreat, const Grid* hazard, float hazardValue)
+        float waterCost, float threatWeight, float maxWaterThreat, const Grid* hazard, float hazardValue,
+        bool retainTerrain)
 {
     performance::Scope routeScope(circuit, performance::UNIT_ROUTE);
     EnsureGrid();
@@ -421,8 +421,10 @@ std::vector<AIFloat3> CBattleAnalysis::UnitTerrainRoute(const CCircuitDef* def,
     auto& t=cache.grid;
     const int frame=circuit->GetLastFrame();
     static const bool verify = std::getenv("CIRCUIT_VERIFY_UNIT_ROUTES") != nullptr;
-    bool rebuild = t.height.empty();
-    const bool refresh = rebuild || frame < cache.frame || frame-cache.frame>=60*FRAMES_PER_SEC;
+    bool rebuild = t.height.empty() || t.gw != gw || t.gh != gh || t.cellSize != cellSize;
+    // Raid routes keep an existing grid: on a 16-AI battle map the height
+    // revision changes every refresh, so the 60 s check rebuilt every time.
+    const bool refresh = rebuild || (!retainTerrain && (frame < cache.frame || frame-cache.frame>=60*FRAMES_PER_SEC));
     if (refresh) {
         performance::Scope refreshScope(circuit, performance::UNIT_TERRAIN_REFRESH);
         cache.frame=frame;
