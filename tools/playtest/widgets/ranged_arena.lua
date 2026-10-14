@@ -1,7 +1,6 @@
 function widget:GetInfo() return {name="Ranged combat arena",layer=125,enabled=true,handler=true} end
 local cfg=VFS.Include("LuaUI/Config/ranged_arena.lua")
 local tracked,queue,pending,seen,orders,lastReload={}, {}, nil, {}, {}, {}
-local priorDamage,damageHook,priorCommand,commandHook
 local camera,photos=nil,{}
 local commandTypes,unitCommands={},{}
 local factorySamples,factoryIds={},{}
@@ -51,6 +50,13 @@ local function child(id)
     end
 end
 local function damage(id,def,team,amount,paralyzer,weapon,projectile,attacker,attackerDef,attackerTeam)
+    -- BAR's barwidgets handler forwards only the first five UnitDamaged
+    -- arguments to widgets. Recover the attacker from the engine; the weapon
+    -- id is then unknown (weaponName=unknown) and attackerDef is logged instead.
+    if attacker==nil then
+        attacker=Spring.GetUnitLastAttacker(id)
+        if attacker and attacker>=0 then attackerDef=Spring.GetUnitDefID(attacker);attackerTeam=Spring.GetUnitTeam(attacker) else attacker=nil end
+    end
     child(id);child(attacker)
     -- Opt-in supplied siege acceptance: observing fire is insufficient if the
     -- artillery walked into a scouted turret first. No orders or extra polling.
@@ -65,7 +71,7 @@ local function damage(id,def,team,amount,paralyzer,weapon,projectile,attacker,at
         log("spawn id="..id.." team="..team.." unit="..UnitDefs[def].name.." x="..math.floor(x or 0).." z="..math.floor(z or 0))
     end
     if tracked[id] or tracked[attacker] then
-        log("damage id="..id.." team="..team.." amount="..math.floor(amount).." attacker="..tostring(attacker).." attackerTeam="..tostring(attackerTeam).." weapon="..tostring(weapon).." weaponName="..tostring(WeaponDefs[weapon or -1] and WeaponDefs[weapon].name or "unknown"))
+        log("damage id="..id.." team="..team.." amount="..math.floor(amount).." attacker="..tostring(attacker).." attackerTeam="..tostring(attackerTeam).." attackerDef="..tostring(attackerDef and UnitDefs[attackerDef] and UnitDefs[attackerDef].name or "unknown").." weapon="..tostring(weapon).." weaponName="..tostring(WeaponDefs[weapon or -1] and WeaponDefs[weapon].name or "unknown"))
     end
 end
 local function command(id,def,team,cmd,params,options,tag,player,fromSynced,fromLua)
@@ -94,16 +100,18 @@ local function command(id,def,team,cmd,params,options,tag,player,fromSynced,from
     end
 end
 function widget:Initialize()
-    priorDamage=widgetHandler.UnitDamaged
-    damageHook=function(self,...) damage(...);if priorDamage then return priorDamage(self,...) end end
-    widgetHandler.UnitDamaged=damageHook;widgetHandler:UpdateCallIn("UnitDamaged")
-    priorCommand=widgetHandler.UnitCommand
-    commandHook=function(self,...) command(...);if priorCommand then return priorCommand(self,...) end end
-    widgetHandler.UnitCommand=commandHook;widgetHandler:UpdateCallIn("UnitCommand")
+    -- BAR's barwidgets handler hands each widget a proxy table, so assigning
+    -- widgetHandler.UnitDamaged/UnitCommand here never reached the real
+    -- handler and UpdateCallIn then dropped this widget from both lists (no
+    -- `damage`/`orders`/`priority` lines in any 2026-10-14 arena run). The
+    -- callins are plain widget methods below; never registering specific
+    -- command ids receives every command.
     for _,name in ipairs(cfg.units or {cfg.unit}) do caseUnits[name]=true end
     for _,name in ipairs(cfg.econ_targets or {}) do econTargets[name]=true end
     log("loaded case="..cfg.name.." variant="..cfg.variant)
 end
+function widget:UnitDamaged(...) damage(...) end
+function widget:UnitCommand(...) command(...) end
 function widget:UnitCreated(id,def,team,builder)
     if cfg.factory_throughput and team==0 and UnitDefs[def].isFactory then factoryIds[id]=true end
     if cfg.natural and team==0 and UnitDefs[def].name==cfg.unit then
@@ -343,7 +351,4 @@ function widget:DrawScreen()
         camera=nil
     end
 end
-function widget:Shutdown()
-    if widgetHandler.UnitDamaged==damageHook then widgetHandler.UnitDamaged=priorDamage;widgetHandler:UpdateCallIn("UnitDamaged") end
-    if widgetHandler.UnitCommand==commandHook then widgetHandler.UnitCommand=priorCommand;widgetHandler:UpdateCallIn("UnitCommand") end
-end
+function widget:Shutdown() end

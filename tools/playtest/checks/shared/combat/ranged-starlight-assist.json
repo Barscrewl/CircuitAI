@@ -40,7 +40,7 @@
     },
     {
       "key": "starlight damage",
-      "pattern": "\\[RangedArena\\].* damage .*attackerTeam=0 .*weaponName=armmanni_atam",
+      "pattern": "\\[RangedArena\\].* damage .*attackerTeam=0 .*attackerDef=armmanni",
       "scope": "any",
       "by_minute": 3
     }

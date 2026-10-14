@@ -735,7 +735,10 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         // a firing band around an apparently harmless unknown target.
         if(!c.def && !policy.advanceUnknownRadar) { ++unknownObjectives; return; }
         if((c.def && c.def->IsAbleToFly()) || (c.mobile?!policy.allowMobile:!policy.allowStatic)) return;
-        if(policy.avoidCategory!=0 && (!c.def || (c.def->GetCategory()&policy.avoidCategory))) return; // D-294: never approach
+        // D-294: never approach an identified avoided contact. Unidentified
+        // dots stay approachable (advance_unknown_radar owns that): approach
+        // is the only way to identify them; the blind SHOT is what is refused.
+        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) return;
         const float dist=pos.SqDistance2D(c.pos);
         if(dist<nearest && (!c.def || (c.def->GetCategory()&def->GetTargetCategory()))) { nearest=dist; objective=i; }
     };
@@ -773,7 +776,7 @@ void CRangedEngagement::Update(CCircuitUnit* unit)
         if (policy.holdFireline && !c.los) continue;
         if(!c.def && !policy.advanceUnknownRadar) { ++unknownObjectives; continue; }
         if((c.mobile?!policy.allowMobile:!policy.allowStatic) || (c.def && !(c.def->GetCategory()&def->GetTargetCategory()))) continue;
-        if(policy.avoidCategory!=0 && (!c.def || (c.def->GetCategory()&policy.avoidCategory))) continue; // D-294
+        if(c.def && (c.def->GetCategory()&policy.avoidCategory)) continue; // D-294 (unknown dots approachable, see above)
         const float distance=pos.SqDistance2D(c.pos);
         if(distance<nearest) { nearest=distance; objective=i; }
     }

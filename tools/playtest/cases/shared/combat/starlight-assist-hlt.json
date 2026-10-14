@@ -81,7 +81,8 @@
         6900
       ],
       "spacing": 140,
-      "columns": 5
+      "columns": 5,
+      "after_seconds": 12
     },
     {
       "unit": "armmart",
@@ -92,7 +93,8 @@
         7000
       ],
       "spacing": 160,
-      "columns": 4
+      "columns": 4,
+      "after_seconds": 12
     },
     {
       "unit": "armmanni",
@@ -104,7 +106,7 @@
       ],
       "spacing": 220,
       "columns": 4,
-      "after_seconds": 30
+      "after_seconds": 12
     },
     {
       "unit": "corraid",
@@ -112,11 +114,11 @@
       "team": 1,
       "position": [
         3200,
-        7600
+        7300
       ],
       "spacing": 140,
       "columns": 6,
-      "after_seconds": 40
+      "after_seconds": 12
     },
     {
       "unit": "correap",
@@ -124,11 +126,11 @@
       "team": 1,
       "position": [
         4000,
-        7600
+        7300
       ],
       "spacing": 160,
       "columns": 4,
-      "after_seconds": 40
+      "after_seconds": 12
     }
   ],
   "enemy_destination": [
