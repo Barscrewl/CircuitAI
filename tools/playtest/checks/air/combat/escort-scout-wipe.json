@@ -1,14 +1,14 @@
 {
-  "stop_minute": 8,
+  "stop_minute": 9,
   "expect": [
     {"key":"loaded","pattern":"\\[AirArena\\] event=loaded","scope":"any","by_minute":1},
-    {"key":"launch","pattern":"\\[AirArena\\] event=launch","scope":"any","by_minute":3},
-    {"key":"exhausted","pattern":"WAVE: operation exhausted","scope":"any","by_minute":7},
-    {"key":"wipe","pattern":"\\[AIR\\]\\[EscortScout\\] wipe op=\\d+ bombersLaunched=[1-9]\\d* escorts=[1-9]","scope":"any","by_minute":7},
-    {"key":"t1-scout","pattern":"\\[AIR\\]\\[EscortScout\\] fighter=\\d+ def=(armfig|corveng|legfig) .*point=","scope":"any","by_minute":7,"after_key":"wipe"},
-    {"key":"t2-scout","pattern":"\\[AIR\\]\\[EscortScout\\] fighter=\\d+ def=(armhawk|corvamp|legvenator|legafigdef) .*point=","scope":"any","by_minute":7,"after_key":"wipe"},
-    {"key":"dispatch","pattern":"\\[AIR\\]\\[EscortScout\\] dispatch fighter=\\d+","scope":"any","by_minute":7,"after_key":"wipe"},
-    {"key":"arrived","pattern":"\\[AIR\\]\\[EscortScout\\] released fighter=\\d+ reason=arrived","scope":"any","by_minute":8,"after_key":"dispatch"}
+    {"key":"launch","pattern":"\\[AIR\\]\\[Waves\\] Wave \\d+ launched .*bombers=([1-9]\\d*) fighters=([1-9]\\d*)","scope":"any","by_minute":3},
+    {"key":"exhausted","pattern":"WAVE: operation exhausted","scope":"any","by_minute":8,"after_key":"launch"},
+    {"key":"wipe","pattern":"\\[AIR\\]\\[EscortScout\\] wipe op=\\d+ bombersLaunched=[1-9]\\d* escorts=[1-9]","scope":"any","by_minute":8,"after_key":"launch"},
+    {"key":"t1-scout","pattern":"\\[AIR\\]\\[EscortScout\\] fighter=\\d+ def=(armfig|corveng|legfig) .*point=","scope":"any","by_minute":8,"after_key":"wipe"},
+    {"key":"t2-scout","pattern":"\\[AIR\\]\\[EscortScout\\] fighter=\\d+ def=(armhawk|corvamp|legvenator|legafigdef) .*point=","scope":"any","by_minute":8,"after_key":"wipe"},
+    {"key":"dispatch","pattern":"\\[AIR\\]\\[EscortScout\\] dispatch fighter=\\d+","scope":"any","by_minute":8,"after_key":"wipe"},
+    {"key":"arrived","pattern":"\\[AIR\\]\\[EscortScout\\] released fighter=\\d+ reason=arrived","scope":"any","by_minute":9,"after_key":"dispatch"}
   ],
   "forbid": [
     {"key":"script","pattern":": ERR\\s+:|SCRIPT CRASH|Lib exception","scope":"any"},
