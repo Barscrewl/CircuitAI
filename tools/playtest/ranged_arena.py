@@ -38,7 +38,7 @@ def prepare(args):
     command = [sys.executable, str(HERE / 'playtest.py')]
     stage = command + ['stage','--dir',str(directory),'--dll',str(args.dll),'--data',str(args.data),
         '--map',case['map'],'--map-file',str(starts),'--role',role,'--roles','all','--ally-spots','1',
-        '--side',case.get('side','armada'),'--game',args.game,
+        '--side',case.get('side','armada'),
         '--engine','recoil_2026.07.04','--speed',str(args.speed),'--minutes',str(args.minutes),
         '--shots','','--width','1280','--height','720','--lean-render','--bonus','0',
         '--ai-option','profile='+args.profile,'--ai-option','random_seed='+str(args.seed),
@@ -49,6 +49,9 @@ def prepare(args):
         '--extra-widget',str(HERE/'widgets/ranged_arena.lua'),
         '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua')]
     if args.headless: stage += ['--headless']
+    # No --game: playtest.py resolves the lobby's last game archive, so a
+    # pinned archive name does not go stale when the installed BAR updates.
+    if args.game: stage += ['--game',args.game]
     if case.get('aggression_widget_test'):
         stage += ['--extra-widget',str(ROOT/'tools/widgets/gui_barb_team_link.lua'),
                   '--extra-widget',str(HERE/'widgets/aggression_watch.lua')]
@@ -202,7 +205,7 @@ def main():
     parser.add_argument('--data',type=Path,default=ROOT/'data')
     parser.add_argument('--variant',choices=['baseline','siege','ranged'],default='ranged')
     parser.add_argument('--profile',default='experimental_balanced')
-    parser.add_argument('--game',default='Beyond All Reason test-31479-433a460')
+    parser.add_argument('--game',default=None,help='game archive name (default: the last lobby script\'s, via playtest.py)')
     parser.add_argument('--seed',type=int,default=2071)
     parser.add_argument('--minutes',type=int,default=4)
     parser.add_argument('--speed',type=int,default=8)
