@@ -48,6 +48,13 @@ def resolve_case(path, side, defender, seed, visibility=None):
     case = copy.deepcopy(case)
     if type(case.get('factory_production', False)) is not bool:
         raise ValueError('factory_production must be a boolean')
+    # Optional fixture lever: literal replacements of Global::RoleSettings::Air
+    # values in the staged copy, e.g. {"FirstBomberWaveMax": "10"} to pin the
+    # opening draw. Recorded in the manifest overrides; the pinned data is untouched.
+    settings = case.get('air_settings', {})
+    if type(settings) is not dict or any(not re.fullmatch(r'[A-Za-z_]\w*', k) or not isinstance(v, str)
+                                          or not re.fullmatch(r'-?[\w.]+', v) for k, v in settings.items()):
+        raise ValueError('air_settings must map setting names to literal value strings')
     case.update(side=side, defender=defender, seed=seed, scout=ROSTERS[side]['scout'])
     case.setdefault('visibility', 'radar')
     if visibility:
@@ -87,6 +94,15 @@ def checked_replace(path, old, new):
     if source.count(old) != 1:
         raise ValueError(f'{path}: expected one hook: {old}')
     path.write_text(source.replace(old, new))
+
+
+def override_air_setting(path, name, value):
+    """Replace the single `<type> <name> = <literal>;` declaration in the staged Air settings."""
+    source = path.read_text()
+    pattern = re.compile(r'^([ \t]*(?:const[ \t]+)?\w+[ \t]+' + re.escape(name) + r'[ \t]*=[ \t]*)[^;\n]+;', re.M)
+    if len(pattern.findall(source)) != 1:
+        raise ValueError(f'{path}: expected one declaration of Air setting {name}')
+    path.write_text(pattern.sub(lambda m: m.group(1) + value + ';', source, count=1))
 
 
 def archive_results(base):
@@ -243,6 +259,9 @@ def prepare(args):
     if 'bool T1OpeningRaidEnabled = true;' in (role_settings_path(staged / 'src', 'Air')).read_text():
         checked_replace(role_settings_path(staged / 'src', 'Air'), 'bool T1OpeningRaidEnabled = true;', 'bool T1OpeningRaidEnabled = false;')
         overrides.append('T1 opening production gate disabled for supplied combat')
+    for name, value in case.get('air_settings', {}).items():
+        override_air_setting(role_settings_path(staged / 'src', 'Air'), name, value)
+        overrides.append(f'Air setting {name} = {value} (case air_settings)')
     if case.get('bomber_only', True):
         checked_replace(role_settings_path(staged / 'src', 'Air'), 'float BomberWaveFighterRatio = 1.0f;', 'float BomberWaveFighterRatio = 0.0f;')
         raid_file = staged / 'src/systems/air/air_raids.as'
