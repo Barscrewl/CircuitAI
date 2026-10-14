@@ -1,8 +1,8 @@
 {
-  "name": "ranged-starlight-assist-hlt",
+  "name": "starlight-assist-hlt",
   "unit": "armmanni",
-  "checks": "ranged-starlight-assist-hlt",
-  "description": "D-295 variant: as ranged-starlight-assist, plus three Cortex HLTs covering the direct approach. Assisting Starlights must route their standoff outside static coverage: zero damage to a Starlight from a static weapon (no_static_damage).",
+  "checks": "starlight-assist-hlt",
+  "description": "D-295 variant: as ranged-starlight-assist, plus three Cortex HLTs (z=5650) covering the direct approach. Assisting Starlights must route their standoff outside static coverage: zero damage to a Starlight from a static weapon (no_static_damage).",
   "map": "All That Glitters v2.2.3",
   "map_key": "glitters",
   "starts": [
@@ -17,9 +17,9 @@
   ],
   "side": "armada",
   "camera": [
-    3800,
-    5200,
-    2600
+    3700,
+    5800,
+    3000
   ],
   "photos": [
     60,
@@ -35,28 +35,28 @@
       "count": 1,
       "team": 0,
       "position": [
-        4200,
-        4000
+        3600,
+        4750
       ]
     },
     {
       "unit": "armeyes",
-      "count": 4,
+      "count": 2,
       "team": 0,
       "position": [
-        6250,
-        4250
+        3300,
+        2700
       ],
-      "spacing": 220,
-      "columns": 4
+      "spacing": 400,
+      "columns": 2
     },
     {
       "unit": "cortarg",
       "count": 16,
       "team": 1,
       "position": [
-        6000,
-        4500
+        2800,
+        2900
       ],
       "spacing": 160,
       "columns": 8
@@ -67,9 +67,9 @@
       "team": 1,
       "position": [
         3300,
-        4950
+        5650
       ],
-      "spacing": 350,
+      "spacing": 400,
       "columns": 3
     },
     {
@@ -77,8 +77,8 @@
       "count": 10,
       "team": 0,
       "position": [
-        3500,
-        6200
+        3200,
+        6900
       ],
       "spacing": 140,
       "columns": 5
@@ -89,7 +89,7 @@
       "team": 0,
       "position": [
         3600,
-        5900
+        7000
       ],
       "spacing": 160,
       "columns": 4
@@ -99,10 +99,10 @@
       "count": 4,
       "team": 0,
       "position": [
-        3200,
-        3600
+        3400,
+        4400
       ],
-      "spacing": 320,
+      "spacing": 220,
       "columns": 4,
       "after_seconds": 30
     },
@@ -111,8 +111,8 @@
       "count": 12,
       "team": 1,
       "position": [
-        3600,
-        7700
+        3200,
+        7600
       ],
       "spacing": 140,
       "columns": 6,
@@ -123,8 +123,8 @@
       "count": 4,
       "team": 1,
       "position": [
-        3700,
-        8000
+        4000,
+        7600
       ],
       "spacing": 160,
       "columns": 4,
@@ -132,8 +132,8 @@
     }
   ],
   "enemy_destination": [
-    3900,
-    6200
+    3500,
+    6950
   ],
   "assertions": {
     "min_shooters": 2,

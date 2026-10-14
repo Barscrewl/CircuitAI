@@ -125,7 +125,8 @@ void CSetupManager::CloseConfig()
 	if (config != nullptr) {  // D-126: the script-read sections outlive the config
 		delete scriptConfig;
 		scriptConfig = new Json::Value(Json::objectValue);
-		for (const char* key : {"weapons", "lanes"}) {
+		// D-296: the scout-raid switch is read by script after init too.
+		for (const char* key : {"weapons", "lanes", "scout_raid"}) {
 			if (config->isMember(key)) {
 				(*scriptConfig)[key] = (*config)[key];
 			}
