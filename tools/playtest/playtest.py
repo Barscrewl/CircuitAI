@@ -443,10 +443,13 @@ def write_script(args, d):
         L += ["\t[TEAM%d]" % t, "\t{", "\t\tAllyTeam=%d;" % ally, "\t\tTeamLeader=0;",
               "\t\tSide=%s;" % side, "\t\tRgbColor=%s;" % COLOURS[t % len(COLOURS)],
               "\t\tStartPosX=%d;" % int(x), "\t\tStartPosZ=%d;" % int(z), "\t\tHandicap=%d;" % (int(args.bonus) if (t == 0 and args.bonus) else 0), "\t}"]
-        short, ver = (AI_SHORT, AI_VERSION) if kind == "test" else (PROD_AI_SHORT, PROD_AI_VERSION)
+        # --prod-ai names an installed opponent (e.g. stock BARb) that keeps its
+        # own default options: the test build's AI options are not passed to it.
+        prod_ai = getattr(args, "prod_ai", None)
+        short, ver = (AI_SHORT, AI_VERSION) if kind == "test" else (prod_ai or PROD_AI_SHORT, getattr(args, "prod_version", None) or PROD_AI_VERSION)
         L += ["\t[AI%d]" % t, "\t{", "\t\tShortName=%s;" % short, "\t\tVersion=%s;" % ver,
               "\t\tName=%s-%s-%d;" % (short, role.lower(), t), "\t\tTeam=%d;" % t, "\t\tHost=0;", "\t\tIsFromDemo=0;"]
-        if ai_opts:
+        if ai_opts and (kind == "test" or not prod_ai):
             L.append("\t\t[OPTIONS] { %s }" % " ".join("%s=%s;" % kv for kv in ai_opts.items()))
         L += ["\t}"]
     L += ["}", ""]
@@ -929,6 +932,8 @@ def add_script_args(p):
     p.add_argument("--roles", default="all", help="roles to field on both sides, e.g. TECH,FRONT; 'all' = every spot")
     p.add_argument("--others", default="test", choices=["test", "prod", "none"],
                    help="the other AIs: this build (test), the deployed SMRTBARb (prod), or enemies only (none)")
+    p.add_argument("--prod-ai", help="ShortName of the installed AI used for 'prod' teams (e.g. BARb for stock); it gets no test AI options")
+    p.add_argument("--prod-version", help="version of --prod-ai (default stable)")
     p.add_argument("--side", default="cortex", choices=SIDES, help="the side of the AI under test")
     p.add_argument("--ally-spots", help="1-based spot numbers of the ally side, e.g. '1,2,3,4,5,6,7,8' (default: first half)")
     p.add_argument("--modoption", action="append", help="key=value override in [MODOPTIONS]")

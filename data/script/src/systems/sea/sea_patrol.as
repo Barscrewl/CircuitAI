@@ -103,9 +103,29 @@ namespace SeaPatrol {
         for (uint i=0;i<raids.length();++i) if (raids[i].body==body) return raids[i];
         Raid@ r=Raid(); r.body=body; raids.insertLast(r); return r;
     }
+    // KI-610 (D-301): profiles give naval hulls zero threat weight, so the
+    // threat map is blind to enemy gunboats and scouts sailed into them. Add
+    // SEA's own legal contact snapshot: inside any known armed enemy ship's
+    // weapon range plus ScoutShipMargin is unsafe. O(E) per check; checks run
+    // on survey choice and on exposure, never per frame.
+    bool ShipCovered(const AIFloat3 &in p) {
+        if (!Global::RoleSettings::Sea::ScoutAvoidShips) return false;
+        const int count=aiBattle.GetSeaForceCount();
+        for (int i=0;i<count;++i) {
+            const int flags=aiBattle.GetSeaForceFlags(i);
+            if ((flags&1)!=0) continue;
+            const int defId=aiBattle.GetSeaForceDefId(i);
+            const CCircuitDef@ d=defId>=0 ? ai.GetCircuitDef(defId) : null;
+            if (d is null || (!d.HasSurfToLand() && !d.HasSurfToWater() && !d.HasSubToWater())) continue;
+            const float radius=AiMax(d.GetMaxRange(1),d.GetMaxRange(2))+Global::RoleSettings::Sea::ScoutShipMargin;
+            if (MapHelpers::SqDist(p,aiBattle.GetSeaForcePos(i))<radius*radius) return true;
+        }
+        return false;
+    }
     bool ThreatSafe(const AIFloat3 &in p) {
         return aiBattle.SurfThreat(p)<=Global::RoleSettings::Sea::ScoutMaximumThreat
-            && aiBattle.AmphThreat(p)<=Global::RoleSettings::Sea::ScoutMaximumThreat;
+            && aiBattle.AmphThreat(p)<=Global::RoleSettings::Sea::ScoutMaximumThreat
+            && !ShipCovered(p);
     }
     bool Safe(CCircuitUnit@ u,const AIFloat3 &in p,int body) {
         return aiBattle.WaterBody(p,false)==body && aiTerrainMgr.CanMoveTo(u,p) && ThreatSafe(p);

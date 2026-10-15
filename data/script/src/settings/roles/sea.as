@@ -62,6 +62,9 @@ namespace Sea {
             // instead of patrolling home; an armed warship within its engage
             // range of a cohort is scored x EngagedTargetMultiplier.
             bool FleetAAEscort = true;
+            // D-301: coast support only bombards targets the station outranges.
+            float CoastStandoffMargin = 64.0f;
+            float CoastCommanderReach = 450.0f;
             float EngagedTargetMultiplier = 3.0f;
             float EngagedTargetMargin = 300.0f;
             float FrigateFiringRangeFraction = 0.85f;
@@ -146,10 +149,15 @@ namespace Sea {
             // after ScoutReplacementSeconds; Skater/scout boats from every
             // channel (scout floor, air counter, composition AA) are capped at
             // min(SmallBoatMax, SmallBoatBase + fleet metal / SmallBoatFleetMetal).
+            // KI-610: scouts treat known armed enemy ships as threat (range + margin).
+            bool ScoutAvoidShips = true;
+            float ScoutShipMargin = 200.0f;
             float ScoutReplacementSeconds = 120.0f; // D-301: was 90 (still 10-12 built per game)
             int SmallBoatBase = 2;
             int SmallBoatMax = 4; // D-301: meta ~1 per 6-10 ships; was 6
             float SmallBoatFleetMetal = 1500.0f;
+            int SmallBoatAirMax = 8;            // D-301: AA-counter budget when enemy air is the deficit layer
+            float SmallBoatAirFleetMetal = 750.0f;
             bool T1SubmarinesAfterT2 = true; // constructors and urgent counters retain precedence
             float FirstT2BankSeconds = 2.0f; // startup buffer; full package still needs sustained M/E funding
             int HarborSurveySeconds = 90; // keep an untouched site stable long enough for reconnaissance

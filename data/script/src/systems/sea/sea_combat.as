@@ -36,9 +36,19 @@ namespace SeaCombat {
         const int boats=d.count+aiFactoryMgr.GetPendingRecruitCount(d);
         return boats>=cap || (boats>0 && ai.frame-scoutRecruited<int(Global::RoleSettings::Sea::ScoutReplacementSeconds*SECOND));
     }
-    CCircuitDef@ NoteSmallBoat(CCircuitDef@ d) {
+    // D-301 (played vs stock BARb: gunships were the top killer of ships).
+    // When air is the counter layer, the T1 AA boat answers it from its own,
+    // larger budget with no replacement delay; scouting stays capped.
+    int SmallBoatAirCap() {
+        return AiMin(Global::RoleSettings::Sea::SmallBoatAirMax,Global::RoleSettings::Sea::SmallBoatBase
+            +int(fleet/AiMax(1.0f,Global::RoleSettings::Sea::SmallBoatAirFleetMetal)));
+    }
+    bool SmallBoatAirFull(CCircuitDef@ d) {
+        return SmallBoat(d) && d.count+aiFactoryMgr.GetPendingRecruitCount(d)>=SmallBoatAirCap();
+    }
+    CCircuitDef@ NoteSmallBoat(CCircuitDef@ d, bool air=false) {
         if (!SmallBoat(d)) return d;
-        const int cap=AiMin(Global::RoleSettings::Sea::SmallBoatMax,Global::RoleSettings::Sea::SmallBoatBase
+        const int cap=air ? SmallBoatAirCap() : AiMin(Global::RoleSettings::Sea::SmallBoatMax,Global::RoleSettings::Sea::SmallBoatBase
             +int(fleet/AiMax(1.0f,Global::RoleSettings::Sea::SmallBoatFleetMetal)));
         // INV-220: every channel respects the one small-boat budget.
         if (d.count+aiFactoryMgr.GetPendingRecruitCount(d)>=cap)
@@ -226,7 +236,7 @@ namespace SeaCombat {
         for (uint i=0;i<roster.length();++i) {
             Hull@ h=roster[i]; CCircuitDef@ d=h.def;
             if (d is null || !d.IsAvailable(ai.frame) || !yard.circuitDef.CanBuild(d)) continue;
-            if (SmallBoatFull(d)) continue; // D-300: the small-boat budget binds counters too
+            if (kind==2 ? SmallBoatAirFull(d) : SmallBoatFull(d)) continue; // D-300/D-301 small-boat budgets
             if (h.siege && (urgentOnly || kind!=0 || fleet<Global::RoleSettings::Sea::SiegeFleetMetal || shore<=0)) continue;
             // Preserve a screen; expensive siege never fills the entire queue.
             if (h.siege && float(d.count+aiFactoryMgr.GetPendingRecruitCount(d))*d.costM>fleet*.25f) continue;
@@ -255,6 +265,6 @@ namespace SeaCombat {
             Invariants::Violation("INV-131",best.GetName(),"SEA counter lacks target-layer weapon");
             return null;
         }
-        return NoteSmallBoat(best);
+        return NoteSmallBoat(best,kind==2);
     }
 }

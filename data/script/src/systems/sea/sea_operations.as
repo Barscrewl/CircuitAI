@@ -331,6 +331,13 @@ namespace SeaOperations {
                 if (Failed(g,id)) continue;
                 CCircuitDef@ enemy=ai.GetCircuitDef(aiBattle.GetGroundContactDefId(i));
                 if (enemy is null || enemy.IsAbleToFly()) continue;
+                // D-301 (played vs stock BARb): ships doing coast support died
+                // mostly to the enemy commander and shore turrets they could not
+                // outrange. Bombard only what the station outranges; a commander
+                // also gets its D-gun reach (CoastCommanderReach).
+                const float enemyReach=AiMax(enemy.GetMaxRange(1),UnitHelpers::IsCommander(enemy) ? Global::RoleSettings::Sea::CoastCommanderReach : 0.0f)
+                    +Global::RoleSettings::Sea::CoastStandoffMargin;
+                if (enemyReach>=range) continue;
                 const AIFloat3 target=aiBattle.GetGroundContactPos(i);
                 if (MapHelpers::SqDist(target,g.centre)>4000.0f*4000.0f) continue;
                 // Eight bounded shoreline candidates, movement-area checked.
@@ -530,6 +537,8 @@ namespace SeaOperations {
                     }
                 }
                 if ((flags&2)!=0 && !subWeapon) continue;
+                // D-301: torpedoes cannot hit hovers; only surface guns engage them.
+                if ((flags&512)!=0 && !def.HasSurfToLand()) continue;
                 // A surfaced ship is still a torpedo target. LAND capability
                 // is not required for torpedo-only submarines in this water census.
                 if ((flags&2)==0 && !subWeapon && !def.HasSurfToLand() && !def.HasSubToLand()) continue;
@@ -732,7 +741,11 @@ namespace SeaOperations {
                     && (!submarine || SeaSubmarines::OutsideStaticTorpedoes(g.centre))) {
                     g.route.SetNavalTarget((targetFlags&128)!=0 ? -1 : target); continue;
                 }
-                if (Global::RoleSettings::Sea::CoordinatedFleet && def.GetName()=="corpship" && !targetSub && !remembered) {
+                // D-301: kiting generalised from the Riptide to the Ellysaw and
+                // Syracusia; it only applies against shorter-ranged targets.
+                const string hullName=def.GetName();
+                if (Global::RoleSettings::Sea::CoordinatedFleet && (hullName=="corpship" || hullName=="armpship" || hullName=="legnavydestro")
+                    && !targetSub && !remembered) {
                     // Stable movement intent, independent responsive fire. The
                     // short commitment only applies to range corrections for
                     // the SAME target; danger/ownership/target changes bypass it.
