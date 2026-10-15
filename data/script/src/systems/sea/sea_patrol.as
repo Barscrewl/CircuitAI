@@ -49,6 +49,8 @@ namespace SeaPatrol {
         const string name=d.GetName();
         // JSON role[1..] describes enemy response categories, not this hull's
         // own roles (FactoryManager::ReadConfig). Iapetus is scout-first there.
+        // D-301: fleet AA hulls escort the fleet (SeaOperations::FleetAA).
+        if (Global::RoleSettings::Sea::FleetAAEscort && SeaOperations::FleetAA(d)) return false;
         return d.HasSurfToAir() && (name=="armpt" || name=="corpt" || name=="armaas" || name=="corarch"
             || name=="legnavyaaship" || name=="leganavyaaship" || d.IsRoleAny(Unit::Role::AA.mask));
     }

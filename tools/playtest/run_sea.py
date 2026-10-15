@@ -26,7 +26,7 @@ def main():
     p.add_argument('--seed',type=int,default=1881001)
     p.add_argument('--side',choices=('armada','cortex','legion'),default='armada')
     p.add_argument('--profile',default='experimental_hard')
-    p.add_argument('--game',default='Beyond All Reason test-31479-433a460')
+    p.add_argument('--game',default=None)
     p.add_argument('--assessment-observer',action='store_true',help='Read-only per-UnitDef naval combat coverage')
     p.add_argument('--economy-observer',action='store_true',help='Record all teams conversion capacity and advanced naval economy')
     p.add_argument('--roles',default='SEA')
@@ -52,7 +52,7 @@ def main():
     if a.fixture and not a.headless: shots='5@3500@2200:4200,10@3500@2200:4200,19@4000@2200:4200'
     if a.fixture=='conversion' and not a.headless: shots='5@3000@1400:4300,10@2200@1300:4000,19@2000@1400:3950'
     cmd=call+['stage','--dir',str(d),'--dll',str(a.dll),'--data',str(a.data),'--map',MAPS[a.map],
-        '--game',a.game,'--engine','recoil_2026.07.04','--role','SEA',
+        *(['--game',a.game] if a.game else []),'--engine','recoil_2026.07.04','--role','SEA',
         '--roles',a.roles,'--side',a.side,'--bonus','0','--speed',str(a.speed),'--minutes',str(a.minutes),
         '--shots',shots,'--width','1280','--height','720','--lean-render',
         '--ai-option','profile='+a.profile,'--ai-option','random_seed='+str(a.seed),

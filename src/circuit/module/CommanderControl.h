@@ -36,6 +36,7 @@ private:
         int retry=0,target=-1,leaseUntil=0,next=0,lastLog=0,lastDamage=-1,frontFrame=-10000,frontYield=0;
         // D-293 fallback: held until fallbackUntil, porc line replanned once/second.
         int fallbackUntil=-1,fallbackPlanned=-10000,fallbackPorc=-1,fallbackMoveUntil=-1;
+        int heldPorc=-1,heldPorcUntil=-1; // KI-609: last chosen porc, kept 5 s past its last choice
         float budget=0,fallbackMetal=0,fallbackReach=0;
         commander::FallbackBoundary fallbackBoundary;
         bool cloak=false,deployed=false,invalidated=false,fallback=false;
@@ -58,7 +59,7 @@ private:
         // quota open after the fallback ends; workTask is the last ladder task
         // (address compared only, never dereferenced) that Deploy must not
         // interrupt. timedNext: definition id -> next due frame.
-        int lineUntil=-1,lineRetry=0,lineYield=-10000,frontArrived=-1,radarFrame=-10000;
+        int lineUntil=-1,lineRetry=0,lineYield=-10000,frontArrived=-1,radarFrame=-10000,lineOutside=-1;
         bool lineDone=false,radarCovered=false,workHeld=false; // workHeld: offered under a fallback
         springai::AIFloat3 lineAnchor{-1,0,-1},lineThreat,radarPos{-1,0,-1};
         const IUnitTask* workTask=nullptr;

@@ -111,6 +111,7 @@ namespace SeaBuild {
             || name==UnitHelpers::GetT1NavalNanoNameForSide(side);
     }
     void Leave() {
+        @techOrder=null;
         for (uint i=0;i<SeaEconomy::owned.length();++i) {
             CCircuitUnit@ u=ai.GetTeamUnit(SeaEconomy::owned[i]);
             if (u !is null && u.circuitDef.GetBuildSpeed()>0) u.SetBuildPriorityOverride(-1);
@@ -722,6 +723,48 @@ namespace SeaBuild {
         @task=SeaEcoLayout::Support(u); if (task !is null) return task;
         return HomeEnergy(u);
     }
+    // D-300: once the tech save commits, the first idle T1 construction ship
+    // orders the first advanced yard where the legacy ladder would (beside the
+    // primary T1 yard). One order: a queued yard task blocks a second.
+    int techYardLog=-100000;
+    // The one live T2 yard order (D-300). Held across frames like the economy
+    // project ledger; an assigned order that is not yet a frame is neither
+    // "queued" nor counted, so without this handle a second order went out.
+    IUnitTask@ techOrder=null;
+    void TechYardRefused(const string &in reason) {
+        if (ai.frame-techYardLog<30*SECOND) return;
+        techYardLog=ai.frame; GenericHelpers::LogUtil("[SEA][TechSave] order refused: "+reason,1);
+    }
+    IUnitTask@ TechYard(CCircuitUnit@ u) {
+        if (!SeaConstructor::IsT1(u.circuitDef) || !SeaEconomy::TechCommitted()) return null;
+        const string side=UnitHelpers::GetSideForUnitName(u.circuitDef.GetName());
+        CCircuitDef@ yard=ai.GetCircuitDef(UnitHelpers::GetT2ShipyardForSide(side));
+        if (yard is null || !u.circuitDef.CanBuild(yard)) { TechYardRefused("builder cannot build it"); return null; }
+        // Never join or re-return a live order here: assignment re-enters
+        // role policy synchronously, and a refused assignment recursed until
+        // the engine crashed (played, Legion). Other ships assist the frame
+        // through CapitalAssist and native assist.
+        if (techOrder !is null && !techOrder.IsDead()) {
+            IBuilderTask@ live=cast<IBuilderTask>(techOrder);
+            TechYardRefused(live is null ? "ordered" : "ordered at "+int(live.GetBuildPos().x)+","+int(live.GetBuildPos().z)
+                +" units="+live.GetUnits().length()+" frame="+(live.target !is null)+" height="+int(aiBattle.Height(live.GetBuildPos())));
+            return null;
+        }
+        if (SeaEconomy::Have(yard)>0 || aiBuilderMgr.GetQueuedBuildCount(int(Task::BuildType::FACTORY),yard)>0) { TechYardRefused("framed or queued"); return null; }
+        if (Factory::primaryT1Shipyard is null) { TechYardRefused("no primary T1 yard"); return null; }
+        // Beside the T1 yard, as the shared ladder did; native placement
+        // honours SEA's reservations and exits. The harbor layout is the
+        // fallback: its forward/visibility admission is meant for later
+        // forward harbors and rejected home sites for minutes in played games.
+        IUnitTask@ task=Builder::EnqueueT2Shipyard(side,Factory::GetT1ShipyardPos(),SQUARE_SIZE*60,600*SECOND);
+        if (task is null) {
+            @task=SeaLayout::Factory(u,yard.GetName());
+            if (task !is null) SeaEconomy::Admit(yard,false,true);
+        }
+        if (task !is null) { @techOrder=task; GenericHelpers::LogUtil("[SEA][TechSave] order "+yard.GetName()+" builder="+u.id,1); }
+        else TechYardRefused("native (placement or 180 s T2 cooldown) and layout found no site allowed="+yard.IsBuildAllowed()+" available="+yard.IsAvailable(ai.frame)+" max="+yard.maxThisUnit+" count="+yard.count);
+        return task;
+    }
     IUnitTask@ LegacyTask(CCircuitUnit@ u) {
         if (u is null) return null;
         SeaEconomy::Tick();
@@ -732,6 +775,8 @@ namespace SeaBuild {
         if (!u.circuitDef.IsMobile()) { IUnitTask@ help=Assist(u); return help is null ? Wait() : help; }
         IUnitTask@ task=null;
         @task=PriorityGrowth(u); if (task !is null) return task;
+        // Not wrapped by LayoutTask: its placement deferral aborted this order.
+        @task=TechYard(u); if (task !is null) return task;
         @task=CapitalAssist(u); if (task !is null) return task;
         @task=Seaplane(u); if (task !is null) return task;
         @task=CapacityFactory(u); if (task !is null) return task;

@@ -9,21 +9,53 @@ namespace SeaComposition {
             : side=="cortex" ? Global::RoleSettings::Sea::CortexTierTwoComposition : Global::RoleSettings::Sea::LegionTierTwoComposition;
         else names=side=="armada" ? Global::RoleSettings::Sea::ArmadaTierOneComposition
             : side=="cortex" ? Global::RoleSettings::Sea::CortexTierOneComposition : Global::RoleSettings::Sea::LegionTierOneComposition;
-        const array<float> ratios={Global::RoleSettings::Sea::SubmarineCompositionRatio,
-            Global::RoleSettings::Sea::FrigateCompositionRatio,Global::RoleSettings::Sea::DestroyerCompositionRatio};
+        // D-301: faction ratios from the naval meta review; the flat global
+        // ratios remain the fallback when a profile empties the arrays.
+        array<float> ratios=advanced
+            ? (side=="armada" ? Global::RoleSettings::Sea::ArmadaTierTwoRatios : side=="cortex" ? Global::RoleSettings::Sea::CortexTierTwoRatios : Global::RoleSettings::Sea::LegionTierTwoRatios)
+            : (side=="armada" ? Global::RoleSettings::Sea::ArmadaTierOneRatios : side=="cortex" ? Global::RoleSettings::Sea::CortexTierOneRatios : Global::RoleSettings::Sea::LegionTierOneRatios);
+        if (ratios.length()!=3) {
+            ratios.resize(3);
+            ratios[0]=Global::RoleSettings::Sea::SubmarineCompositionRatio;
+            ratios[1]=Global::RoleSettings::Sea::FrigateCompositionRatio;
+            ratios[2]=Global::RoleSettings::Sea::DestroyerCompositionRatio;
+        }
         if (names.length()!=ratios.length()) {
             Invariants::Violation("INV-185",side,"SEA composition must define submarine, screen and heavy hull");
             return null;
         }
-        CCircuitDef@ selected=null; float best=-1e30f; int frigates=0;
+        CCircuitDef@ selected=null; float best=-1e30f; int frigates=0, cruisers=0;
         for (uint i=0;i<names.length() && i<ratios.length();++i) {
             CCircuitDef@ definition=ai.GetCircuitDef(names[i]);
             if (definition is null) continue;
             const int count=DictIntOr(localCounts,""+definition.id)+aiFactoryMgr.GetPendingRecruitCount(definition);
-            if (i==1) frigates=count;
+            // D-301: AA scales with every combat hull, not the screen slot alone.
+            frigates+=count;
+            if (i==2) cruisers=count;
             if (!definition.IsAvailable(ai.frame) || !yard.circuitDef.CanBuild(definition)) continue;
             const float score=SeaMath::CompositionDeficit(count,ratios[i]);
             if (score>best) { best=score; @selected=definition; }
+        }
+        if (advanced && Global::RoleSettings::Sea::CapitalShips) {
+            // D-301 capital step: battleships stand behind the cruiser core;
+            // shore-siege ships (outranging every land defence) come once the
+            // fleet holds the water. Names are the faction's T2 hulls.
+            CCircuitDef@ battleship=ai.GetCircuitDef(side=="armada" ? "armbats" : side=="cortex" ? "corbats" : "leganavybattleship");
+            if (battleship !is null && battleship.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(battleship)
+                && DictIntOr(localCounts,""+battleship.id)+aiFactoryMgr.GetPendingRecruitCount(battleship)
+                    <SeaMath::CapitalTarget(cruisers,Global::RoleSettings::Sea::CapitalAfterCruisers,
+                        Global::RoleSettings::Sea::CruisersPerBattleship,Global::RoleSettings::Sea::MaxBattleships)) {
+                GenericHelpers::LogUtil("[SEA][Capital] battleship "+battleship.GetName()+" cruisers="+cruisers,1);
+                return battleship;
+            }
+            CCircuitDef@ siege=ai.GetCircuitDef(side=="armada" ? "armmship" : side=="cortex" ? "cormship" : "leganavymissileship");
+            const int siegeWanted=SeaCombat::fleet<Global::RoleSettings::Sea::SiegeFleetMetal || !SeaEconomy::HoldingWater() ? 0
+                : AiMin(Global::RoleSettings::Sea::MaxSiegeShips,int(SeaCombat::fleet/AiMax(1.0f,Global::RoleSettings::Sea::SiegeShipFleetMetal)));
+            if (siege !is null && siege.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(siege)
+                && DictIntOr(localCounts,""+siege.id)+aiFactoryMgr.GetPendingRecruitCount(siege)<siegeWanted) {
+                GenericHelpers::LogUtil("[SEA][Capital] siege "+siege.GetName()+" fleet="+SeaCombat::fleet,1);
+                return siege;
+            }
         }
         const string antiAirName=advanced ? (side=="armada" ? "armaas" : side=="cortex" ? "corarch" : "leganavyaaship")
             : (side=="armada" ? "armpt" : side=="cortex" ? "corpt" : "legnavyaaship");
@@ -33,9 +65,9 @@ namespace SeaComposition {
             CCircuitDef@ frigate=ai.GetCircuitDef(side=="armada" ? "armpship" : side=="cortex" ? "corpship" : "legnavyfrigate");
             if (frigate !is null) frigates+=DictIntOr(localCounts,""+frigate.id)+aiFactoryMgr.GetPendingRecruitCount(frigate);
         }
-        if (antiAir !is null && antiAir.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(antiAir)
+        if (antiAir !is null && antiAir.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(antiAir) && !SeaCombat::SmallBoatFull(antiAir)
             && DictIntOr(localCounts,""+antiAir.id)+aiFactoryMgr.GetPendingRecruitCount(antiAir)<(frigates+perShip-1)/perShip)
-            return antiAir;
+            return SeaCombat::NoteSmallBoat(antiAir);
         return selected;
     }
     class Batch { int yard=-1; array<IUnitTask@> tasks; }

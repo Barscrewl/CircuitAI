@@ -313,13 +313,57 @@ namespace SeaEconomy {
                     +" bank="+aiEconomyMgr.metal.current+" ready="+TechReady(yard)+" water="+HoldingWater(),1);
         }
     }
+    // D-300: the first advanced yard is wanted once the income gates pass and
+    // stays wanted until it is finished. O(1): two def counts and the shared
+    // income window, called from factory decisions only. Lifecycle: the save
+    // clock starts once, expires after TechSaveMaxSeconds, and resets only
+    // when a finished yard is later lost.
+    int techSaveSince=-1;
+    bool techSaveExpired=false, techCommitted=false;
+    bool TechSaving() {
+        if (!Global::RoleSettings::Sea::TechSave) return false;
+        CCircuitDef@ yard=ai.GetCircuitDef(UnitHelpers::GetT2ShipyardForSide(Global::AISettings::Side));
+        if (yard is null) return false;
+        if (yard.count>aiBuilderMgr.GetUnfinishedCount(yard)) {
+            if (techSaveSince>=0) GenericHelpers::LogUtil("[SEA][TechSave] done seconds="+((ai.frame-techSaveSince)/SECOND),1);
+            techSaveSince=-1; techSaveExpired=false; techCommitted=false; return false;
+        }
+        if (techSaveExpired || !Economy::IncomeWindowReady() || !HoldingWater()) return false;
+        // A started frame keeps the save going whatever a dip in income does.
+        if (yard.count==0 && (Economy::GetMinMetalIncomeLast10s()<Global::RoleSettings::Sea::TechMinimumMetalIncome
+            || Economy::GetMinEnergyIncomeLast10s()<Global::RoleSettings::Sea::TechMinimumEnergyIncome)) return false;
+        if (techSaveSince<0) {
+            techSaveSince=ai.frame;
+            GenericHelpers::LogUtil("[SEA][TechSave] start M="+aiEconomyMgr.metal.income+" E="+aiEconomyMgr.energy.income+" bank="+aiEconomyMgr.metal.current,1);
+        }
+        // Unframed: TechSaveMaxSeconds to get the yard placed. Framed: the
+        // same again to finish it. Either cap resumes ordinary production.
+        if (ai.frame-techSaveSince>int(Global::RoleSettings::Sea::TechSaveMaxSeconds*SECOND*(yard.count>0 ? 2 : 1))) {
+            techSaveExpired=true;
+            GenericHelpers::LogUtil("[SEA][TechSave] expired framed="+(yard.count>0)+" bank="+aiEconomyMgr.metal.current,1);
+            return false;
+        }
+        return true;
+    }
+    // A running save is the commitment: the frame is placed at once and the
+    // paused T1 production funds it from income, as a player would. The
+    // bank-based TechReady gate is momentary and constructors ask only when
+    // idle, so in natural games it never coincided with an ask (D-300).
+    bool TechCommitted() {
+        if (!TechSaving()) return false;
+        if (!techCommitted) {
+            techCommitted=true;
+            GenericHelpers::LogUtil("[SEA][TechSave] commit bank="+aiEconomyMgr.metal.current+" M="+Economy::GetMinMetalIncomeLast10s(),1);
+        }
+        return true;
+    }
     bool TechReady(CCircuitDef@ yard, bool saving=false) {
         if (yard is null || !Economy::IncomeWindowReady() || !HoldingWater()) return false;
         CCircuitDef@ con=ai.GetCircuitDef(Constructor(UnitHelpers::GetSideForUnitName(yard.GetName()),true));
         if (con is null) return false;
         return SeaMath::TechReady(Economy::GetMinMetalIncomeLast10s(),Economy::GetMinEnergyIncomeLast10s(),
             saving ? yard.costM+con.costM+800.0f : AiMax(0.0f,aiEconomyMgr.metal.current-admittedM),aiEconomyMgr.energy.current,
-            Global::RoleSettings::Sea::TechMinimumMetalIncome,Global::RoleSettings::Sea::MinimumEnergyIncomeForT2Shipyard,
+            Global::RoleSettings::Sea::TechMinimumMetalIncome,Global::RoleSettings::Sea::TechMinimumEnergyIncome,
             SeaMath::TechStartupBank(Economy::GetMinMetalIncomeLast10s(),Global::RoleSettings::Sea::FirstT2BankSeconds,
                 Global::RoleSettings::Sea::RequiredMetalCurrentForT2Shipyard,Have(yard)==0),yard.costM+con.costM+800.0f,yard.costE+con.costE+8000.0f,
             Global::RoleSettings::Sea::TechPackageSeconds,Global::RoleSettings::Sea::TechPackageIncomeShare);

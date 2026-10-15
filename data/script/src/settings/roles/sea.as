@@ -35,6 +35,35 @@ namespace Sea {
             float FrigateCompositionRatio = 1.0f;
             float DestroyerCompositionRatio = 1.0f;
             int FrigatesPerAntiAirShip = 5;
+            // D-301 naval meta review: per-faction {sub, screen, heavy} count
+            // ratios, replacing the flat 1:1:1 (the three ratios above stay as
+            // the fallback for a profile that empties these arrays).
+            // Armada T1: Corsair core, ~2 Ellysaw per Corsair, Eels a minority.
+            // Cortex T1: Riptide:Oppressor ~5:2 (Build Atlas, Supreme 8v8).
+            // Legion T1: Argonaut (anti-sub) : Syracusia (no ASW) ~3:1.
+            // T2: the cruiser (Paladin/Buccaneer/Thalassa) is the core.
+            array<float> ArmadaTierOneRatios={0.5f,2.0f,1.0f};
+            array<float> CortexTierOneRatios={0.5f,2.5f,1.0f};
+            array<float> LegionTierOneRatios={0.5f,3.0f,1.0f};
+            array<float> ArmadaTierTwoRatios={0.5f,0.5f,2.0f};
+            array<float> CortexTierTwoRatios={0.5f,0.5f,2.0f};
+            array<float> LegionTierTwoRatios={0.5f,0.5f,2.0f};
+            // D-301 capital step at the T2 yard: a battleship behind every
+            // CruisersPerBattleship cruisers (from CapitalAfterCruisers, at
+            // most MaxBattleships); shore siege ships once the fleet holds
+            // SiegeFleetMetal, one per SiegeShipFleetMetal (max MaxSiegeShips).
+            bool CapitalShips = true;
+            int CapitalAfterCruisers = 4;
+            int CruisersPerBattleship = 3;
+            int MaxBattleships = 3;
+            float SiegeShipFleetMetal = 5000.0f;
+            int MaxSiegeShips = 4;
+            // D-301: T2 AA ships (and Legion's Iapetus) escort the fleet
+            // instead of patrolling home; an armed warship within its engage
+            // range of a cohort is scored x EngagedTargetMultiplier.
+            bool FleetAAEscort = true;
+            float EngagedTargetMultiplier = 3.0f;
+            float EngagedTargetMargin = 300.0f;
             float FrigateFiringRangeFraction = 0.85f;
             float FrigateKiteRangeFraction = 0.65f;
             int FrigateMovementCommitSeconds = 4;
@@ -94,6 +123,10 @@ namespace Sea {
             float GrowthReserveShare = .45f;
             float EnergyBufferSeconds = 12.0f;
             int ExpansionCandidates = 5;
+            // D-300 surface task force: same-body surface combat cohorts
+            // within TaskForceRadius of the lead share its target and goal.
+            bool SurfaceTaskForce = true;
+            float TaskForceRadius = 2200.0f;
             int FleetReleaseCount = 7;
             int FleetReleaseSeconds = 60;
             int FleetSearchSeconds = 45;
@@ -108,6 +141,15 @@ namespace Sea {
             float FleetScreenRatio = 1.2f;
             float FleetLaneSpacing = 72.0f;
             int FleetScouts = 3;
+            // D-300: small-boat waste (27 Skaters built, 24 lost in a natural
+            // Supreme game). Losses beyond the first live scout are replaced
+            // after ScoutReplacementSeconds; Skater/scout boats from every
+            // channel (scout floor, air counter, composition AA) are capped at
+            // min(SmallBoatMax, SmallBoatBase + fleet metal / SmallBoatFleetMetal).
+            float ScoutReplacementSeconds = 120.0f; // D-301: was 90 (still 10-12 built per game)
+            int SmallBoatBase = 2;
+            int SmallBoatMax = 4; // D-301: meta ~1 per 6-10 ships; was 6
+            float SmallBoatFleetMetal = 1500.0f;
             bool T1SubmarinesAfterT2 = true; // constructors and urgent counters retain precedence
             float FirstT2BankSeconds = 2.0f; // startup buffer; full package still needs sustained M/E funding
             int HarborSurveySeconds = 90; // keep an untouched site stable long enough for reconnaissance
@@ -154,7 +196,15 @@ namespace Sea {
             float FleetSubCoverShare = 0.3f;
             float SiegeFleetMetal = 4500.0f;
             float FleetAssemblySeconds = 120.0f;
-            float TechMinimumMetalIncome = 30.0f;
+            // D-300: SEA's own first-T2 gate. 30 M/s was never reached in a
+            // natural Supreme game (plateau 26.4 M/s, T1 only for 25 min).
+            float TechMinimumMetalIncome = 16.0f;
+            float TechMinimumEnergyIncome = 400.0f; // SEA only; the shared ladder keeps MinimumEnergyIncomeForT2Shipyard
+            // While the first T2 yard is wanted and unfinished, hold
+            // discretionary T1 hulls (counters still answer threats) for at
+            // most TechSaveMaxSeconds so the bank can fund the package.
+            bool TechSave = true;
+            float TechSaveMaxSeconds = 240.0f;
             float CapitalAssistRadius = 900.0f;
             int CapitalAssistWorkers = 3;
             float HarborSearchRadius = 1200.0f;
@@ -175,8 +225,8 @@ namespace Sea {
             float AmphibiousInterceptMinimumMetal = 500.0f; // includes the 970-metal Marauder; not a tier proxy
             float HarborMaxThreat = 1.0f;
             int MaxProductionYards = 8;
-            float TechPackageSeconds = 150.0f;
-            float TechPackageIncomeShare = 0.65f;
+            float TechPackageSeconds = 240.0f; // D-300: was 150 (package unaffordable below ~30 M/s)
+            float TechPackageIncomeShare = 0.85f; // D-300: was 0.65; TechSave frees the T1 hull share
             float WorkforceHorizon = 45.0f;
             float EconomyIncomeShare = 0.45f;
             float ForwardMinimumGain = 800.0f;

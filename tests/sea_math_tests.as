@@ -342,3 +342,20 @@ void test_replacement_line_requires_numbers_and_health_adjusted_power() {
     Check(SeaMath::ReplacementReady(3,1200,1000,3,1.15f));
     Check(SeaMath::ReplacementReady(4,1600,0,3,1.15f));
 }
+
+void test_engaged_fleet_outranks_distant_yard() {
+    // D-301: an armed warship 600 away beats a yard 3000 away once engaged.
+    const float yard=SeaMath::ObjectiveScore(8|32,true,650,3000,false,false);
+    const float warship=SeaMath::ObjectiveScore(0,false,880,600,false,false);
+    Check(yard>warship);
+    Check(SeaMath::EngagedObjectiveScore(warship,true,3.0f)>yard);
+    Check(SeaMath::EngagedObjectiveScore(warship,false,3.0f)==warship);
+    Check(SeaMath::EngagedObjectiveScore(warship,true,1.0f)==warship);
+}
+void test_capital_ships_follow_the_cruiser_core() {
+    Check(SeaMath::CapitalTarget(3,4,3,3)==0);
+    Check(SeaMath::CapitalTarget(4,4,3,3)==1);
+    Check(SeaMath::CapitalTarget(7,4,3,3)==2);
+    Check(SeaMath::CapitalTarget(40,4,3,3)==3);
+    Check(SeaMath::CapitalTarget(9,4,0,3)==0);
+}

@@ -20,6 +20,31 @@ namespace SeaCombat {
     int subSeen=-100000, airSeen=-100000;
     float surface=0, underwater=0, air=0, shore=0, fleet=0;
     bool Active() { return Global::AISettings::Role==AiRole::SEA && Global::RoleSettings::Sea::AdaptiveFleet; }
+    // D-300 small-boat budget. O(1) per call: one def count and pending count.
+    int scoutRecruited=-100000;
+    bool SmallBoat(const CCircuitDef@ d) {
+        if (d is null) return false;
+        const string name=d.GetName();
+        return name=="armpt" || name=="corpt" || name=="legnavyscout";
+    }
+    // Every channel shares one budget and one replacement clock: beyond the
+    // first live boat, a new one waits ScoutReplacementSeconds after the last.
+    bool SmallBoatFull(CCircuitDef@ d) {
+        if (!SmallBoat(d)) return false;
+        const int cap=AiMin(Global::RoleSettings::Sea::SmallBoatMax,Global::RoleSettings::Sea::SmallBoatBase
+            +int(fleet/AiMax(1.0f,Global::RoleSettings::Sea::SmallBoatFleetMetal)));
+        const int boats=d.count+aiFactoryMgr.GetPendingRecruitCount(d);
+        return boats>=cap || (boats>0 && ai.frame-scoutRecruited<int(Global::RoleSettings::Sea::ScoutReplacementSeconds*SECOND));
+    }
+    CCircuitDef@ NoteSmallBoat(CCircuitDef@ d) {
+        if (!SmallBoat(d)) return d;
+        const int cap=AiMin(Global::RoleSettings::Sea::SmallBoatMax,Global::RoleSettings::Sea::SmallBoatBase
+            +int(fleet/AiMax(1.0f,Global::RoleSettings::Sea::SmallBoatFleetMetal)));
+        // INV-220: every channel respects the one small-boat budget.
+        if (d.count+aiFactoryMgr.GetPendingRecruitCount(d)>=cap)
+            Invariants::Violation("INV-220",d.GetName(),"SEA small boat selected over budget "+cap);
+        scoutRecruited=ai.frame; return d;
+    }
     void MilitaryRemoved(CCircuitUnit@ u, Unit::UseAs usage) {
         // The next owned census releases the ID and its route/sector lease.
     }
@@ -142,8 +167,11 @@ namespace SeaCombat {
             const string side=UnitHelpers::GetSideForUnitName(yard.circuitDef.GetName());
             CCircuitDef@ scout=ai.GetCircuitDef(side=="armada" ? "armpt" : side=="cortex" ? "corpt" : "legnavyscout");
             const int desired=fleet<1000 ? 1 : Global::RoleSettings::Sea::FleetScouts;
-            if (scout !is null && scout.count+aiFactoryMgr.GetPendingRecruitCount(scout)<desired
-                && scout.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(scout)) return scout;
+            const int scouts=scout is null ? 0 : scout.count+aiFactoryMgr.GetPendingRecruitCount(scout);
+            // One live scout is always replaced; further losses wait out the
+            // cooldown instead of re-queuing every death at once (D-300).
+            if (scout !is null && scouts<desired && !SmallBoatFull(scout)
+                && scout.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(scout)) return NoteSmallBoat(scout);
             // The T2 yard supplies advanced surface/AA hulls. Keep the T1 yard
             // useful as a submarine screen/raiding stream. This is after the
             // caller's workforce, recovery and urgent air/sub counter checks.
@@ -198,6 +226,7 @@ namespace SeaCombat {
         for (uint i=0;i<roster.length();++i) {
             Hull@ h=roster[i]; CCircuitDef@ d=h.def;
             if (d is null || !d.IsAvailable(ai.frame) || !yard.circuitDef.CanBuild(d)) continue;
+            if (SmallBoatFull(d)) continue; // D-300: the small-boat budget binds counters too
             if (h.siege && (urgentOnly || kind!=0 || fleet<Global::RoleSettings::Sea::SiegeFleetMetal || shore<=0)) continue;
             // Preserve a screen; expensive siege never fills the entire queue.
             if (h.siege && float(d.count+aiFactoryMgr.GetPendingRecruitCount(d))*d.costM>fleet*.25f) continue;
@@ -213,6 +242,12 @@ namespace SeaCombat {
             }
             if (rank>score) { @best=d; score=rank; }
         }
+        // D-301: a capped or unbuildable counter layer (e.g. the Skater as the
+        // only T1 AA) must not hand the yard to native production.
+        if (best is null && !urgentOnly && Global::RoleSettings::Sea::BalancedFleetComposition) {
+            CCircuitDef@ baseline=SeaComposition::Select(yard,localCounts);
+            if (baseline !is null) return baseline;
+        }
         if (best !is null) GenericHelpers::LogUtil("[SEA]["+(urgentOnly ? "Response" : "Production")+"] layer="+kind+" deficit="+deficit+" observedSub="+underwater+" subCover="+have[1]+" recruit="+best.GetName(),1);
         if (best !is null && ((kind==2 && !best.HasSurfToAir())
             || (kind==1 && !best.HasSurfToWater() && !best.HasSubToWater())
@@ -220,6 +255,6 @@ namespace SeaCombat {
             Invariants::Violation("INV-131",best.GetName(),"SEA counter lacks target-layer weapon");
             return null;
         }
-        return best;
+        return NoteSmallBoat(best);
     }
 }

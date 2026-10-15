@@ -19,14 +19,14 @@ namespace SeaFactories {
             && SeaEconomy::capacityPressure) {
             const string side=UnitHelpers::GetSideForUnitName(d.GetName());
             if (UnitHelpers::IsSeaplanePlatform(d.GetName())) return T2Finished(side) && SeaEconomy::SeaplaneReady(ai.GetCircuitDef(d.id));
-            if (UnitHelpers::IsT2Shipyard(d.GetName())) return T2Finished(side) || SeaEconomy::TechReady(ai.GetCircuitDef(d.id));
+            if (UnitHelpers::IsT2Shipyard(d.GetName())) return T2Finished(side) || SeaEconomy::TechCommitted() || SeaEconomy::TechReady(ai.GetCircuitDef(d.id));
             return UnitHelpers::IsT1Shipyard(d.GetName()) || (SeaInvasion::Active() && SeaInvasion::Factory(d) && T2Finished(side));
         }
         // Native switching must not bypass SEA's surveyed forward staging.
         if (SeaInvasion::Active() && SeaInvasion::Factory(d)) return false;
         if (d is null || !Global::RoleSettings::Sea::SeaplanesAfterT2) return true;
         const string side=UnitHelpers::GetSideForUnitName(d.GetName());
-        if (UnitHelpers::IsT2Shipyard(d.GetName()) && d.count==0 && !SeaEconomy::TechReady(ai.GetCircuitDef(d.id))) return false;
+        if (UnitHelpers::IsT2Shipyard(d.GetName()) && d.count==0 && !SeaEconomy::TechCommitted() && !SeaEconomy::TechReady(ai.GetCircuitDef(d.id))) return false;
         if (UnitHelpers::IsSeaplanePlatform(d.GetName())) return T2Finished(side) && SeaEconomy::SeaplaneReady(d);
         // A lost opening yard must remain recoverable. Other discretionary
         // factory purchases wait for the post-T2 platform commitment.
@@ -124,6 +124,14 @@ namespace SeaFactories {
         if (con !is null && con.count+aiFactoryMgr.GetPendingRecruitCount(con)>=1) {
             CCircuitDef@ counter=SeaCombat::Select(yard,true);
             if (counter !is null) { SeaComposition::Pending(yard,true); IUnitTask@ response=Recruit(yard,counter,Task::RecruitType::FIREPOWER,false,true); if (response !is null) return response; }
+        }
+        if (!advanced && SeaEconomy::TechSaving()) {
+            // D-300: bank for the first advanced yard. Threat counters above
+            // still run; keep the two constructors that build and assist it.
+            if (con !is null && con.count+aiFactoryMgr.GetPendingRecruitCount(con)<2) {
+                IUnitTask@ worker=Recruit(yard,con,Task::RecruitType::BUILDPOWER); if (worker !is null) return worker;
+            }
+            return aiFactoryMgr.Enqueue(TaskS::Wait(false,3*SECOND));
         }
         IUnitTask@ workforce=Workforce(yard); if (workforce !is null) { SeaComposition::Pending(yard,true); return workforce; }
         if (SeaCombat::Active()) {

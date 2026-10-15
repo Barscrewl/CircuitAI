@@ -149,6 +149,19 @@ namespace SeaMath {
         if (retained) value*=RetainedObjectiveMultiplier;
         return (value+cost*ObjectiveMetalWeight)/(UnitValue+distance/ObjectiveDistanceScale);
     }
+    // D-301: the fleet fights the armed fleet in front of it before it dives
+    // a distant yard (6000 vs 1200 base value otherwise sent it past the
+    // enemy navy). Pure O(1); multiplier <= 1 disables.
+    float EngagedObjectiveScore(float score, bool engaged, float multiplier) {
+        return engaged && multiplier>One ? score*multiplier : score;
+    }
+    // D-301: battleships follow the cruiser core; at most one per `per`
+    // cruisers after `after`, capped. Pure O(1).
+    int CapitalTarget(int cruisers, int after, int per, int maximum) {
+        if (cruisers<after || per<=Zero || maximum<=Zero) return Zero;
+        const int wanted=One+(cruisers-after)/per;
+        return wanted<maximum ? wanted : maximum;
+    }
     bool Engagement(float distance, float enemyRange, float healthLoss) {
         return distance<=enemyRange+EngagementRangeMargin || healthLoss>SignificantHealthLossFraction;
     }

@@ -160,10 +160,19 @@ namespace SeaSubmarines {
         }
         g.holdingFireline=true; g.target=target; g.route.SetNavalTarget(target);
     }
-    int TargetRank(const CCircuitDef@ definition, int flags) {
+    // D-301: hunter subs (Barracuda, Predator, Architeuthis) are built to kill
+    // subs; their own BAR target categories prefer ships, so rank a submerged
+    // mobile contact with the anti-sub ships for them.
+    bool Hunter(const CCircuitDef@ d) {
+        if (d is null) return false;
+        const string name=d.GetName();
+        return name=="armsubk" || name=="corshark" || name=="leganavybattlesub";
+    }
+    int TargetRank(const CCircuitDef@ definition, int flags, const CCircuitDef@ own=null) {
+        const bool submerged=(flags&2)!=0 && (flags&StaticContactMask)==0;
         return SeaMath::SubmarineTargetRank(definition !is null && SeaProtection::Flagship(definition),
             (flags&StaticContactMask)!=0,(flags&UnknownContactMask)!=0,(flags&FactoryContactMask)!=0,
-            (flags&4)!=0);
+            (flags&4)!=0 || (Hunter(own) && submerged));
     }
     void Reset() { ready=false; shorelineSectors.resize(0); owners.deleteAll(); expiry.deleteAll(); replacementLines.resize(0); }
     void Init() {

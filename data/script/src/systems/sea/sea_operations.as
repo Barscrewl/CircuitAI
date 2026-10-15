@@ -51,7 +51,15 @@ namespace SeaOperations {
         // ownership. This is the finite ordinary naval sensor/ABM roster.
         const string name=d.GetName();
         return name=="armsjam" || name=="corsjam" || name=="leganavyradjamship"
-            || name=="armantiship" || name=="corantiship" || name=="leganavyantinukecarrier";
+            || name=="armantiship" || name=="corantiship" || name=="leganavyantinukecarrier"
+            || (Global::RoleSettings::Sea::FleetAAEscort && FleetAA(d));
+    }
+    // D-301: fleet AA sits inside the fleet (meta: Dragonslayer/Arrow Storm/
+    // Notus behind the cruiser line, Iapetus 200-300 behind it), not on a
+    // home patrol 2400 from the start. Skater/Herring stay scouts.
+    bool FleetAA(const CCircuitDef@ d) {
+        const string name=d.GetName();
+        return name=="armaas" || name=="corarch" || name=="leganavyaaship" || name=="legnavyaaship";
     }
     bool Siege(const CCircuitDef@ d) {
         for (uint i=0;i<SeaCombat::roster.length();++i)
@@ -75,7 +83,9 @@ namespace SeaOperations {
         if (u.task is null) return true;
         if (u.task.GetType()==int(Task::Type::PLAYER) || u.task.GetType()==int(Task::Type::RETREAT) || u.task.IsExternalControlled()) return false;
         IFighterTask@ f=cast<IFighterTask>(u.task);
-        if (f !is null && f.GetFightType()==int(Task::FightType::AA)) return false;
+        // Native AA tasks stay native, except the fleet AA escort (D-301).
+        if (f !is null && f.GetFightType()==int(Task::FightType::AA)
+            && !(Global::RoleSettings::Sea::FleetAAEscort && FleetAA(d))) return false;
         return f !is null;
     }
     void Leave() {
@@ -119,7 +129,8 @@ namespace SeaOperations {
             const int membershipLimit=Global::RoleSettings::Sea::CoordinatedFleet && SeaSubmarines::Handles(u.circuitDef)
                 ? AiMax(1,Global::RoleSettings::Sea::SubmarinePerimeterGroupSize) : Global::RoleSettings::Sea::FleetCohortMaximum;
             // Split idle patrols once through the existing lifecycle census.
-            // Combat leases stay intact; regional focus still shares targets.
+            // Combat leases stay intact; submarine focus and the surface task
+            // force (D-300) share targets across cohorts.
             if (index>=0 && groups[index].target<0 && int(groups[index].ids.length())>=membershipLimit) index=-1;
             bool joining=index<0;
             if (index<0) {
@@ -191,6 +202,51 @@ namespace SeaOperations {
         if (Global::RoleSettings::Sea::CoordinatedFleet && SeaSubmarines::Handles(definition))
             return AiMax(1,Global::RoleSettings::Sea::FleetCohortMaximum);
         return AiMin(12,AiMax(3,int(definition.GetMaxRange()*.9f/Global::RoleSettings::Sea::FleetLaneSpacing)));
+    }
+    // D-300 surface task force. Cohorts stay per hull (formation lanes, ASW
+    // slots, fireline and siege owners need one definition); the task force
+    // only shares an objective. One O(G) pass per Tick builds one lead per
+    // water body; followers read it in O(1). Rebuilt every Tick from the
+    // previous objectives, so no lifetime beyond one census.
+    class TaskForce { int lead=-1, target=-1, ships=0; float value=0; AIFloat3 centre, goal; }
+    dictionary taskForces;
+    bool SurfaceCombat(Cohort@ g) {
+        const CCircuitDef@ d=ai.GetCircuitDef(g.defId);
+        return d !is null && !SeaSubmarines::Handles(d) && !SeaSubmarines::HoldsFireline(d) && !Siege(d) && !Escort(d)
+            && !d.IsRoleAny(Unit::Role::SCOUT.mask) && d.HasSurfToLand();
+    }
+    void BuildTaskForces() {
+        taskForces.deleteAll();
+        if (!Global::RoleSettings::Sea::SurfaceTaskForce) return;
+        for (uint i=0;i<groups.length();++i) {
+            Cohort@ g=groups[i];
+            if (g.ids.length()==0 || !SurfaceCombat(g)) continue;
+            const string key=""+g.body;
+            TaskForce@ force;
+            if (!taskForces.get(key,@force) || force is null) { @force=TaskForce(); taskForces.set(key,@force); }
+            force.ships+=int(g.ids.length());
+            // Lead: a released cohort with a real target, most metal first,
+            // then the lower serial (deterministic). Withdrawal/bait states
+            // (-2, -5, -6) never lead.
+            if (!g.released || g.target<0) continue;
+            const float value=ai.GetCircuitDef(g.defId).costM*float(g.ids.length());
+            if (value>force.value || (value==force.value && force.lead>=0 && g.serial<force.lead)) {
+                force.value=value; force.lead=g.serial; force.target=g.target; force.centre=g.centre; force.goal=g.goal;
+            }
+        }
+    }
+    TaskForce@ Follows(Cohort@ g) {
+        if (!Global::RoleSettings::Sea::SurfaceTaskForce || !SurfaceCombat(g)) return null;
+        TaskForce@ force;
+        if (!taskForces.get(""+g.body,@force) || force is null || force.lead<0 || force.lead==g.serial) return null;
+        const float radius=Global::RoleSettings::Sea::TaskForceRadius;
+        return MapHelpers::SqDist(g.centre,force.centre)<=radius*radius ? force : null;
+    }
+    int TaskForceShips(Cohort@ g) {
+        if (!Global::RoleSettings::Sea::SurfaceTaskForce || !SurfaceCombat(g)) return int(g.ids.length());
+        TaskForce@ force;
+        if (!taskForces.get(""+g.body,@force) || force is null) return int(g.ids.length());
+        return AiMax(int(g.ids.length()),force.ships);
     }
     bool Route(Cohort@ g, const AIFloat3 &in goal, bool withdrawing, bool scout, bool hold=false, bool transit=false, bool cautious=true) {
         CCircuitUnit@ lead=ai.GetTeamUnit(g.ids[0]); if (lead is null) return false;
@@ -304,7 +360,9 @@ namespace SeaOperations {
         const string name=d.GetName();
         // These surfaced ASW hulls must use depth-charge/torpedo range, not
         // the 700-elmo surface cannon. Legion destroyers have no ASW weapon.
-        if (g.route is null || (name!="armroy" && name!="corroy" && name!="legnavyfrigate")) return;
+        // D-301: the T2 cruisers carry depth charges too (450).
+        if (g.route is null || (name!="armroy" && name!="corroy" && name!="legnavyfrigate"
+            && name!="armcrus" && name!="corcrus" && name!="leganavycruiser")) return;
         // Legion's 460-range torpedo exceeds its 400-radius own sonar. Its
         // script lever retains self-detection when the forward sonar is lost;
         // Armada/Cortex destroyers can use their normal firing margin.
@@ -410,6 +468,7 @@ namespace SeaOperations {
             const string bodyKey=""+groups[i].body;
             if (!reserves.exists(bodyKey)) reserves.set(bodyKey,groups[i].serial);
         }
+        BuildTaskForces();
         const int contacts=aiBattle.GetSeaForceCount(); // legal SEA extension; AIR snapshot unchanged
         for (uint k=0;k<groups.length();++k) {
             Cohort@ g=groups[k]; if (g.ids.length()==0) continue;
@@ -430,7 +489,11 @@ namespace SeaOperations {
             const bool subWeapon=def.HasSurfToWater() || def.HasSubToWater();
             const bool submarine=SeaSubmarines::Handles(def);
             const bool fireline=SeaSubmarines::HoldsFireline(def);
-            const int preferredFlagship=submarine && Global::RoleSettings::Sea::CoordinatedFleet ? SeaSubmarines::Preferred(g) : -1;
+            TaskForce@ force=Follows(g);
+            // Submarines prefer the flagship focus; surface followers prefer
+            // the task force lead's target, if it passes their own filters.
+            const int preferredFlagship=submarine && Global::RoleSettings::Sea::CoordinatedFleet ? SeaSubmarines::Preferred(g)
+                : force !is null ? force.target : -1;
             int bestTargetRank=-1;
             float nearest=1e30f, enemySubs=0, cover=0, bestScore=-1, enemyCost=0, localEnemy=0, localAlly=0;
             CCircuitDef@ targetDef=null; int targetFlags=0;
@@ -480,7 +543,7 @@ namespace SeaOperations {
                 // Reuse this cohort's existing contact pass: no per-unit scan
                 // or timer. Observed amphibious crossings preempt patrol,
                 // assembly and old pursuit exclusions on the next normal tick.
-                const int targetRank=intercept ? SeaMath::SubmarineFlagshipTarget+1 : submarine ? SeaSubmarines::TargetRank(candidate,flags) : 0;
+                const int targetRank=intercept ? SeaMath::SubmarineFlagshipTarget+1 : submarine ? SeaSubmarines::TargetRank(candidate,flags,def) : 0;
                 if (submarine && targetRank==0) continue;
                 if (submarine && (flags&8)!=0 && aiBattle.Height(p)>=0) continue;
                 const bool mobile=candidate !is null && candidate.IsMobile();
@@ -493,8 +556,16 @@ namespace SeaOperations {
                 // alternate IDs and immediately cancel the escape route.
                 if (mobile && !urgent && ai.frame<g.avoidUntil
                     && MapHelpers::SqDist(p,g.avoidCentre)<radius*radius) continue;
-                const float score=SeaMath::ObjectiveScore(flags,candidate !is null && candidate.GetBuildSpeed()>0,
+                float score=SeaMath::ObjectiveScore(flags,candidate !is null && candidate.GetBuildSpeed()>0,
                     aiBattle.GetSeaForceCost(i),sqrt(dist),urgent,id==g.target);
+                if (mobile && candidate.GetBuildSpeed()<=0) {
+                    // D-301: an armed warship inside either side's reach is the
+                    // fight in front of us; it outranks a distant yard.
+                    const float reach=AiMax(def.GetMaxRange(subWeapon && (flags&2)!=0 ? 2 : 1),candidate.GetMaxRange(1))
+                        +Global::RoleSettings::Sea::EngagedTargetMargin;
+                    const bool armed=candidate.HasSurfToLand() || candidate.HasSubToLand() || candidate.HasSurfToWater() || candidate.HasSubToWater();
+                    score=SeaMath::EngagedObjectiveScore(score,armed && dist<reach*reach,Global::RoleSettings::Sea::EngagedTargetMultiplier);
+                }
                 if (targetRank>bestTargetRank || (targetRank==bestTargetRank
                     && (id==preferredFlagship || (target!=preferredFlagship && score>bestScore)))) {
                     bestTargetRank=targetRank;
@@ -560,7 +631,9 @@ namespace SeaOperations {
                     Cohort@ candidate=groups[j];
                     if (candidate is g || candidate.body!=g.body || candidate.ids.length()==0) continue;
                     const CCircuitDef@ hull=ai.GetCircuitDef(candidate.defId);
-                    if (Escort(hull) || hull.IsRoleAny(Unit::Role::SCOUT.mask)) continue;
+                    // D-301: anchor on surface warships only, never a sub line
+                    // or a siege cohort that went native.
+                    if (Escort(hull) || hull.IsRoleAny(Unit::Role::SCOUT.mask) || !SurfaceCombat(candidate)) continue;
                     const float value=hull.costM*float(candidate.ids.length())/(1.0f+sqrt(MapHelpers::SqDist(g.centre,candidate.centre))/1600.0f);
                     if (value>best) { best=value; @anchor=candidate; }
                 }
@@ -590,7 +663,7 @@ namespace SeaOperations {
                 // pursuit admission below can still choose to disengage.
                 const float immediateRange=targetDef is null ? 0 : AiMax(def.GetMaxRange(targetSub || submarine ? 2 : 1),targetDef.GetMaxRange(targetSub ? 2 : 1))+128;
                 g.released=targetUrgent || g.health<.95f || target>=0 && nearest<immediateRange*immediateRange
-                    || SeaMath::ReleaseFleet(int(g.ids.length()),ai.frame-g.created,
+                    || SeaMath::ReleaseFleet(TaskForceShips(g),ai.frame-g.created,
                         submarine && Global::RoleSettings::Sea::CoordinatedFleet ? Global::RoleSettings::Sea::SubmarineDepartureCount : Global::RoleSettings::Sea::FleetReleaseCount,
                         (submarine && Global::RoleSettings::Sea::CoordinatedFleet ? Global::RoleSettings::Sea::SubmarineDepartureSeconds : Global::RoleSettings::Sea::FleetReleaseSeconds)*SECOND);
                 if (!g.released) {
@@ -706,6 +779,19 @@ namespace SeaOperations {
                     continue;
                 }
                 target=-1;
+                if (force !is null) {
+                    // Join the lead's fight instead of an independent search.
+                    if (aiBattle.WaterBody(force.goal,false)!=g.body) {
+                        Invariants::Violation("INV-219",g.key,"SEA task force goal outside the follower's water body");
+                    } else if (MapHelpers::SqDist(g.goal,force.goal)>384.0f*384.0f || g.route is null || g.route.IsDead()) {
+                        goal=force.goal;
+                        if (Route(g,goal,false,false,false,true,true)) {
+                            g.target=-7; g.route.SetNavalTarget(-1);
+                            GenericHelpers::LogUtil("[SEA][TaskForce] cohort="+g.serial+" "+def.GetName()+" joins lead="+force.lead+" target="+force.target,1);
+                        }
+                        continue;
+                    } else continue;
+                }
                 if (ai.frame-g.ordered<Global::RoleSettings::Sea::FleetSearchSeconds*SECOND
                     && g.route !is null && !g.route.IsDead() && !g.route.IsAtEnd(ai.GetTeamUnit(g.ids[0]))) continue;
                 ++g.search; goal=Search(g);

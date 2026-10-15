@@ -90,7 +90,7 @@ def prepare(a):
     starts=d/'starts.as'; starts.write_text(''.join(f'StartSpot(AIFloat3({x},0,{z}), AiRole::SEA, false),\n' for x,z in case.get('starts',[[2300,4400],[4600,4400]])))
     call=[sys.executable,str(HERE/'playtest.py')]
     subprocess.run(call+['stage','--dir',str(d),'--dll',str(a.dll),'--data',str(a.data),'--map',case.get('map','Glacial Gap v1.1'),'--map-file',str(starts),
-        '--game',getattr(a,'game','Beyond All Reason test-31479-433a460'),'--engine','recoil_2026.07.04','--role','SEA','--roles','all','--ally-spots','1','--side',a.side,
+        *(['--game',a.game] if getattr(a,'game',None) else []),'--engine','recoil_2026.07.04','--role','SEA','--roles','all','--ally-spots','1','--side',a.side,
         '--speed',str(a.speed),'--minutes',str(a.minutes),'--shots',case.get('shots','0.4@2400@3400:4450,0.7@2400@3400:4450,3@3200@3400:4450,7@4000@3400:4450'),
         '--width','1280','--height','720','--lean-render','--bonus','0','--ai-option','profile='+a.profile,'--ai-option','random_seed='+str(a.seed),
         '--modoption','deathmode=neverend','--modoption','startenergy=1000000','--modoption','startenergystorage=1000000',
@@ -267,7 +267,7 @@ namespace SeaRetreatProbe {
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--case',default='surface-line');p.add_argument('--dll',required=True,type=Path)
     p.add_argument('--data',type=Path,default=ROOT/'data');p.add_argument('--side',default='armada');p.add_argument('--profile',default='experimental_hard')
-    p.add_argument('--game',default='Beyond All Reason test-31479-433a460')
+    p.add_argument('--game',default=None)
     p.add_argument('--control',action='store_true');p.add_argument('--seed',type=int,default=1891);p.add_argument('--minutes',type=int,default=8);p.add_argument('--speed',type=int,default=10)
     p.add_argument('--legacy-layout',action='store_true',help='Verify adaptive combat independently of experimental building')
     p.add_argument('--cost',action='store_true',help='Record native phases and inclusive SEA policy CPU; run comparisons serially')
