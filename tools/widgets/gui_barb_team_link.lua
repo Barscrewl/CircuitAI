@@ -31,11 +31,17 @@
 -- never broadcasts, so hosting two ally teams locally cannot cross-steer them.
 -- Wire formats: data/script/src/systems/presentation/widget_link.as and commands.as.
 -- Topics shown: roster, role, orphan, donation, ferry, spam, seaassist, layout.
+-- Terrain map (D-323, D-326): the "Terrain" row (Show / Legend / Hide) or
+-- /barbterrain draws the map analysis one BARb computed at game start and wrote
+-- once to <writeDir>/LuaUI/Config/BARb/field/map.txt: the ground class of every
+-- cell (deep, water, shallows, flat, rough, steep, cliff, lava), land masses,
+-- seas and ponds, regions, crossings and cliffs, shores (beach / steep / sheer),
+-- chokes, high ground and summits, geos, islands. Read-only; it asks no AI anything.
 
 function widget:GetInfo()
 	return {
 		name    = "BARb team link",
-		desc    = "Allied BARb AIs: roster, events, runtime role switching, layout overlay (host only)",
+		desc    = "Allied BARb AIs: roster, events, runtime role switching, layout overlay, terrain map (host only)",
 		author  = "s3k-CircuitAI",
 		date    = "2026-09-25",
 		layer   = 0,
@@ -625,6 +631,1285 @@ return {Receive=receive,Draw=draw,SetMode=setMode,Mode=function() return mode en
     MouseMove=function(x,y) if drag then dockX=drag[3]+x-drag[1]; dockY=drag[4]+y-drag[2]; return true end end}
 end)()
 
+-- ---------------------------------------------------------------- field
+-- The battlefield map analysis (D-323): one file per game written once by the
+-- BARb AI that ran the analysis, LuaUI/Config/BARb/field/map.txt, drawn here as
+-- a terrain map (D-326): ground classes, coastlines, crossings, cliffs, summits.
+-- The widget asks no AI for anything: it reads the
+-- file when the view is turned on, parses it once (spread over Update calls),
+-- compiles one display list per layer and never reads again. The pattern of a line
+-- says who can cross it and the shape of a mark what it is; colour only repeats that,
+-- so the map reads the same to colour-blind players. Every line is cased in ink.
+-- Grammar: projects/circuitai/battlefield-analysis-implementation.md, 6.4.
+local field = (function()
+local PATH = "LuaUI/Config/BARb/field/map.txt"
+local LAYERS = {"ground","theatres","regions","crossings","barriers","shores","chokes","key","labels"}
+local STRATEGIC = {ground=true, theatres=true, key=true}
+local options = {legend=false, blueprint=false, dim=false, detail="auto", pick=false, lodHeight=6000, collapsed=false, side=nil}
+local layers = {}
+for _,k in ipairs(LAYERS) do layers[k]=true end
+local on = false                 -- the view is shown
+local model = nil                -- parsed records
+local lists = {}                 -- layer -> display list id
+local labelsAll = {}             -- {x,y,z,text,size,minH,maxH,r,g,b}
+local status = "Terrain map hidden"
+local parse = nil                -- incremental parse state
+local lastExists = nil           -- wall timer of the last VFS.FileExists check
+local allyProvider = nil         -- function() -> the panel's selected ally team
+local groundOff = false          -- Spring.SetDrawGround(false) is in effect
+local focus = nil                -- {kind, id} focused record
+local focusList = nil
+local hover = nil                -- inspector text lines
+local hoverTimer = nil
+local controls = {}              -- legend panel hit regions {x1,y1,x2,y2,id=,action=}
+local legendRect = nil           -- the panel's screen box as last drawn: clicks inside never reach the game
+local dockX, dockY, drag, pressed
+local seq = nil
+
+-- Okabe-Ito, colour-blind safe. Every colour difference is repeated by a line style.
+local K = {
+    white  = {1,1,1},
+    grey   = {0.72,0.72,0.74},
+    orange = {0.90,0.62,0.00},
+    sky    = {0.34,0.71,0.91},
+    green  = {0.00,0.62,0.45},
+    yellow = {0.94,0.89,0.26},
+    blue   = {0.00,0.45,0.70},
+    verm   = {0.84,0.37,0.00},
+    purple = {0.80,0.47,0.65},
+    teal   = {0.15,0.65,0.62},
+    ink    = {0.025,0.045,0.07},
+}
+local AVENUE_PALETTE = {K.orange, K.sky, K.green, K.yellow, K.purple, K.blue, K.verm, K.grey}
+local CLASS_NAMES = {[0]="vehicle","bot","amphibious","hover","all-terrain","ship","submarine"}
+local BIT_VEH, BIT_BOT, BIT_AMPH, BIT_HOVER = 0, 1, 2, 3
+local mint, muted = {0.35,0.9,0.73,1}, {0.65,0.73,0.8,1}
+local inkPanel = {0.025,0.045,0.07,0.94}
+
+local function split(s, sep)
+    local out, from = {}, 1
+    while true do
+        local a, b = string.find(s, sep, from, true)
+        if not a then out[#out+1] = string.sub(s, from); break end
+        out[#out+1] = string.sub(s, from, a-1); from = b+1
+    end
+    return out
+end
+local function poly(s)
+    local p = {}
+    if not s then return p end
+    for x, z in string.gmatch(s, "(-?%d+),(-?%d+)") do p[#p+1] = tonumber(x); p[#p+1] = tonumber(z) end
+    return p
+end
+local function loops(s)
+    -- theatre and region outlines: several closed loops joined by '/'
+    local out = {}
+    if not s then return out end
+    for part in string.gmatch(s, "[^/]+") do
+        local p = poly(part)
+        if #p >= 4 then out[#out+1] = p end
+    end
+    return out
+end
+local function spine(s)
+    local p = {}
+    if not s then return p end
+    for x, z, w in string.gmatch(s, "(-?%d+),(-?%d+),(-?%d+)") do p[#p+1] = {tonumber(x), tonumber(z), tonumber(w)} end
+    return p
+end
+local function ints(s)
+    local out = {}
+    if not s then return out end
+    for v in string.gmatch(s, "-?%d+") do out[#out+1] = tonumber(v) end
+    return out
+end
+local function num(v, d) return tonumber(v) or d or 0 end
+local function hasBit(mask, bit) return math.floor((mask or 0) / 2^bit) % 2 == 1 end
+local function loose(name) return string.lower((string.gsub(name or "", "[%s%._%-]", ""))) end
+local function groundY(x, z) return math.max(0, Spring.GetGroundHeight(x, z)) + 6 end
+
+local function viewerAlly()
+    if options.side then return options.side end
+    if Spring.GetSpectatingState() and allyProvider then
+        local a = allyProvider(); if a then return a end
+    end
+    return Spring.GetMyAllyTeamID()
+end
+local function isWaterChar(c) return c=="water" or c=="deep" or c=="coast" or c=="strait" end
+
+-- ---- file discovery and incremental parsing
+local function newModel()
+    return {classes={}, theatres={}, regions={}, boundaries={}, chokes={}, avenues={}, landings={}, standoff={},
+        sides={}, contact={}, keys={}, runs={}, groundRuns={}, rowRun={}, gw=0, gh=0, cell=32, name="", settings={}}
+end
+local function parseRecord(m, line)
+    local f = split(line, "|")
+    local k = f[1]
+    if k == "theatre" then
+        local id = num(f[2])
+        m.theatres[id] = {id=id, kind=f[3], name=f[4] or "", cells=num(f[5]), x=num(f[6]), z=num(f[7]), holders=num(f[8]), outline=loops(f[9])}
+    elseif k == "region" then
+        local id = num(f[2])
+        m.regions[id] = {id=id, theatre=num(f[3]), character=f[4] or "plain", cells=num(f[5]), medianW=num(f[6]), lowW=num(f[7]),
+            minH=num(f[8]), maxH=num(f[9]), lx=num(f[10]), lz=num(f[11]), outline=loops(f[12])}
+    elseif k == "boundary" then
+        m.boundaries[#m.boundaries+1] = {id=num(f[2]), kind=f[3], a=num(f[4]), b=num(f[5]), mask=num(f[6]), width=num(f[7]),
+            slope=num(f[8]), line=poly(f[9])}
+    elseif k == "choke" then
+        m.chokes[#m.chokes+1] = {id=num(f[2]), a=num(f[3]), b=num(f[4]), x=num(f[5]), z=num(f[6]), dx=num(f[7]), dz=num(f[8]), width=num(f[9])}
+    elseif k == "avenue" then
+        m.avenues[#m.avenues+1] = {id=num(f[2]), class=num(f[3]), name=f[4] or "", specialist=num(f[5])==1, length=num(f[6]),
+            regions=ints(f[7]), crossings=ints(f[8]), spine=spine(f[9]), outline=poly(f[10])}
+    elseif k == "landing" then
+        local so = ints(f[12])
+        local ov = f[13] and f[13] ~= "-" and ints(f[13]) or nil
+        m.landings[#m.landings+1] = {id=num(f[2]), kind=f[3], sea=num(f[4]), region=num(f[5]), side=num(f[6], -1), assault=num(f[7])==1,
+            rank=num(f[8]), mask=num(f[9]), width=num(f[10]), inland=num(f[11]), standoff={so[1] or -1, so[2] or -1, so[3] or -1},
+            overlook=ov, line=poly(f[14])}
+    elseif k == "standoff" then
+        m.standoff[#m.standoff+1] = {sea=num(f[2]), depth=num(f[3]), line=poly(f[4])}
+    elseif k == "side" then
+        m.sides[#m.sides+1] = {ally=num(f[2]), box=poly(f[3]), cells=num(f[4]), lx=num(f[5]), lz=num(f[6])}
+    elseif k == "contact" then
+        m.contact[#m.contact+1] = poly(f[2])
+    elseif k == "key" then
+        m.keys[#m.keys+1] = {kind=f[2], x=num(f[3]), z=num(f[4]), value=num(f[5]), region=num(f[6], -1), side=num(f[7], -1), avenue=f[8]}
+    elseif k == "class" then
+        m.classes[num(f[2])] = {name=f[3] or "", slope=num(f[4]), minDepth=num(f[5]), maxDepth=num(f[6]), flags=num(f[7])}
+    elseif k == "settings" then
+        for key, v in string.gmatch(f[2] or "", "([%w_]+)=([^;]+)") do m.settings[key] = tonumber(v) or v end
+    elseif k == "ground" then
+        -- D-326: run-length ground class per cell, same form as the region ids
+        local runs, start = m.groundRuns, 0
+        for id, count in string.gmatch(f[2] or "", "(%d+)%*(%d+)") do
+            runs[#runs+1] = {start, tonumber(id), tonumber(count)}
+            start = start + tonumber(count)
+        end
+    elseif k == "cells" then
+        -- Run-length region ids, kept as runs: regionOf(cell) scans the few runs of its row.
+        local runs, start = m.runs, 0
+        for id, count in string.gmatch(f[2] or "", "(%d+)%*(%d+)") do
+            runs[#runs+1] = {start, tonumber(id), tonumber(count)}
+            start = start + tonumber(count)
+        end
+        m.cellCount = start
+    end
+end
+local function indexRuns(m)
+    local gw = math.max(1, m.gw)
+    m.rowRun = {}
+    for i, r in ipairs(m.runs) do
+        local row0 = math.floor(r[1] / gw)
+        local row1 = math.floor((r[1] + r[3] - 1) / gw)
+        for row = row0, row1 do if not m.rowRun[row] then m.rowRun[row] = i end end
+    end
+end
+local function regionOf(m, x, z)
+    if not m or m.gw == 0 then return nil end
+    local cx, cz = math.floor(x / m.cell), math.floor(z / m.cell)
+    if cx < 0 or cz < 0 or cx >= m.gw or cz >= m.gh then return nil end
+    local c = cz * m.gw + cx
+    local i = m.rowRun[cz]; if not i then return nil end
+    while m.runs[i] do
+        local r = m.runs[i]
+        if c < r[1] then return nil end
+        if c < r[1] + r[3] then return r[2] end
+        i = i + 1
+    end
+    return nil
+end
+
+local compileAll   -- forward
+local function beginParse(text)
+    local fmt, name, gw, gh, cell, fseq = string.match(text, "^barbfield|(%d+)|([^|]*)|(%d+)|(%d+)|(%d+)|(%d+)")
+    if not fmt then return false, "unexpected header" end
+    if tonumber(fmt) ~= 1 then return false, "format " .. tostring(fmt) end
+    local trailer = "\nend|" .. fseq
+    local tp = string.find(text, trailer, 1, true)
+    if not tp then return false, "torn file" end
+    local after = string.sub(text, tp + #trailer, tp + #trailer)
+    if after ~= "" and after ~= "\n" and after ~= "\r" then return false, "torn file" end
+    if name ~= "" and Game.mapName and loose(name) ~= loose(Game.mapName)
+        and not string.find(loose(Game.mapName), loose(name), 1, true) and not string.find(loose(name), loose(Game.mapName), 1, true) then
+        return false, "file is for map '" .. name .. "'"
+    end
+    local m = newModel()
+    m.name, m.gw, m.gh, m.cell = name, tonumber(gw), tonumber(gh), tonumber(cell)
+    parse = {text=text, pos=1, m=m, total=#text, seq=tonumber(fseq)}
+    return true
+end
+local function stepParse()
+    if not parse then return end
+    local t0 = Spring.GetTimer()
+    local text, pos = parse.text, parse.pos
+    local lines = 0
+    while true do
+        local e = string.find(text, "\n", pos, true)
+        local line = e and string.sub(text, pos, e-1) or string.sub(text, pos)
+        if string.sub(line, -1) == "\r" then line = string.sub(line, 1, -2) end
+        if #line > 0 and not string.find(line, "^barbfield") and not string.find(line, "^end|") then parseRecord(parse.m, line) end
+        pos = e and e + 1 or #text + 1
+        lines = lines + 1
+        if pos > #text then break end
+        if lines % 64 == 0 and Spring.DiffTimers(Spring.GetTimer(), t0) > 0.002 then break end
+    end
+    parse.pos = pos
+    if pos > #text then
+        local m = parse.m
+        indexRuns(m)
+        model, seq = m, parse.seq
+        parse = nil
+        compileAll()
+    else
+        status = string.format("Reading terrain analysis %d%%", math.floor(100 * pos / math.max(1, #text)))
+    end
+end
+local function tryLoad()
+    if not (VFS and VFS.LoadFile and VFS.FileExists) then status = "VFS unavailable"; return end
+    local now = Spring.GetTimer()
+    if lastExists and Spring.DiffTimers(now, lastExists) < 2 then return end
+    lastExists = now
+    if not VFS.FileExists(PATH, VFS.RAW) then
+        status = "Terrain analysis not published (needs a locally hosted BARb with field.enabled)"
+        return
+    end
+    local ok, text = pcall(VFS.LoadFile, PATH, VFS.RAW)
+    if not ok or type(text) ~= "string" or #text == 0 then status = "Cannot read " .. PATH; return end
+    local good, err = beginParse(text)
+    if not good then status = "Terrain file skipped: " .. tostring(err) end
+end
+
+-- ---- line generation helpers
+-- Every stroke goes through seg(). In world space seg() splits long segments so the
+-- line follows the terrain; the legend swaps in a flat screen-space emitter (`emit`)
+-- and shrinks the pattern lengths (`patScale`), so a legend row is drawn by exactly
+-- the code that draws the map. Every line layer is compiled twice into its display
+-- list: an ink under-stroke three pixels wider (`haloPass`) and then the colour, so a
+-- line keeps its contrast over bright sand, dark forest or another line.
+local SEG_MAX = 128   -- elmos; longer segments are split so the line follows the terrain
+local emit = nil      -- nil: world space; else function(ax, az, bx, bz) emitting 2D vertices
+local patScale = 1    -- pattern lengths are in elmos; the legend scales them to pixels
+local haloPass = false
+local function seg(ax, az, bx, bz)
+    if emit then emit(ax, az, bx, bz); return end
+    local dx, dz = bx - ax, bz - az
+    local len = math.sqrt(dx*dx + dz*dz)
+    local n = math.max(1, math.ceil(len / SEG_MAX))
+    local px, pz = ax, az
+    for i = 1, n do
+        local f = i / n
+        local x, z = ax + dx*f, az + dz*f
+        gl.Vertex(px, groundY(px, pz), pz); gl.Vertex(x, groundY(x, z), z)
+        px, pz = x, z
+    end
+end
+local function tri(ax, az, bx, bz, cx, cz)
+    -- a filled triangle (inside gl.BeginEnd(GL.TRIANGLES)); small enough to sit on the ground
+    if emit then gl.Vertex(ax, az); gl.Vertex(bx, bz); gl.Vertex(cx, cz); return end
+    gl.Vertex(ax, groundY(ax, az), az); gl.Vertex(bx, groundY(bx, bz), bz); gl.Vertex(cx, groundY(cx, cz), cz)
+end
+local function solid(p)
+    for i = 3, #p, 2 do seg(p[i-2], p[i-1], p[i], p[i+1]) end
+end
+local function solidLoops(ls) for _, p in ipairs(ls) do solid(p) end end
+-- Chaikin corner cutting: the file's lines follow 32-elmo cell edges (a staircase on any
+-- diagonal); two passes turn them into readable curves within a quarter cell of the edge.
+-- A loop (first point == last point) stays closed; an open chain keeps its end points.
+local SMOOTH_PASSES = 2
+local SMOOTH_TOL = 32   -- elmos; set from the model's cell size (one cell) when it loads
+-- Douglas-Peucker on a flat x,z list between point indices i0 and i1 (1-based point
+-- numbers); appends kept points (excluding i0) to out. A 32-elmo staircase on a
+-- diagonal deviates about 11 elmos from the straight line and a 2:1 staircase about
+-- 28, so one cell collapses both to their diagonal while real bends survive.
+local function dpSegment(p, i0, i1, tol, out)
+    local ax, az = p[2*i0-1], p[2*i0]
+    local bx, bz = p[2*i1-1], p[2*i1]
+    local dx, dz = bx-ax, bz-az
+    local len = math.sqrt(dx*dx + dz*dz)
+    local best, bestI = -1, nil
+    for i = i0+1, i1-1 do
+        local x, z = p[2*i-1], p[2*i]
+        local d
+        if len == 0 then d = math.sqrt((x-ax)^2 + (z-az)^2)
+        else d = math.abs(dx*(z-az) - dz*(x-ax)) / len end
+        if d > best then best, bestI = d, i end
+    end
+    if bestI and best > tol then
+        dpSegment(p, i0, bestI, tol, out)
+        dpSegment(p, bestI, i1, tol, out)
+    else
+        out[#out+1] = bx; out[#out+1] = bz
+    end
+end
+local function simplify(p, tol, closed)
+    local n = math.floor(#p / 2)
+    if n < 3 then return p end
+    local out = {p[1], p[2]}
+    if closed then
+        -- anchor a loop at its first point and the point farthest from it
+        local far, farI = -1, 2
+        for i = 2, n-1 do
+            local d = (p[2*i-1]-p[1])^2 + (p[2*i]-p[2])^2
+            if d > far then far, farI = d, i end
+        end
+        dpSegment(p, 1, farI, tol, out)
+        dpSegment(p, farI, n, tol, out)
+    else
+        dpSegment(p, 1, n, tol, out)
+    end
+    return out
+end
+local function smooth(p)
+    if #p < 6 then return p end
+    local closed = p[1] == p[#p-1] and p[2] == p[#p]
+    local cur = simplify(p, SMOOTH_TOL, closed)
+    if #cur < 6 then return cur end
+    for _ = 1, SMOOTH_PASSES do
+        local out = {}
+        local n = #cur - (#cur % 2)   -- flat x,z pairs; ignore a dangling odd value
+        if not closed then out[1], out[2] = cur[1], cur[2] end
+        for i = 3, n, 2 do
+            local ax, az, bx, bz = cur[i-2], cur[i-1], cur[i], cur[i+1]
+            out[#out+1] = ax*0.75 + bx*0.25; out[#out+1] = az*0.75 + bz*0.25
+            out[#out+1] = ax*0.25 + bx*0.75; out[#out+1] = az*0.25 + bz*0.75
+        end
+        if closed then out[#out+1] = out[1]; out[#out+1] = out[2]
+        else out[#out+1] = cur[n-1]; out[#out+1] = cur[n] end
+        cur = out
+    end
+    return cur
+end
+local function smoothLoops(ls) local out = {}; for i, p in ipairs(ls) do out[i] = smooth(p) end; return out end
+-- Patterns: on/off run lengths in elmos repeated along the line, phase carried across
+-- vertices. The pattern, not the colour, is what tells two kinds of line apart.
+local PAT = {
+    longdash = {64, 24},
+}
+local function pattern(p, seq)
+    local n = #seq
+    local k, phase = 1, 0
+    for i = 3, #p, 2 do
+        local ax, az, bx, bz = p[i-2], p[i-1], p[i], p[i+1]
+        local dx, dz = bx-ax, bz-az
+        local len = math.sqrt(dx*dx + dz*dz)
+        if len > 0 then
+            dx, dz = dx/len, dz/len
+            local t = 0
+            while t < len do
+                local run = seq[k] * patScale - phase
+                local t2 = math.min(len, t + run)
+                if k % 2 == 1 then seg(ax+dx*t, az+dz*t, ax+dx*t2, az+dz*t2) end
+                if t2 >= len then phase = phase + (len - t) else phase = 0; k = k % n + 1 end
+                t = t2
+            end
+        end
+    end
+end
+local function hachures(p, every, length, towardLeft)
+    -- short ticks on one side of the line, every `every` elmos
+    every, length = every * patScale, length * patScale
+    local acc = every / 2
+    for i = 3, #p, 2 do
+        local ax, az, bx, bz = p[i-2], p[i-1], p[i], p[i+1]
+        local dx, dz = bx-ax, bz-az
+        local len = math.sqrt(dx*dx + dz*dz)
+        if len > 0 then
+            dx, dz = dx/len, dz/len
+            local nx, nz = -dz, dx
+            if not towardLeft then nx, nz = dz, -dx end
+            local t = acc
+            while t < len do
+                local x, z = ax+dx*t, az+dz*t
+                seg(x, z, x+nx*length, z+nz*length)
+                t = t + every
+            end
+            acc = t - len
+        end
+    end
+end
+local function double(p, off)
+    -- the line and a parallel copy `off` elmos to its left
+    solid(p)
+    off = off * patScale
+    for i = 3, #p, 2 do
+        local ax, az, bx, bz = p[i-2], p[i-1], p[i], p[i+1]
+        local dx, dz = bx-ax, bz-az
+        local len = math.sqrt(dx*dx+dz*dz)
+        if len > 0 then
+            local nx, nz = -dz/len*off, dx/len*off
+            seg(ax+nx, az+nz, bx+nx, bz+nz)
+        end
+    end
+end
+local function polyMid(p)
+    -- the point half way along the polyline's length
+    if #p < 2 then return 0, 0 end
+    if #p < 4 then return p[1], p[2] end
+    local total = 0
+    for i = 3, #p, 2 do local dx, dz = p[i]-p[i-2], p[i+1]-p[i-1]; total = total + math.sqrt(dx*dx+dz*dz) end
+    local half, acc = total / 2, 0
+    for i = 3, #p, 2 do
+        local dx, dz = p[i]-p[i-2], p[i+1]-p[i-1]
+        local len = math.sqrt(dx*dx+dz*dz)
+        if acc + len >= half and len > 0 then
+            local f = (half - acc) / len
+            return p[i-2] + dx*f, p[i-1] + dz*f
+        end
+        acc = acc + len
+    end
+    return p[#p-1], p[#p]
+end
+local function ibeam(x, z, dx, dz, half, serif)
+    -- a choke: the width bar perpendicular to (dx,dz) with a serif at each end along the crossing
+    local len = math.sqrt(dx*dx+dz*dz); if len == 0 then dx, dz, len = 1, 0, 1 end
+    dx, dz = dx/len, dz/len
+    local s = (serif or 14) * patScale
+    local lx, lz, rx, rz = x - dz*half, z + dx*half, x + dz*half, z - dx*half
+    seg(lx, lz, rx, rz)
+    seg(lx - dx*s, lz - dz*s, lx + dx*s, lz + dz*s)
+    seg(rx - dx*s, rz - dz*s, rx + dx*s, rz + dz*s)
+end
+local function triangle(x, z, r)
+    -- an upright triangle of "radius" r centred on (x, z); returns its corners for a fill
+    local lx, lz, rx, rz, tx, tz = x - r, z + r*0.75, x + r, z + r*0.75, x, z - r
+    seg(lx, lz, rx, rz); seg(lx, lz, tx, tz); seg(rx, rz, tx, tz)
+    return lx, lz, rx, rz, tx, tz
+end
+local function ngon(x, z, r, n)
+    local px, pz
+    for i = 0, n do
+        local a = i * 2 * math.pi / n
+        local cx, cz = x + math.cos(a)*r, z + math.sin(a)*r
+        if px then seg(px, pz, cx, cz) end
+        px, pz = cx, cz
+    end
+end
+local function stroke(c, a, w)
+    -- the current line colour and width; in the halo pass every line is a wider ink stroke
+    if haloPass then gl.Color(K.ink[1], K.ink[2], K.ink[3], 0.85); gl.LineWidth((w or 2) + 3)
+    else gl.Color(c[1], c[2], c[3], a or 1); gl.LineWidth(w or 2) end
+end
+local function setColour(c, a) gl.Color(c[1], c[2], c[3], a or 1) end   -- fills and marks only
+
+-- The style of every line. No two differ in colour alone, because the legend is read
+-- by colour-blind players too: the pattern carries the meaning and the colour only
+-- repeats it. Five line types in all: solid heavy (coast), solid thin (open border),
+-- long dash (a crossing some unit class can use; which one, the inspector says),
+-- double (ford), solid with ticks (nobody crosses; the ticks point down or to the water).
+local STYLE = {
+    coast    = {pat="solid",    w=3,   c=K.white,  a=0.9},
+    region   = {pat="solid",    w=1,   c=K.grey,   a=0.6},
+    crossing = {pat="longdash", w=2.5, c=K.white,  a=0.95},
+    ford     = {pat="double",   w=1.5, c=K.white,  a=0.9},
+    blocked  = {pat="ticked",   w=3,   c=K.verm,   a=0.95},
+    choke    = {pat="solid",    w=2.5, c=K.white,  a=0.95},
+    key      = {pat="solid",    w=1.5, c=K.yellow, a=0.95},
+}
+-- The ground classes the AI writes per cell (D-326), in file order. Each is a fill, a
+-- mark, or both; the mark alone tells the class on a monochrome print. The text is
+-- the legend row.
+local GROUND = {
+    [0] = {name="deep",    fill=K.blue,   alpha=0.30, mark=nil,       text="Deep water: ships sail it"},
+    [1] = {name="water",   fill=K.sky,    alpha=0.22, mark="wave",    text="Water, no ships: hovers and amphibious only"},
+    [2] = {name="shallow", fill=K.teal,   alpha=0.32, mark="dash",    text="Shallows, marsh: land units wade, slowed"},
+    [3] = {name="flat",    fill=nil,      alpha=0,    mark=nil,       text="Flat: vehicles drive"},
+    [4] = {name="rough",   fill=nil,      alpha=0,    mark="hatch",   text="Rough: vehicles slowed, bots fine"},
+    [5] = {name="steep",   fill=K.orange, alpha=0.12, mark="hatch2",  text="Steep: bots and amphibious climb, no vehicles"},
+    [6] = {name="cliff",   fill=K.verm,   alpha=0.16, mark="cross",   text="Cliff: all-terrain only, or nobody"},
+    [7] = {name="harm",    fill=K.verm,   alpha=0.30, mark="dot",     text="Lava, acid: deadly to everything that is not flying"},
+}
+local MARK_COLOUR = {wave=K.sky, dash=K.teal, hatch=K.grey, hatch2=K.orange, cross=K.verm, dot=K.verm}
+local function drawPat(st, p, left)
+    -- polyline p in style st's pattern (inside gl.BeginEnd(GL.LINES)); left: tick side
+    local pat = st.pat
+    if pat == "solid" then solid(p)
+    elseif pat == "double" then double(p, 10)
+    elseif pat == "ticked" then solid(p); hachures(p, 40, 18, left)
+    elseif PAT[pat] then pattern(p, PAT[pat])
+    else solid(p) end
+end
+local function strokeStyle(st, a) stroke(st.c, a or st.a, st.w) end
+
+local function regionIsWater(m, id) local r = m.regions[id]; return r and isWaterChar(r.character) end
+local function regionLabel(m, id) local r = m.regions[id]; if r then return r.lx, r.lz end return nil end
+local FILL_MAX_CELLS = 4   -- a fill quad spans at most this many cells so it can follow the ground
+local fillColour = {1, 1, 1, 0.2}   -- set by fillWith() before fillRuns(); per-vertex alpha needs it
+local function fillWith(c, a) fillColour = {c[1], c[2], c[3], a} end
+local function fillRuns(m, runs, table, want, waterY)
+    -- quads per run for the ids in `want` (set) over run-length `runs` ({start, id, count})
+    -- whose per-cell expansion is `table`: a flat fill with no triangulation.
+    -- waterY: a flat surface height for water fills; nil samples the ground at every corner.
+    -- Soft edge: a grid node whose four cells are not all in `want` gets alpha 0, so the
+    -- fill fades out over the border cell instead of showing a hard cell staircase
+    -- beside the smoothed border line. Cells with any faded corner are drawn one by
+    -- one; full-alpha runs are merged up to FILL_MAX_CELLS. The map edge counts as inside.
+    local gw, gh, cell = m.gw, m.gh, m.cell
+    local cr, cg, cb, ca = fillColour[1], fillColour[2], fillColour[3], fillColour[4]
+    local function y(x, z) if waterY then return waterY end return math.max(0, Spring.GetGroundHeight(x, z)) + 4 end
+    local function inside(col, row)
+        if col < 0 or row < 0 or col >= gw or row >= gh then return true end
+        local id = table[row * gw + col]
+        return id == nil or want[id] == true
+    end
+    -- node (nx, nz) is full when the four cells around it are inside
+    local function nodeFull(nx, nz)
+        return inside(nx-1, nz-1) and inside(nx, nz-1) and inside(nx-1, nz) and inside(nx, nz)
+    end
+    gl.BeginEnd(GL.QUADS, function()
+        local function vertex(nx, nz, full)
+            gl.Color(cr, cg, cb, full and ca or 0)
+            local x, z = nx*cell, nz*cell
+            gl.Vertex(x, y(x, z), z)
+        end
+        local function quad(row, col, take)
+            vertex(col, row, nodeFull(col, row)); vertex(col+take, row, nodeFull(col+take, row))
+            vertex(col+take, row+1, nodeFull(col+take, row+1)); vertex(col, row+1, nodeFull(col, row+1))
+        end
+        for _, r in ipairs(runs) do
+            if want[r[2]] then
+                local startCol, count, row = nil, 0, nil
+                for c = r[1], r[1] + r[3] - 1 do
+                    local rw, col = math.floor(c / gw), c % gw
+                    -- a cell is mergeable only when its four corners are all full
+                    local plain = nodeFull(col, rw) and nodeFull(col+1, rw) and nodeFull(col, rw+1) and nodeFull(col+1, rw+1)
+                    if plain and startCol and rw == row and count < FILL_MAX_CELLS then
+                        count = count + 1
+                    else
+                        if startCol then quad(row, startCol, count) end
+                        if plain then startCol, count, row = col, 1, rw
+                        else startCol, count = nil, 0; quad(rw, col, 1) end
+                    end
+                end
+                if startCol then quad(row, startCol, count) end
+            end
+        end
+    end)
+    gl.Color(cr, cg, cb, ca)
+end
+local function markCell(kind, x, z, q)
+    -- one cell's mark, centred on (x, z) with half size q (inside gl.BeginEnd(GL.LINES))
+    if kind == "hatch" then seg(x-q, z+q, x+q, z-q)
+    elseif kind == "hatch2" then seg(x-q, z+q, x+q, z-q); seg(x-q, z, x, z-q)
+    elseif kind == "cross" then seg(x-q, z-q, x+q, z+q); seg(x-q, z+q, x+q, z-q)
+    elseif kind == "dash" then seg(x-q, z, x+q, z)
+    elseif kind == "wave" then seg(x-q, z+q*0.3, x-q*0.3, z-q*0.3); seg(x-q*0.3, z-q*0.3, x+q*0.3, z+q*0.3); seg(x+q*0.3, z+q*0.3, x+q, z-q*0.3)
+    elseif kind == "dot" then seg(x-2, z, x+2, z) end
+end
+local function cellMarks(m, runs, want, kind, every)
+    -- a per-cell mark for the ids in `want`: every cell (every = 1) or every other (2)
+    local gw, cell = m.gw, m.cell
+    gl.BeginEnd(GL.LINES, function()
+        for _, r in ipairs(runs) do
+            if want[r[2]] then
+                for c = r[1], r[1] + r[3] - 1 do
+                    local row, col = math.floor(c / gw), c % gw
+                    if (row + col) % every == 0 then
+                        markCell(kind, col*cell + cell/2, row*cell + cell/2, cell * 0.3)
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function addLabel(x, z, textValue, size, minH, maxH, c)
+    if #labelsAll >= 200 then return end
+    labelsAll[#labelsAll+1] = {x, groundY(x, z) + 10, z, textValue, size, minH, maxH, c}
+end
+local function spaced(s) return (string.gsub(string.upper(s), ".", "%0 ")) end
+
+local function disposeLists()
+    for k, l in pairs(lists) do gl.DeleteList(l) end
+    lists = {}
+    if focusList then gl.DeleteList(focusList); focusList = nil end
+    labelsAll = {}
+end
+
+local function compileLayer(name, fn)
+    if lists[name] then gl.DeleteList(lists[name]) end
+    lists[name] = gl.CreateList(fn)
+end
+local function lineLayer(name, fn)
+    -- a line layer is compiled twice into one list: the ink under-stroke, then the colour
+    compileLayer(name, function() haloPass = true; fn(); haloPass = false; fn() end)
+end
+-- A summit is a plateau no land unit reaches: every one of its borders is a cliff, a
+-- sheer shore or the map edge, so only all-terrain units and aircraft get there.
+local REACHABLE = {open=true, ramp=true, climb=true, pass=true, ford=true, beach=true, steep=true}
+local function findSummits(m)
+    local reach = {}
+    for _, b in ipairs(m.boundaries) do
+        if REACHABLE[b.kind] then reach[b.a] = true; reach[b.b] = true end
+    end
+    m.summits = {}
+    for id, r in pairs(m.regions) do
+        if r.character == "plateau" and not reach[id] then m.summits[id] = true end
+    end
+end
+
+compileAll = function()
+    local m = model
+    if not m then return end
+    disposeLists()
+    -- One line per border. Every theatre and region edge is also a boundary record
+    -- (shore kinds between land and water, open/ramp/climb/cliff/pass between land
+    -- regions), so the classified boundary IS the border line; outlines are never
+    -- drawn on top of it. Smoothed copies are built once here.
+    SMOOTH_TOL = 1.0 * (m.cell or 32)
+    -- cell -> region id and cell -> ground class, expanded from the runs once, for the fill edges
+    m.cellRegion = {}
+    for _, r in ipairs(m.runs) do for c = r[1], r[1] + r[3] - 1 do m.cellRegion[c] = r[2] end end
+    m.cellGround = {}
+    m.groundCount = {}
+    for _, r in ipairs(m.groundRuns) do
+        m.groundCount[r[2]] = (m.groundCount[r[2]] or 0) + r[3]
+        for c = r[1], r[1] + r[3] - 1 do m.cellGround[c] = r[2] end
+    end
+    for _, t in pairs(m.theatres) do t.sm = smoothLoops(t.outline) end
+    for _, r in pairs(m.regions) do r.sm = smoothLoops(r.outline) end
+    for _, b in ipairs(m.boundaries) do b.sm = smooth(b.line) end
+    findSummits(m)
+    -- dim: one flat ink sheet over the map. The view draws with the depth test off, so
+    -- the sheet covers the terrain whatever its height and every line above it keeps
+    -- its contrast without blueprint mode's bare black.
+    compileLayer("dim", function()
+        local w, h = Game.mapSizeX, Game.mapSizeZ
+        gl.Color(K.ink[1], K.ink[2], K.ink[3], 0.55)
+        gl.BeginEnd(GL.QUADS, function()
+            gl.Vertex(-512, 0, -512); gl.Vertex(w+512, 0, -512); gl.Vertex(w+512, 0, h+512); gl.Vertex(-512, 0, h+512)
+        end)
+    end)
+    -- ground: the per-cell classes as fills and marks, straight from the file
+    compileLayer("ground", function()
+        for cls = 0, 7 do
+            local gd = GROUND[cls]
+            if m.groundCount[cls] and (gd.fill or gd.mark) then
+                local want = {[cls] = true}
+                if gd.fill then
+                    fillWith(gd.fill, gd.alpha)
+                    fillRuns(m, m.groundRuns, m.cellGround, want, (cls <= 2) and 2 or nil)
+                end
+                if gd.mark then
+                    gl.LineWidth(1)
+                    setColour(MARK_COLOUR[gd.mark], (gd.mark == "hatch") and 0.4 or 0.6)
+                    cellMarks(m, m.groundRuns, want, gd.mark, (gd.mark == "hatch" or gd.mark == "wave") and 2 or 1)
+                end
+            end
+        end
+    end)
+    -- theatres: with the shores layer on, a soft white halo under the classified shore
+    -- line (the coastline reads as one line); with shores off, a crisp white line
+    compileLayer("theatresHalo", function()
+        setColour(K.white, 0.18); gl.LineWidth(8)
+        gl.BeginEnd(GL.LINES, function() for _, t in pairs(m.theatres) do if t.kind ~= "land" then solidLoops(t.sm) end end end)
+    end)
+    lineLayer("theatres", function()
+        strokeStyle(STYLE.coast)
+        gl.BeginEnd(GL.LINES, function() for _, t in pairs(m.theatres) do if t.kind ~= "land" then solidLoops(t.sm) end end end)
+    end)
+    -- regions: thin grey border for every land-to-land boundary that no other enabled
+    -- layer draws; split by kind so crossings and barriers replace, never overlap, it
+    local CROSSING_KINDS = {ramp=true, pass=true, climb=true, ford=true}
+    local function thinBorders(filter)
+        return function()
+            strokeStyle(STYLE.region)
+            gl.BeginEnd(GL.LINES, function()
+                for _, b in ipairs(m.boundaries) do
+                    -- water-to-water borders are not drawn: a sea reads as one surface
+                    if filter(b.kind) and not (regionIsWater(m, b.a) and regionIsWater(m, b.b)) then solid(b.sm) end
+                end
+            end)
+        end
+    end
+    lineLayer("regions", thinBorders(function(k) return k == "open" end))
+    lineLayer("regionsCross", thinBorders(function(k) return CROSSING_KINDS[k] end))
+    lineLayer("regionsBarrier", thinBorders(function(k) return k == "cliff" end))
+    -- crossings: one long-dash line for every border some land class can cross between
+    -- land regions (ramp, pass, climb); a ford is a double line. The chokes layer owns
+    -- the width bar, so none is drawn here. Which classes cross is in the inspector.
+    lineLayer("crossings", function()
+        for _, b in ipairs(m.boundaries) do
+            local k = b.kind
+            if k == "ramp" or k == "pass" or k == "climb" then
+                strokeStyle(STYLE.crossing)
+                gl.BeginEnd(GL.LINES, function() drawPat(STYLE.crossing, b.sm) end)
+            elseif k == "ford" then
+                strokeStyle(STYLE.ford)
+                gl.BeginEnd(GL.LINES, function() drawPat(STYLE.ford, b.sm) end)
+            end
+        end
+    end)
+    -- the side of a line a point lies on, for hachures
+    local function leftOf(p, x, z)
+        if #p < 4 then return true end
+        local ax, az, bx, bz = p[1], p[2], p[3], p[4]
+        return ((bx-ax)*(z-az) - (bz-az)*(x-ax)) > 0
+    end
+    -- barriers: heavy vermilion with ticks pointing downhill (toward the lower region)
+    lineLayer("barriers", function()
+        strokeStyle(STYLE.blocked)
+        for _, b in ipairs(m.boundaries) do
+            if b.kind == "cliff" then
+                local ra, rb = m.regions[b.a], m.regions[b.b]
+                local lowIsA = ra and rb and (ra.minH + ra.maxH) < (rb.minH + rb.maxH)
+                local low = lowIsA and ra or rb
+                local left = true
+                if low then left = leftOf(b.sm, low.lx, low.lz) end
+                gl.BeginEnd(GL.LINES, function() drawPat(STYLE.blocked, b.sm, left) end)
+            end
+        end
+    end)
+    -- shores: a beach or a steep shore is a crossing out of the water (long dash on the
+    -- coast halo); a sheer shore is a barrier with ticks toward the water
+    lineLayer("shores", function()
+        for _, b in ipairs(m.boundaries) do
+            if b.kind == "beach" or b.kind == "steep" then
+                strokeStyle(STYLE.crossing)
+                gl.BeginEnd(GL.LINES, function() drawPat(STYLE.crossing, b.sm) end)
+            elseif b.kind == "sheer" then
+                strokeStyle(STYLE.blocked)
+                local water = regionIsWater(m, b.a) and m.regions[b.a] or m.regions[b.b]
+                local left = true
+                if water then left = leftOf(b.sm, water.lx, water.lz) end
+                gl.BeginEnd(GL.LINES, function() drawPat(STYLE.blocked, b.sm, left) end)
+            end
+        end
+    end)
+    -- chokes: a serifed width bar for land chokes only; narrows between water regions
+    -- read as stray strokes across open water
+    local function landChoke(c) return not regionIsWater(m, c.a) and not regionIsWater(m, c.b) end
+    lineLayer("chokes", function()
+        strokeStyle(STYLE.choke)
+        gl.BeginEnd(GL.LINES, function()
+            for _, c in ipairs(m.chokes) do if landChoke(c) then ibeam(c.x, c.z, c.dx, c.dz, math.max(16, c.width/2)) end end
+        end)
+    end)
+    -- key terrain: yellow symbols, one shape per kind; a summit is a filled triangle
+    lineLayer("key", function()
+        strokeStyle(STYLE.key)
+        local fills = {}
+        gl.BeginEnd(GL.LINES, function()
+            for _, k in ipairs(m.keys) do
+                if k.kind == "high" then
+                    local lx, lz, rx, rz, tx, tz = triangle(k.x, k.z, 44)
+                    if m.summits[k.region] then fills[#fills+1] = {lx, lz, rx, rz, tx, tz} end
+                elseif k.kind == "geo" then ngon(k.x, k.z, 40, 6)
+                elseif k.kind == "island" then ngon(k.x, k.z, 60, 4)
+                elseif k.kind == "pond" then ngon(k.x, k.z, 30, 8) end
+            end
+        end)
+        if not haloPass and #fills > 0 then
+            gl.BeginEnd(GL.TRIANGLES, function() for _, f in ipairs(fills) do tri(f[1], f[2], f[3], f[4], f[5], f[6]) end end)
+        end
+    end)
+    -- minimap: the coastlines in 2D (x, z)
+    compileLayer("minimap", function()
+        local function flat(p) for i = 3, #p, 2 do gl.Vertex(p[i-2], p[i-1]); gl.Vertex(p[i], p[i+1]) end end
+        gl.LineWidth(1.5)
+        gl.BeginEnd(GL.LINES, function()
+            setColour(K.white, 0.8)
+            for _, t in pairs(m.theatres) do if t.kind ~= "land" then for _, p in ipairs(t.sm) do flat(p) end end end
+        end)
+    end)
+    -- labels (screen space): theatres from far, regions and numbers close
+    labelsAll = {}
+    local mapCells = math.max(1, m.gw * m.gh)
+    for _, t in pairs(m.theatres) do
+        -- theatres under 1% of the map (islets, ponds) get a small label that the strategic level hides
+        local big = t.cells >= mapCells * 0.01
+        addLabel(t.x, t.z, big and spaced(t.name ~= "" and t.name or t.kind) or (t.name ~= "" and t.name or t.kind), big and 18 or 11, 0, 1e9, K.white)
+    end
+    for _, c in ipairs(m.chokes) do
+        if not regionIsWater(m, c.a) and not regionIsWater(m, c.b) then addLabel(c.x, c.z, string.format("%d", c.width), 10, 0, options.lodHeight * 0.6, K.white) end
+    end
+    local summits = 0
+    for id in pairs(m.summits) do
+        summits = summits + 1
+        local r = m.regions[id]
+        if r then addLabel(r.lx, r.lz + 70, "summit", 11, 0, options.lodHeight * 1.5, K.yellow) end
+    end
+    for _, r in pairs(m.regions) do
+        if #labelsAll >= 190 then break end
+        if not isWaterChar(r.character) and r.cells >= 40 and not m.summits[r.id] then addLabel(r.lx, r.lz, r.character .. " " .. r.id, 10, 0, options.lodHeight, K.grey) end
+    end
+    local land, seas, ponds = 0, 0, 0
+    for _, t in pairs(m.theatres) do if t.kind == "sea" then seas = seas + 1 elseif t.kind == "pond" then ponds = ponds + 1 else land = land + 1 end end
+    local nreg = 0; for _ in pairs(m.regions) do nreg = nreg + 1 end
+    local lands = 0; for _, c in ipairs(m.chokes) do if landChoke(c) then lands = lands + 1 end end
+    status = string.format("Terrain: %d land mass%s, %d sea%s, %d pond%s, %d regions, %d summit%s, %d choke%s",
+        land, land == 1 and "" or "es", seas, seas == 1 and "" or "s", ponds, ponds == 1 and "" or "s", nreg,
+        summits, summits == 1 and "" or "s", lands, lands == 1 and "" or "s")
+end
+
+-- ---- blueprint mode
+local function setGround(off)
+    if off == groundOff then return end
+    groundOff = off
+    if Spring.SetDrawGround then Spring.SetDrawGround(not off) end
+    if Spring.SetDrawWater then Spring.SetDrawWater(not off) end
+end
+
+-- ---- public state changes
+local function setMode(value)
+    local was = on
+    on = value and true or false
+    if on then
+        if not model and not parse then status = "Looking for the terrain analysis..."; lastExists = nil; tryLoad() end
+        setGround(options.blueprint)
+    else
+        parse = nil
+        setGround(false)
+        status = "Terrain map hidden"
+    end
+    return was ~= on
+end
+local function setBlueprint(v) options.blueprint = v and true or false; if options.blueprint then options.dim = false end; if on then setGround(options.blueprint) end end
+local function setLayer(name, v)
+    if layers[name] == nil then return false end
+    layers[name] = v and true or false
+    return true
+end
+local function detailLevel()
+    if options.detail == "strategic" then return "strategic" end
+    if options.detail == "tactical" then return "tactical" end
+    local _, cy = Spring.GetCameraPosition()
+    return (cy or 0) > options.lodHeight and "strategic" or "tactical"
+end
+local function buildFocus()
+    if focusList then gl.DeleteList(focusList); focusList = nil end
+    if not focus or not model then return end
+    local m = model
+    focusList = gl.CreateList(function()
+        setColour(K.yellow, 1); gl.LineWidth(4)
+        gl.BeginEnd(GL.LINES, function()
+            if focus.kind == "region" then local r = m.regions[focus.id]; if r then solidLoops(r.sm or r.outline) end
+            elseif focus.kind == "theatre" then local t = m.theatres[focus.id]; if t then solidLoops(t.sm or t.outline) end
+            end
+        end)
+    end)
+end
+local function setFocus(kind, id)
+    if kind == nil then focus = nil else focus = {kind=kind, id=id} end
+    buildFocus()
+end
+local function focusRecords()
+    local out = {}
+    if not focus or not model then return out end
+    local m = model
+    if focus.kind == "region" then
+        local r = m.regions[focus.id]
+        if r then
+            local t = m.theatres[r.theatre]
+            out[#out+1] = string.format("REGION %d  %s  in %s", r.id, r.character, t and (t.name ~= "" and t.name or t.kind) or "?")
+            out[#out+1] = string.format("%d cells  width median %d / low %d  height %d..%d", r.cells, r.medianW, r.lowW, r.minH, r.maxH)
+            local n = 0
+            for _, b in ipairs(m.boundaries) do
+                if (b.a == r.id or b.b == r.id) and b.kind ~= "open" and b.kind ~= "edge" and n < 8 then
+                    n = n + 1
+                    local who = {}
+                    for cls = 0, 4 do if hasBit(b.mask, cls) then who[#who+1] = CLASS_NAMES[cls] end end
+                    out[#out+1] = string.format("  %s to region %d  width %d  slope %d deg  crosses: %s", b.kind, b.a == r.id and b.b or b.a, b.width, b.slope, #who > 0 and table.concat(who, ", ") or "nobody")
+                end
+            end
+        end
+    elseif focus.kind == "theatre" then
+        local t = m.theatres[focus.id]
+        if t then out[#out+1] = string.format("THEATRE %d  %s  %s  %d cells  holders mask %d", t.id, t.kind, t.name, t.cells, t.holders) end
+    end
+    return out
+end
+local function pickAt(mx, my)
+    if not model then return end
+    local kind, pos = Spring.TraceScreenRay(mx, my, true)
+    if kind ~= "ground" or not pos then return end
+    local rid = regionOf(model, pos[1], pos[3])
+    if not rid then return end
+    setFocus("region", rid)
+end
+local function inspect()
+    if not model or not (options.pick or options.legend) then hover = nil; return end
+    local now = Spring.GetTimer()
+    if hoverTimer and Spring.DiffTimers(now, hoverTimer) < 0.1 then return end
+    hoverTimer = now
+    local mx, my = Spring.GetMouseState()
+    local kind, pos = Spring.TraceScreenRay(mx, my, true)
+    if kind ~= "ground" or not pos then hover = nil; return end
+    local rid = regionOf(model, pos[1], pos[3])
+    local r = rid and model.regions[rid]
+    if not r then hover = nil; return end
+    local t = model.theatres[r.theatre]
+    local h = Spring.GetGroundHeight(pos[1], pos[3])
+    local lines = {
+        string.format("cell %d,%d  region %d (%s)  %s", math.floor(pos[1]/model.cell), math.floor(pos[3]/model.cell), rid, r.character, t and (t.name ~= "" and t.name or t.kind) or ""),
+        string.format("height %d  region %d..%d", h, r.minH, r.maxH),
+    }
+    local gnd = model.cellGround and model.cellGround[math.floor(pos[3] / model.cell) * model.gw + math.floor(pos[1] / model.cell)]
+    if gnd and GROUND[gnd] then lines[#lines+1] = GROUND[gnd].text end
+    local sideName = "no side"
+    for _, s in ipairs(model.sides) do
+        -- bounding-box test against the side's box: enough for the inspector, the file holds no per-cell side
+        local b = s.box
+        if #b >= 8 then
+            local x1, x2, z1, z2 = math.huge, -math.huge, math.huge, -math.huge
+            for i = 1, #b, 2 do x1 = math.min(x1, b[i]); x2 = math.max(x2, b[i]); z1 = math.min(z1, b[i+1]); z2 = math.max(z2, b[i+1]) end
+            if pos[1] >= x1 and pos[1] <= x2 and pos[3] >= z1 and pos[3] <= z2 then sideName = s.ally >= 0 and ("start box of ally team " .. s.ally) or "map half (no start boxes)" end
+        end
+    end
+    lines[#lines+1] = sideName
+    hover = lines
+end
+
+-- ---- drawing
+local function lineScale()
+    local _, cy = Spring.GetCameraPosition()
+    return math.max(0.8, math.min(3, (cy or 3000) / 3000))
+end
+local function drawWorld()
+    if not on or not model or Spring.IsGUIHidden() then return end
+    local level = detailLevel()
+    local scale = lineScale()
+    gl.DepthTest(false)
+    if options.dim and not options.blueprint and lists.dim then gl.CallList(lists.dim) end
+    local order = {"ground","regions","theatres","shores","crossings","barriers","chokes","key"}
+    local tactical = level == "tactical"
+    for _, name in ipairs(order) do
+        if layers[name] and (tactical or STRATEGIC[name]) then
+            local l = lists[name]
+            -- the coastline is one line: a halo under the classified shore when shores draw, a crisp line otherwise
+            if name == "theatres" and layers.shores and tactical then l = lists.theatresHalo end
+            if l then gl.CallList(l) end
+            -- borders that crossings or barriers would draw fall back to the thin grey region line
+            if name == "regions" then
+                if not layers.crossings and lists.regionsCross then gl.CallList(lists.regionsCross) end
+                if not layers.barriers and lists.regionsBarrier then gl.CallList(lists.regionsBarrier) end
+            end
+        end
+    end
+    if focusList then gl.CallList(focusList) end
+    gl.LineWidth(1); gl.Color(1, 1, 1, 1); gl.DepthTest(true)
+end
+local function drawMiniMap(sx, sy)
+    if not on or not model or not lists.minimap or not layers.theatres then return end
+    gl.PushMatrix()
+    gl.Translate(0, sy, 0)
+    gl.Scale(sx / Game.mapSizeX, -sy / Game.mapSizeZ, 1)
+    gl.CallList(lists.minimap)
+    gl.PopMatrix()
+    gl.LineWidth(1); gl.Color(1, 1, 1, 1)
+end
+local function drawLabels()
+    if not layers.labels or not model then return end
+    local _, cy = Spring.GetCameraPosition()
+    cy = cy or 0
+    local vw, vh = gl.GetViewSizes()
+    local level = detailLevel()
+    -- above the detail height only theatre and avenue names show, shrinking with the camera height
+    -- so a full-map view with many theatres does not overlap
+    local shrink = cy > options.lodHeight and math.max(0.5, math.min(1, options.lodHeight / cy)) or 1
+    for _, l in ipairs(labelsAll) do
+        if cy >= l[6] and cy <= l[7] and (level == "tactical" or l[5] >= 13) then
+            local sx, sy, sz = Spring.WorldToScreenCoords(l[1], l[2], l[3])
+            if sx and sz and sz > 0 and sz < 1 and sx > 0 and sx < vw and sy > 0 and sy < vh then
+                local c = l[8]
+                local size = math.max(9, l[5] * shrink)
+                gl.Color(K.ink[1], K.ink[2], K.ink[3], 0.85)
+                gl.Text(l[4], sx+1, sy-1, size, "c"); gl.Text(l[4], sx-1, sy-1, size, "c"); gl.Text(l[4], sx+1, sy+1, size, "c"); gl.Text(l[4], sx-1, sy+1, size, "c")
+                gl.Color(c[1], c[2], c[3], 0.95); gl.Text(l[4], sx, sy, size, "co")
+            end
+        end
+    end
+    gl.Color(1, 1, 1, 1)
+end
+local function button(id, x, y, w, title, isOn, action)
+    gl.Color(isOn and {0.12,0.30,0.34,0.98} or {0.09,0.13,0.18,0.98}); gl.Rect(x, y, x+w, y+24)
+    gl.Color(isOn and mint or {0.83,0.87,0.93,1}); gl.Text(title, x+w/2, y+7, 10, "oc")
+    controls[#controls+1] = {x, y, x+w, y+24, id=id, action=action}
+end
+-- ---- legend: every sample is drawn by the map's own pattern and symbol code, in
+-- screen space, so the legend cannot drift from the map. Each row names its pattern
+-- or shape in words before its meaning; colour is never the only difference.
+local function legendSample(x, y, w, draw)
+    emit = function(ax, az, bx, bz) gl.Vertex(ax, az); gl.Vertex(bx, bz) end
+    patScale = 0.28
+    draw(x, y, w)
+    emit = nil; patScale = 1
+    gl.LineWidth(1)
+end
+local function lineRow(st)
+    return function(x, y, w) strokeStyle(st); gl.BeginEnd(GL.LINES, function() drawPat(st, {x, y, x+w, y}, false) end) end
+end
+local function groundRow(cls)
+    local gd = GROUND[cls]
+    return function(x, y, w)
+        if gd.fill then gl.Color(gd.fill[1], gd.fill[2], gd.fill[3], math.min(0.6, gd.alpha * 2)); gl.Rect(x, y-6, x+w, y+6) end
+        if gd.mark then
+            setColour(MARK_COLOUR[gd.mark], 0.9); gl.LineWidth(1)
+            gl.BeginEnd(GL.LINES, function()
+                local step = (gd.mark == "hatch" or gd.mark == "wave" or gd.mark == "dash") and 14 or 8
+                for t = step/2, w - 3, step do markCell(gd.mark, x + t, y, 3) end
+            end)
+        end
+        if not gd.fill and not gd.mark then
+            gl.Color(K.grey[1], K.grey[2], K.grey[3], 0.5); gl.LineWidth(1)
+            gl.BeginEnd(GL.LINE_LOOP, function() gl.Vertex(x, y-6); gl.Vertex(x+w, y-6); gl.Vertex(x+w, y+6); gl.Vertex(x, y+6) end)
+        end
+    end
+end
+local function chokeRow(x, y, w)
+    strokeStyle(STYLE.choke); gl.BeginEnd(GL.LINES, function() ibeam(x+w/2, y, 0, 1, w/3) end)
+end
+local function markRow(kind)
+    return function(x, y, w)
+        strokeStyle(STYLE.key)
+        local corners
+        gl.BeginEnd(GL.LINES, function()
+            local cx = x + w/2
+            if kind == "high" or kind == "summit" then corners = {triangle(cx, y, 8)}
+            elseif kind == "geo" then ngon(cx, y, 7, 6)
+            elseif kind == "island" then ngon(cx, y, 7, 4)
+            elseif kind == "pond" then ngon(cx, y, 7, 8) end
+        end)
+        if kind == "summit" and corners then gl.BeginEnd(GL.TRIANGLES, function() tri(corners[1], corners[2], corners[3], corners[4], corners[5], corners[6]) end) end
+    end
+end
+local function legendRows()
+    local rows = {}
+    local function head(t) rows[#rows+1] = {nil, t} end
+    local function add(sample, t) rows[#rows+1] = {sample, t} end
+    head("GROUND  /  what each cell is to the unit classes")
+    for cls = 0, 7 do
+        if cls ~= 7 or (model and model.groundCount and model.groundCount[7]) then
+            add(groundRow(cls), GROUND[cls].text)
+        end
+    end
+    head("BORDERS  /  five line types")
+    add(lineRow(STYLE.coast), "Solid, heavy: coastline of a sea or pond")
+    add(lineRow(STYLE.region), "Solid, thin: open border between regions")
+    add(lineRow(STYLE.crossing), "Long dash: a way through for some unit class (Pick shows which)")
+    add(lineRow(STYLE.ford), "Double line: ford, wade across")
+    add(lineRow(STYLE.blocked), "Solid with ticks: no way through (cliff, sheer shore); ticks point down")
+    head("MARKS")
+    add(chokeRow, "Bar with serifs: narrowest point, number = width in elmos")
+    add(markRow("high"), "Hollow triangle: high ground (plateau)")
+    add(markRow("summit"), "Filled triangle: summit, reached only by all-terrain units or aircraft")
+    add(markRow("geo"), "Hexagon: geothermal vent")
+    add(markRow("island"), "Diamond: island or rock")
+    add(markRow("pond"), "Octagon: pond, water with no way to the sea")
+    return rows
+end
+local legendCache, legendCacheModel = nil, nil
+local function legendRowsCached()
+    if not legendCache or legendCacheModel ~= model then legendCache = legendRows(); legendCacheModel = model end
+    return legendCache
+end
+local ROW_H, HEAD_H = 16, 20
+local function drawLegend(panel)
+    controls = {}
+    legendRect = nil
+    if not on or not options.legend or Spring.IsGUIHidden() then return end
+    local vw, vh = gl.GetViewSizes()
+    local rows = legendRowsCached()
+    local rec = focusRecords()
+    local layerRows = math.ceil(#LAYERS / 4)
+    local w = 500
+    local h = 36
+    if not options.collapsed then
+        h = 52 + 30 + 30 + 26 + layerRows*28 + 6 + 14 + 8 + (#rec > 0 and (16 + #rec*15) or 15) + 30
+        for _, row in ipairs(rows) do h = h + (row[1] and ROW_H or HEAD_H) end
+    end
+    dockX = math.max(8, math.min(vw - w - 8, dockX or (vw - w - 22)))
+    dockY = math.max(math.min(h + 8, vh - 65), math.min(vh - 65, dockY or (vh - 80)))
+    local x, top = dockX, dockY
+    legendRect = {x, top-h, x+w, top}
+    gl.Color(inkPanel); gl.Rect(x, top-h, x+w, top)
+    gl.Color(K.sky[1], K.sky[2], K.sky[3], 1); gl.Rect(x, top-3, x+w, top)
+    gl.Color(0.93, 0.96, 1, 1); gl.Text("TERRAIN MAP", x+14, top-24, 14, "o")
+    controls[#controls+1] = {x, top-34, x+w-100, top, id="fieldDrag", action=function() end}
+    button("fieldCollapse", x+w-98, top-30, 42, options.collapsed and "+" or "-", false, function() options.collapsed = not options.collapsed end)
+    button("fieldLegendClose", x+w-50, top-30, 42, "Hide", false, function() options.legend = false end)
+    if options.collapsed then return end
+    local y = top - 52
+    gl.Color(muted); gl.Text(status, x+14, y, 10, "o")
+    y = y - 30
+    -- terrain: shown, dimmed under an ink sheet, or off (blueprint: bare black)
+    button("fieldContrast", x+12, y, 122, "Terrain: " .. (options.blueprint and "off" or (options.dim and "dim" or "shown")), options.blueprint or options.dim, function()
+        if options.blueprint then setBlueprint(false); options.dim = false
+        elseif options.dim then setBlueprint(true)
+        else options.dim = true end
+    end)
+    button("fieldDetail", x+140, y, 100, "Detail: " .. options.detail, options.detail ~= "auto", function()
+        options.detail = options.detail == "auto" and "strategic" or (options.detail == "strategic" and "tactical" or "auto")
+    end)
+    button("fieldPick", x+246, y, 78, "Pick " .. (options.pick and "ON" or "OFF"), options.pick, function() options.pick = not options.pick; if not options.pick then setFocus(nil) end end)
+    y = y - 30
+    gl.Color(muted); gl.Text("LAYERS  /  click to toggle", x+14, y+4, 10, "o")
+    y = y - 26
+    local col = 0
+    for _, name in ipairs(LAYERS) do
+        local key = name
+        button("fieldLayer_" .. key, x+12+col*116, y, 110, key .. (layers[key] and " +" or " -"), layers[key], function() layers[key] = not layers[key] end)
+        col = col + 1
+        if col == 4 then col = 0; y = y - 28 end
+    end
+    if col ~= 0 then y = y - 28 end
+    y = y - 6
+    gl.Color(muted); gl.Text("LEGEND  /  pattern and shape carry the meaning, colour only repeats it", x+14, y+4, 10, "o")
+    y = y - 14
+    for _, row in ipairs(rows) do
+        if row[1] then
+            legendSample(x+16, y, 70, row[1])
+            gl.Color(0.9, 0.93, 0.97, 1); gl.Text(row[2], x+96, y-4, 10, "o")
+            y = y - ROW_H
+        else
+            y = y - 4
+            gl.Color(mint); gl.Text(row[2], x+14, y-2, 10, "o")
+            y = y - (HEAD_H - 4)
+        end
+    end
+    y = y - 8
+    if #rec > 0 then
+        gl.Color(mint); gl.Text("FOCUS", x+14, y, 11, "o"); y = y - 16
+        for _, line in ipairs(rec) do gl.Color(0.91, 0.93, 0.96, 1); gl.Text(line, x+14, y, 10, "o"); y = y - 15 end
+    else
+        gl.Color(muted); gl.Text(options.pick and "Pick: click the map to focus a region or a land mass" or "Turn Pick on to focus a region; hover shows the cell's ground class", x+14, y, 10, "o")
+    end
+    gl.Color(muted); gl.Text("Terrain analysis, computed once at game start. Drag header to move.", x+14, top-h+12, 10, "o")
+    gl.LineWidth(1); gl.Color(1, 1, 1, 1)
+end
+local function drawInspector()
+    if not on or not hover then return end
+    local mx, my = Spring.GetMouseState()
+    local vw = gl.GetViewSizes()
+    local w = 0
+    for _, l in ipairs(hover) do w = math.max(w, gl.GetTextWidth(l) * 10) end
+    w = w + 16
+    local x = math.min(vw - w - 8, mx + 18)
+    local y = my - 10
+    gl.Color(inkPanel); gl.Rect(x, y - #hover*14 - 6, x+w, y+6)
+    for i, l in ipairs(hover) do gl.Color(0.9, 0.93, 0.97, 1); gl.Text(l, x+8, y - i*14 + 4, 10, "o") end
+    gl.Color(1, 1, 1, 1)
+end
+local function drawScreen(panel)
+    if not on then return end
+    drawLabels()
+    drawLegend(panel)
+    inspect()
+    drawInspector()
+end
+local function update()
+    if not on then return end
+    if parse then stepParse()
+    elseif not model then tryLoad() end
+end
+local function hitAt(x, y)
+    for i = #controls, 1, -1 do local r = controls[i]; if x >= r[1] and y >= r[2] and x <= r[3] and y <= r[4] then return r end end
+end
+local function mousePress(x, y, b)
+    if not on or Spring.IsGUIHidden() then return false end
+    if options.legend then
+        local r = hitAt(x, y)
+        if r then
+            if b == 1 then pressed = r; if r.id == "fieldDrag" then drag = {x, y, dockX, dockY} end end
+            return true
+        end
+        if legendRect and x >= legendRect[1] and x <= legendRect[3] and y >= legendRect[2] and y <= legendRect[4] then return true end
+    end
+    if options.pick and b == 1 and model then pickAt(x, y); return true end
+    return false
+end
+local function mouseRelease(x, y, b)
+    local was = pressed ~= nil or drag ~= nil
+    if drag then drag = nil
+    elseif pressed and b == 1 then
+        local r = hitAt(x, y)
+        if r and r.id == pressed.id and r.action then r.action() end
+    end
+    pressed = nil
+    return was
+end
+local function mouseMove(x, y)
+    if drag then dockX = drag[3] + x - drag[1]; dockY = drag[4] + y - drag[2]; return true end
+end
+local function snapshot()
+    local out = {loaded = model ~= nil, seq = seq, theatres = 0, land = 0, seas = 0, ponds = 0, regions = 0, boundaries = 0, chokes = 0,
+        summits = 0, keys = 0, avenues = 0, landings = 0, assault = 0, ground = {}, layers = {},
+        items = {theatres = {}, chokes = {}, summits = {}, landings = {}, avenues = {}}, on = on, status = status}
+    for k, v in pairs(layers) do out.layers[k] = v end
+    local m = model
+    if not m then return out end
+    for _, t in pairs(m.theatres) do
+        out.theatres = out.theatres + 1
+        if t.kind == "sea" then out.seas = out.seas + 1 elseif t.kind == "pond" then out.ponds = out.ponds + 1 else out.land = out.land + 1 end
+        out.items.theatres[#out.items.theatres+1] = {id=t.id, kind=t.kind, name=t.name, x=t.x, z=t.z, cells=t.cells}
+    end
+    for _ in pairs(m.regions) do out.regions = out.regions + 1 end
+    out.boundaries, out.chokes, out.keys = #m.boundaries, #m.chokes, #m.keys
+    for cls, n in pairs(m.groundCount or {}) do out.ground[cls] = n end
+    for id in pairs(m.summits or {}) do
+        local r = m.regions[id]
+        out.summits = out.summits + 1
+        if r then out.items.summits[#out.items.summits+1] = {region=id, x=r.lx, z=r.lz, cells=r.cells, minH=r.minH, maxH=r.maxH} end
+    end
+    for _, c in ipairs(m.chokes) do
+        local ra, rb = m.regions[c.a], m.regions[c.b]
+        local land = ra ~= nil and rb ~= nil and not isWaterChar(ra.character) and not isWaterChar(rb.character)
+        out.items.chokes[#out.items.chokes+1] = {id=c.id, x=c.x, z=c.z, width=c.width, a=c.a, b=c.b, land=land}
+    end
+    return out
+end
+local function config(data)
+    if type(data) ~= "table" then return end
+    if type(data.layers) == "table" then for _, k in ipairs(LAYERS) do if type(data.layers[k]) == "boolean" then layers[k] = data.layers[k] end end end
+    if type(data.legend) == "boolean" then options.legend = data.legend end
+    if type(data.blueprint) == "boolean" then options.blueprint = data.blueprint end
+    if type(data.dim) == "boolean" then options.dim = data.dim end
+    if data.detail == "auto" or data.detail == "strategic" or data.detail == "tactical" then options.detail = data.detail end
+    if type(data.lodHeight) == "number" then options.lodHeight = math.max(1000, data.lodHeight) end
+    if type(data.dock) == "table" and type(data.dock.x) == "number" and type(data.dock.y) == "number" then dockX, dockY = data.dock.x, data.dock.y end
+end
+local function getConfig()
+    local l = {}
+    for _, k in ipairs(LAYERS) do l[k] = layers[k] end
+    return {layers=l, legend=options.legend, blueprint=options.blueprint, dim=options.dim, detail=options.detail, lodHeight=options.lodHeight, dock={x=dockX, y=dockY}}
+end
+local function textCommand(cmd)
+    if cmd == "barbfield" or cmd == "barbterrain" then setMode(not on); return true end
+    local sub = string.match(cmd, "^barbfield%s+(.+)$") or string.match(cmd, "^barbterrain%s+(.+)$")
+    if not sub then return false end
+    if sub == "legend" then options.legend = not options.legend; if options.legend and not on then setMode(true) end
+    elseif sub == "blueprint" then setBlueprint(not options.blueprint)
+    elseif sub == "dim" then options.dim = not options.dim; if options.dim then setBlueprint(false) end
+    elseif sub == "on" or sub == "show" then setMode(true)
+    elseif sub == "off" or sub == "hide" then setMode(false)
+    elseif sub == "pick" then options.pick = not options.pick
+    else
+        local name = string.match(sub, "^layer%s+(%w+)$")
+        if name then if not setLayer(name, not layers[name]) then Spring.Echo("[BARb link] unknown field layer " .. name) end
+        else
+            local d = string.match(sub, "^detail%s+(%w+)$")
+            if d == "auto" or d == "strategic" or d == "tactical" then options.detail = d
+            else
+                do Spring.Echo("[BARb link] /barbterrain [legend|blueprint|dim|pick|on|off|layer <name>|detail <auto|strategic|tactical>]") end
+            end
+        end
+    end
+    return true
+end
+local function shutdown()
+    setGround(false)
+    disposeLists()
+    on = false
+end
+return {SetMode=setMode, Mode=function() return on end, Status=function() return status end, Snapshot=snapshot,
+    SetLayer=setLayer, SetFocus=setFocus, SetBlueprint=setBlueprint, SetLegend=function(v) options.legend = v and true or false end,
+    SetSide=function(v) options.side = (type(v) == "number" and v >= 0) and v or nil end,   -- the viewer's ally team; negative = own
+    Legend=function() return options.legend end, Config=config, GetConfig=getConfig, TextCommand=textCommand,
+    Update=update, DrawWorld=drawWorld, DrawScreen=drawScreen, DrawMiniMap=drawMiniMap, Shutdown=shutdown,
+    SetAllyProvider=function(fn) allyProvider = fn end,
+    ButtonRect=function(id) for _, r in ipairs(controls) do if r.id == id then return {r[1], r[2], r[3], r[4]} end end end,
+    MousePress=mousePress, MouseRelease=mouseRelease, MouseMove=mouseMove}
+end)()
+
 -- ---------------------------------------------------------------- constants
 
 local ROLES = { "FRONT", "AIR", "TECH", "SEA", "SUPPORT", "TACTICAL" }
@@ -655,7 +1940,7 @@ local ICON = {
 }
 local MAX_EVENTS = 120
 local QUERY_INTERVAL_FRAMES = 1800
-local WIN_W, WIN_H = 340, 390   -- unscaled px
+local WIN_W, WIN_H = 340, 450   -- unscaled px
 local LAUNCHER = 26             -- unscaled px
 
 local C = {
@@ -991,6 +2276,7 @@ end
 
 function widget:Initialize()
 	 theatres.SetRefresh(function() if theatres.Mode() then setTheatres(theatres.Mode()) end end)
+    field.SetAllyProvider(function() return selectedAlly end)
 	self:ViewResize(Spring.GetViewGeometry())
 	refreshTeams()
 	hookAIMessages()
@@ -1004,11 +2290,21 @@ function widget:Initialize()
         TheatreOptions = theatres.Config,
         TheatreConfig = theatres.GetConfig,
         SelectLane = theatres.Select,
+        -- the terrain map (field module): the same paths as the Terrain row and /barbterrain
+        SetField = function(v) return field.SetMode(v) end,
+        FieldStatus = field.Status,
+        FieldSnapshot = field.Snapshot,
+        FieldLayer = field.SetLayer,
+        FieldFocus = field.SetFocus,
+        FieldBlueprint = field.SetBlueprint,
+        FieldLegend = field.SetLegend,
+        FieldSide = field.SetSide,
         MousePress = function(x,y,b) return widget:MousePress(x,y,b) end,
         MouseRelease = function(x,y,b) return widget:MouseRelease(x,y,b) end,
         MouseMove = function(x,y,dx,dy,b) return widget:MouseMove(x,y,dx,dy,b) end,
         ButtonRect = function(id)
             local guide=theatres.ButtonRect(id); if guide then return guide end
+            local fieldRect=field.ButtonRect(id); if fieldRect then return fieldRect end
             for _,r in ipairs(hit) do if r[5]==id then return {r[1],r[2],r[3],r[4]} end end
         end,
 		IsOpen = function() return open end,
@@ -1040,6 +2336,7 @@ end
 
 function widget:Shutdown()
     blueprints.SetMode(nil)
+    field.Shutdown()
 	unhookAIMessages()
 	WG.barblink = nil
 	if WG.guishader then
@@ -1049,12 +2346,13 @@ function widget:Shutdown()
 end
 
 function widget:GetConfigData()
-	return { open = open, offX = offX / mathMax(scale, 0.01), offY = offY / mathMax(scale, 0.01),  theatres=theatres.GetConfig() }
+	return { open = open, offX = offX / mathMax(scale, 0.01), offY = offY / mathMax(scale, 0.01),  theatres=theatres.GetConfig(), field=field.GetConfig() }
 end
 
 function widget:SetConfigData(data)
 	if type(data) ~= "table" then return end
 	theatres.Config(data.theatres)
+	field.Config(data.field)
 	if data.open ~= nil then
 		firstRun = false   -- a config of this version: its open state stands
 		open = data.open == true
@@ -1065,6 +2363,7 @@ end
 
 function widget:Update()
     if stateFiles.Poll then stateFiles.Poll() end
+    field.Update()
     local waiting=false
     for id,p in pairs(theatrePending) do
         local result=theatres.Snapshot(id)
@@ -1247,7 +2546,8 @@ do
         gl.LineWidth(1); gl.Color(1,1,1,1); gl.DepthTest(true)
     end
 end
-function widget:DrawWorld() blueprints.Draw() end
+function widget:DrawWorld() blueprints.Draw(); field.DrawWorld() end
+function widget:DrawInMiniMap(sx, sy) field.DrawMiniMap(sx, sy) end
 
 -- ---------------------------------------------------------------- messages
 
@@ -1616,6 +2916,23 @@ local function drawWindow()
     cy=cy-px(17)
     register(left,cy,right,cy+px(15),"planLegend",function() end,
         "Blueprint: cyan=planned, grey=held/built, yellow=claimed, mint=under construction. Orange X=protected metal/geo. Arrows=factory exit direction. Updates within 4 game seconds.")
+    cy=cy-px(16)
+
+    -- D-323 / D-326: the terrain map, read from the field file the AI wrote once
+    text(font2,"Terrain",left,cy-px(14),px(9),"o",C.onSurfaceVariant)
+    labelButton(buttonsLeft,cy-px(22),buttonsLeft+bw,cy,ICON.overlay,"Show","fieldShow",function()
+        playClick(); field.SetMode(true)
+    end,"Show the terrain map: ground classes, land masses, seas, ponds, crossings, cliffs, summits (/barbterrain)",field.Mode())
+    labelButton(buttonsLeft+bw+px(4),cy-px(22),buttonsLeft+2*bw+px(4),cy,ICON.team,"Legend","fieldLegend",function()
+        playClick(); field.SetLegend(not field.Legend()); if field.Legend() and not field.Mode() then field.SetMode(true) end
+    end,"Open or close the legend panel: layers, terrain shown / dim / off, detail, focus",field.Legend())
+    labelButton(buttonsLeft+2*bw+px(8),cy-px(22),right,cy,ICON.close,"Hide","fieldOff",function()
+        playClick(); field.SetMode(false)
+    end,"Hide the terrain map and restore the view",not field.Mode())
+    cy=cy-px(25)
+    text(font,fitText(font,field.Status(),px(8),w),left,cy-px(9),px(8),"o",C.onSurfaceVariant)
+    register(left,cy-px(12),right,cy,"fieldStatus",function() end,field.Status())
+    cy=cy-px(14)
 
 	-- ally-team chips (only when more than one ally team has an AI)
 	if #allyTeams > 1 then
@@ -1774,6 +3091,7 @@ function widget:DrawScreen()
 	if not hasFlowUI or not font then initFlowUI() end
 	updatePlacement()
 	theatres.Draw(open and win or nil)
+	field.DrawScreen(open and win or nil)
 	drawLauncher()
 	if open then drawWindow() end
 
@@ -1805,6 +3123,7 @@ end
 
 function widget:MousePress(mx, my, mb)
 	if theatres.MousePress(mx,my,mb) then return true end
+	if field.MousePress(mx,my,mb) then return true end
 	if not (overLauncher(mx, my) or overWindow(mx, my)) then return false end
 	if mb ~= 1 then return true end
 	local top = nil
@@ -1829,6 +3148,7 @@ end
 function widget:MouseMove(mx, my, dx, dy, mb)
     if aggressionDrag then dragAggression(mx); return end
 	if theatres.MouseMove(mx,my) then return end
+	if field.MouseMove(mx,my) then return end
 	if dragging then
 		offX = dragging[3] + (mx - dragging[1])
 		offY = dragging[4] + (my - dragging[2])
@@ -1844,6 +3164,7 @@ function widget:MouseRelease(mx, my, mb)
         return false
     end
 	if theatres.MouseRelease(mx,my,mb) then return false end
+	if field.MouseRelease(mx,my,mb) then return false end
 	if dragging then
 		dragging = nil
 		return false
@@ -1876,6 +3197,7 @@ function widget:MouseWheel(up, value)
 end
 
 function widget:TextCommand(cmd)
+	if field.TextCommand(cmd) then return true end
 	if cmd=="barbtheatres" then if theatres.Mode() then setTheatres(nil) else setTheatres(selected or "all") end; return true end
 	if cmd == "barblink" then setOpen(not open); return true end
 	if cmd == "barblayout" then
