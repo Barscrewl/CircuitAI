@@ -34,13 +34,13 @@ namespace Cells {
 		StartSpot(AIFloat3( 644, 0, 9556), AiRole::TECH, false), // P7  front
 		StartSpot(AIFloat3(2463, 0, 9643), AiRole::FRONT, false), // P8  front
 		StartSpot(AIFloat3(7731, 0,  581), AiRole::FRONT, false), // P9  front
-		StartSpot(AIFloat3(9568, 0,  640), AiRole::FRONT, false), // P10 front
+		StartSpot(AIFloat3(9568, 0,  640), AiRole::TECH, false), // P10 front
 		StartSpot(AIFloat3(9254, 0, 2990), AiRole::FRONT, false), // P11 front
 		StartSpot(AIFloat3(7763, 0, 4117), AiRole::FRONT, false), // P12 front
 		StartSpot(AIFloat3(7862, 0, 5823), AiRole::FRONT, false), // P13 front
 		StartSpot(AIFloat3(9338, 0, 7410), AiRole::FRONT, false), // P14 front
 		StartSpot(AIFloat3(7825, 0, 8929), AiRole::FRONT, false), // P15 front
-		StartSpot(AIFloat3(9409, 0, 9688), AiRole::FRONT, false) // P16 front
+		StartSpot(AIFloat3(9409, 0, 9688), AiRole::AIR, false) // P16 front
 	};
 
 	// Base per-map unit limits
