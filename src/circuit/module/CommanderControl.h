@@ -4,6 +4,7 @@
 #include "AIFloat3.h"
 #include <cmath>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,7 @@ public:
     int GetOperation() const { return operation; }
     bool ReceiveProjectiles(const char* message);
     IUnitTask* FrontWork(CCircuitUnit* unit,int kind,CCircuitDef* buildDef,float radius);
+    bool CanStartRadar(CCircuitUnit* unit);
 private:
     // Values are logged as integers; append new modes only.
     enum class Mode { SUPPORT,ASSESS,APPROACH,ALIGN,PENDING,ESCAPE,RECOVER,FALLBACK };
@@ -34,6 +36,8 @@ private:
         Mode mode=Mode::SUPPORT;
         int generation=0,seen=-10000,started=0,pending=-1,fired=-1,failed=0;
         int retry=0,target=-1,leaseUntil=0,next=0,lastLog=0,lastDamage=-1,frontFrame=-10000,frontYield=0;
+        int frontMexFrame=-10000,frontProgressFrame=0;
+        springai::AIFloat3 frontProgressPos;
         // D-293 fallback: held until fallbackUntil, porc line replanned once/second.
         int fallbackUntil=-1,fallbackPlanned=-10000,fallbackPorc=-1,fallbackMoveUntil=-1;
         int heldPorc=-1,heldPorcUntil=-1; // KI-609: last chosen porc, kept 5 s past its last choice
@@ -44,7 +48,7 @@ private:
         // D-294 T3 engagement: target, resolved plan, shot accounting, juke.
         int t3Target=-1,t3Approach=0,t3Commit=0,t3Shots=0,t3LastShot=-1,t3JukeUntil=-1,t3JukeSide=1;
         int t3Progress=0,t3Ended=-1,t3Started=-1,t3Seen=-1,t3Declined=-1,t3DeclinedSeen=-1,t3Reconsider=0;
-        bool t3Cornered=false,t3Artillery=false;
+        bool t3Cornered=false,t3Artillery=false,afusEngagement=false;
         float fundingBudget=0;
         int fundingUntil=-1,fundingTarget=-1;
         int t3Screens=0,t3ScreenUntil=0; // D-294 bait turrets ordered this engagement
@@ -77,6 +81,8 @@ private:
     struct Options {
         bool enabled=false,advance=false,decoys=false,frontDuty=false,frontReady=false;
         bool work=true; // D-299 ladder and fallback hand-over (script Global::Commander::Work)
+        bool frontRecovery=false;
+        float frontMexSeconds=0,frontStallSeconds=10;
         float scan=1000,leash=700,step=96,support=600,minValue=180,killReward=45;
         float hpReserve=.35f,retreat=.45f,recover=.8f,aggression=.25f;
         float shots=2,margin=150,escapeSeconds=4.3f,alignSeconds=.6f;
@@ -84,6 +90,7 @@ private:
         float friendlyMargin=12,normalRange=.85f,frontWorkers=2;
         float frontDistance=1600,frontStandoff=650,frontRadius=500,frontThreat=3;
         float t3Intercept=1,t3Health=.2f,t3Distance=1000,detectionMargin=32;
+        float afusDefenceRadius=0; // opt-in script policy; zero preserves ordinary combat
         // D-293: fall back to the backline porc line before a capable group.
         bool fallback=true;
         float fallbackMetal=400,fallbackRangeScale=2,fallbackGroupRadius=400;
@@ -121,6 +128,8 @@ private:
     mutable std::map<int,bool> actualDecoys;
     bool ActualDecoy(CCircuitDef* definition) const;
     std::vector<commander::Contact> contacts;
+    std::set<int> afusDefs; // script-selected immutable definition IDs, per AI
+    int protectedAfus=-1; // fresh local observation, never retained across Tick
     std::vector<Threat> threats;
     std::vector<int> seeds;
     std::vector<Projectile> projectiles;
@@ -133,7 +142,7 @@ private:
         float radar=0,jammer=0,seismic=0,decloak=0,blastRadius=0,blastEdge=0;
         bool t3=false,stealth=false;
         float tech=1; // BAR customparams.techlevel (1, 1.5, 2, 3); D-299 repair order
-        std::vector<float> blastDamage; // immutable definition data, loaded only for T3
+        std::vector<float> blastDamage; // immutable death-weapon data for mobile attackers
     };
     std::map<int,Definition> definitions;
     const Definition& DefinitionFor(CCircuitDef* def);
@@ -179,6 +188,7 @@ private:
     IUnitTask* ReclaimWork(CCircuitUnit* unit,const State& state,float radius,int frame);
     IUnitTask* LineWork(CCircuitUnit* unit,State& state,CCircuitDef* buildDef,int frame);
     IUnitTask* RadarWork(CCircuitUnit* unit,State& state,CCircuitDef* buildDef,int frame);
+    bool RadarCovered(CCircuitUnit* unit,State& state,int frame);
     IUnitTask* AssistWork(CCircuitUnit* unit,const State& state,const springai::AIFloat3& center,float radius,bool factories,int frame);
     float WorkRadius(CCircuitUnit* unit) const;
     // A ladder target is legal while a fallback holds only inside its perimeter.

@@ -584,8 +584,16 @@ namespace Commands {
             TechChain::done = false;
             TechChain::objective = "eco";
         }
+        if (Global::AISettings::Role == AiRole::FRONT) FrontOpener::Close();
+        // Layout reset clears named native state. Keep the one-time opener
+        // markers through role changes so a later reload cannot repeat it.
+        const bool openerScoutQueued = FrontOpener::WasQueued("scout");
+        const bool openerBatchQueued = FrontOpener::WasQueued("batch");
         Layout::OnRoleLeave();
+        if (openerScoutQueued) FrontOpener::MarkQueued("scout");
+        if (openerBatchQueued) FrontOpener::MarkQueued("batch");
         TechWeapons::OnRoleLeave();   // D-126
+        EcoFlak::Clear();
         Lanes::OnRoleLeave();         // D-127
         NativeState::Restore();
         DefState::Restore();

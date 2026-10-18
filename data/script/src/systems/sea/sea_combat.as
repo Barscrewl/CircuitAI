@@ -50,9 +50,9 @@ namespace SeaCombat {
         if (!SmallBoat(d)) return d;
         const int cap=air ? SmallBoatAirCap() : AiMin(Global::RoleSettings::Sea::SmallBoatMax,Global::RoleSettings::Sea::SmallBoatBase
             +int(fleet/AiMax(1.0f,Global::RoleSettings::Sea::SmallBoatFleetMetal)));
-        // INV-220: every channel respects the one small-boat budget.
+        // INV-229: every channel respects the one small-boat budget.
         if (d.count+aiFactoryMgr.GetPendingRecruitCount(d)>=cap)
-            Invariants::Violation("INV-220",d.GetName(),"SEA small boat selected over budget "+cap);
+            Invariants::Violation("INV-229",d.GetName(),"SEA small boat selected over budget "+cap);
         scoutRecruited=ai.frame; return d;
     }
     void MilitaryRemoved(CCircuitUnit@ u, Unit::UseAs usage) {

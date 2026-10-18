@@ -868,7 +868,7 @@ namespace SeaOperations {
                 if (force !is null) {
                     // Join the lead's fight instead of an independent search.
                     if (aiBattle.WaterBody(force.goal,false)!=g.body) {
-                        Invariants::Violation("INV-219",g.key,"SEA task force goal outside the follower's water body");
+                        Invariants::Violation("INV-228",g.key,"SEA task force goal outside the follower's water body");
                     } else if (MapHelpers::SqDist(g.goal,force.goal)>384.0f*384.0f || g.route is null || g.route.IsDead()) {
                         goal=force.goal;
                         if (Route(g,goal,false,false,false,true,true)) {
