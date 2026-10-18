@@ -746,6 +746,14 @@ namespace SeaBuild {
         // through CapitalAssist and native assist.
         if (techOrder !is null && !techOrder.IsDead()) {
             IBuilderTask@ live=cast<IBuilderTask>(techOrder);
+            // Head-to-head play: a started frame was abandoned (no builder on
+            // it) and the yard never finished. Re-staff the frame with a fresh
+            // repair task on the nanoframe (as CapitalAssist does); never
+            // re-return the order itself, which recursed to a crash.
+            if (Global::RoleSettings::Sea::TechRestaffFrame && live !is null && live.target !is null && live.GetUnits().length()==0) {
+                IUnitTask@ staff=aiBuilderMgr.Enqueue(TaskB::Repair(Task::Priority::HIGH,live.target,60*SECOND));
+                if (staff !is null) { GenericHelpers::LogUtil("[SEA][TechSave] restaff frame builder="+u.id,1); return staff; }
+            }
             TechYardRefused(live is null ? "ordered" : "ordered at "+int(live.GetBuildPos().x)+","+int(live.GetBuildPos().z)
                 +" units="+live.GetUnits().length()+" frame="+(live.target !is null)+" height="+int(aiBattle.Height(live.GetBuildPos())));
             return null;

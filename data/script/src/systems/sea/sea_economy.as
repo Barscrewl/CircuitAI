@@ -328,7 +328,10 @@ namespace SeaEconomy {
             if (techSaveSince>=0) GenericHelpers::LogUtil("[SEA][TechSave] done seconds="+((ai.frame-techSaveSince)/SECOND),1);
             techSaveSince=-1; techSaveExpired=false; techCommitted=false; return false;
         }
-        if (techSaveExpired || !Economy::IncomeWindowReady() || !HoldingWater()) return false;
+        // Wanting T2 needs only the income gates: a contested sea must not
+        // block the order (head-to-head: Armada never reached T2). Only the
+        // production pause (TechHold) needs held, uncontested water.
+        if (techSaveExpired || !Economy::IncomeWindowReady()) return false;
         // A started frame keeps the save going whatever a dip in income does.
         if (yard.count==0 && (Economy::GetMinMetalIncomeLast10s()<Global::RoleSettings::Sea::TechMinimumMetalIncome
             || Economy::GetMinEnergyIncomeLast10s()<Global::RoleSettings::Sea::TechMinimumEnergyIncome)) return false;
@@ -442,6 +445,30 @@ namespace SeaEconomy {
         const float mi=aiEconomyMgr.metal.income;
         const float needed=mi*ratio+80.0f+AiMax(0.0f,aiEconomyMgr.energy.storage*.1f-aiEconomyMgr.energy.current)/AiMax(1.0f,Global::RoleSettings::Sea::EnergyBufferSeconds);
         return AiMin(Global::RoleSettings::Sea::TidalEnergyIncomeMinimum,AiMax(250.0f,needed));
+    }
+    // Head-to-head play: pausing T1 production while the enemy navy contests
+    // our water lost the sea. O(E) over the SEA snapshot, factory asks only.
+    bool SeaContested() {
+        const int body=aiBattle.WaterBody(Global::Map::StartPos,false);
+        const int count=aiBattle.GetSeaForceCount();
+        float enemy=0,cover=0;
+        for (int i=0;i<count;++i) {
+            if (body>=0 && aiBattle.GetSeaForceBody(i)!=body) continue;
+            const int flags=aiBattle.GetSeaForceFlags(i);
+            if ((flags&(8|128))!=0) continue;
+            const int contactDef=aiBattle.GetSeaForceDefId(i);
+            CCircuitDef@ d=contactDef>=0 ? ai.GetCircuitDef(contactDef) : null;
+            if (d is null || d.GetBuildSpeed()>0) continue;
+            if ((flags&1)!=0) cover+=aiBattle.GetSeaForceCost(i); else enemy+=aiBattle.GetSeaForceCost(i);
+        }
+        return enemy>cover*Global::RoleSettings::Sea::TechSaveContestRatio;
+    }
+    int techSaveAsks=0;
+    // Every TechSaveTrickle-th held ask still builds a T1 hull.
+    bool TechHold() {
+        if (!TechSaving() || !HoldingWater() || SeaContested()) return false;
+        const int trickle=Global::RoleSettings::Sea::TechSaveTrickle;
+        return trickle<=0 || (++techSaveAsks%trickle)!=0;
     }
     bool HoldingWater() {
         const int count=aiBattle.GetSeaForceCount();

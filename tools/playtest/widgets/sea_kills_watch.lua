@@ -21,6 +21,14 @@ function widget:UnitDestroyed(id,def,team,attacker,attackerDef,attackerTeam)
   lost[k]=lost[k]+cost(def)
   local a=attackerDef and UnitDefs[attackerDef] and UnitDefs[attackerDef].name or "unknown"
   lostBy[a]=(lostBy[a] or 0)+cost(def)
+  if k=="naval" then
+   -- One line per own ship lost: where, to what, from how far.
+   local x,_,z=Spring.GetUnitPosition(id)
+   local ax,_,az; if attacker then ax,_,az=Spring.GetUnitPosition(attacker) end
+   Spring.Echo(string.format("[SeaLoss] frame=%d victim=%s attacker=%s x=%d z=%d range=%d",
+    Spring.GetGameFrame(),UnitDefs[def].name,a,math.floor(x or -1),math.floor(z or -1),
+    (x and ax) and math.floor(math.sqrt((x-ax)^2+(z-az)^2)) or -1))
+  end
   return
  end
  if attackerTeam==0 and not Spring.AreTeamsAllied(team,0) then killed[k]=killed[k]+cost(def) end

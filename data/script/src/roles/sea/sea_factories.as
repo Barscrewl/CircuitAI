@@ -125,7 +125,7 @@ namespace SeaFactories {
             CCircuitDef@ counter=SeaCombat::Select(yard,true);
             if (counter !is null) { SeaComposition::Pending(yard,true); IUnitTask@ response=Recruit(yard,counter,Task::RecruitType::FIREPOWER,false,true); if (response !is null) return response; }
         }
-        if (!advanced && SeaEconomy::TechSaving()) {
+        if (!advanced && SeaEconomy::TechHold()) {
             // D-300: bank for the first advanced yard. Threat counters above
             // still run; keep the two constructors that build and assist it.
             if (con !is null && con.count+aiFactoryMgr.GetPendingRecruitCount(con)<2) {

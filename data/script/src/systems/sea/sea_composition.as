@@ -1,6 +1,32 @@
 // Count baseline is separate from emergency coverage. Native pending counts
 // own frame/task lifecycle; never maintain a second speculative hull counter.
 namespace SeaComposition {
+    // Enemy hover metal on the home water body (flag 512 contacts).
+    float EnemyHoverMetal() {
+        const int count=aiBattle.GetSeaForceCount();
+        const int body=aiBattle.WaterBody(Global::Map::StartPos,false);
+        float metal=0;
+        for (int i=0;i<count;++i) {
+            const int flags=aiBattle.GetSeaForceFlags(i);
+            if ((flags&(1|8))!=0 || (flags&512)==0) continue;
+            if (body>=0 && aiBattle.GetSeaForceBody(i)!=body) continue;
+            metal+=aiBattle.GetSeaForceCost(i);
+        }
+        return metal;
+    }
+    // Known enemy submarine metal on the home water (flag 2, mobile).
+    float EnemySubMetal() {
+        const int count=aiBattle.GetSeaForceCount();
+        const int body=aiBattle.WaterBody(Global::Map::StartPos,false);
+        float metal=0;
+        for (int i=0;i<count;++i) {
+            const int flags=aiBattle.GetSeaForceFlags(i);
+            if ((flags&(1|8))!=0 || (flags&2)==0) continue;
+            if (body>=0 && aiBattle.GetSeaForceBody(i)!=body) continue;
+            metal+=(flags&16)!=0 ? Global::RoleSettings::Sea::UnknownSubContactMetal : aiBattle.GetSeaForceCost(i);
+        }
+        return metal;
+    }
     CCircuitDef@ Select(CCircuitUnit@ yard,const dictionary &in localCounts) {
         const string side=UnitHelpers::GetSideForUnitName(yard.circuitDef.GetName());
         const bool advanced=UnitHelpers::IsT2Shipyard(yard.circuitDef.GetName());
@@ -20,6 +46,16 @@ namespace SeaComposition {
             ratios[1]=Global::RoleSettings::Sea::FrigateCompositionRatio;
             ratios[2]=Global::RoleSettings::Sea::DestroyerCompositionRatio;
         }
+        if (ratios.length()==3 && names.length()==3 && !advanced
+            && Global::RoleSettings::Sea::HoverBlindHulls.find(names[1])>=0) {
+            // KI-611: one census pass per production ask (O(contacts)).
+            const float hovers=EnemyHoverMetal();
+            if (hovers>=Global::RoleSettings::Sea::HoverResponseMetal) {
+                const float moved=ratios[1]*AiMax(0.0f,AiMin(1.0f,Global::RoleSettings::Sea::HoverResponseShare));
+                ratios[1]-=moved; ratios[2]+=moved;
+                GenericHelpers::LogUtil("[SEA][HoverResponse] hovers="+hovers+" screen="+ratios[1]+" gun="+ratios[2],2);
+            }
+        }
         if (names.length()!=ratios.length()) {
             Invariants::Violation("INV-185",side,"SEA composition must define submarine, screen and heavy hull");
             return null;
@@ -36,6 +72,21 @@ namespace SeaComposition {
             const float score=SeaMath::CompositionDeficit(count,ratios[i]);
             if (score>best) { best=score; @selected=definition; }
         }
+        if (!advanced && side=="legion" && Global::RoleSettings::Sea::CapitalShips) {
+            // D-301: Octeres is Legion's T1 shore artillery (960, cluster),
+            // unique among the factions; build it once the water is held.
+            CCircuitDef@ octeres=ai.GetCircuitDef("legnavyartyship");
+            // Shore to Shore (s36): Octeres has no anti-sub weapon and enemy
+            // subs sank them; no siege hull while subs are on the home water.
+            const bool subsAbsent=EnemySubMetal()<Global::RoleSettings::Sea::SiegeMaxEnemySubMetal;
+            const int wanted=SeaCombat::fleet<Global::RoleSettings::Sea::TierOneSiegeFleetMetal || !SeaEconomy::HoldingWater() || !subsAbsent ? 0
+                : Global::RoleSettings::Sea::MaxTierOneSiegeShips;
+            if (octeres !is null && octeres.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(octeres)
+                && DictIntOr(localCounts,""+octeres.id)+aiFactoryMgr.GetPendingRecruitCount(octeres)<wanted) {
+                GenericHelpers::LogUtil("[SEA][Capital] siege legnavyartyship fleet="+SeaCombat::fleet,1);
+                return octeres;
+            }
+        }
         if (advanced && Global::RoleSettings::Sea::CapitalShips) {
             // D-301 capital step: battleships stand behind the cruiser core;
             // shore-siege ships (outranging every land defence) come once the
@@ -49,7 +100,8 @@ namespace SeaComposition {
                 return battleship;
             }
             CCircuitDef@ siege=ai.GetCircuitDef(side=="armada" ? "armmship" : side=="cortex" ? "cormship" : "leganavymissileship");
-            const int siegeWanted=SeaCombat::fleet<Global::RoleSettings::Sea::SiegeFleetMetal || !SeaEconomy::HoldingWater() ? 0
+            const int siegeWanted=SeaCombat::fleet<Global::RoleSettings::Sea::SiegeFleetMetal || !SeaEconomy::HoldingWater()
+                || EnemySubMetal()>=Global::RoleSettings::Sea::SiegeMaxEnemySubMetal ? 0
                 : AiMin(Global::RoleSettings::Sea::MaxSiegeShips,int(SeaCombat::fleet/AiMax(1.0f,Global::RoleSettings::Sea::SiegeShipFleetMetal)));
             if (siege !is null && siege.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(siege)
                 && DictIntOr(localCounts,""+siege.id)+aiFactoryMgr.GetPendingRecruitCount(siege)<siegeWanted) {

@@ -32,6 +32,8 @@ def main():
     p.add_argument('--roles',default='SEA')
     p.add_argument('--others',default='test',choices=['test','prod','none'],help='other AIs: this build, a fixed installed opponent, or none')
     p.add_argument('--prod-ai',help="installed AI for 'prod' teams, e.g. BARb (stock)")
+    p.add_argument('--opponent-dll',type=Path,help="head-to-head: 'prod' teams play this pinned build")
+    p.add_argument('--opponent-data',type=Path,help='data/ for --opponent-dll')
     p.add_argument('--headless',action='store_true')
     p.add_argument('--stage-only',action='store_true')
     p.add_argument('--keep-going',action='store_true',help='Preserve failed checks but continue to the requested horizon')
@@ -55,7 +57,7 @@ def main():
     if a.fixture=='conversion' and not a.headless: shots='5@3000@1400:4300,10@2200@1300:4000,19@2000@1400:3950'
     cmd=call+['stage','--dir',str(d),'--dll',str(a.dll),'--data',str(a.data),'--map',MAPS[a.map],
         *(['--game',a.game] if a.game else []),'--engine','recoil_2026.07.04','--role','SEA',
-        '--roles',a.roles,'--others',a.others,*(['--prod-ai',a.prod_ai] if a.prod_ai else []),'--side',a.side,'--bonus','0','--speed',str(a.speed),'--minutes',str(a.minutes),
+        '--roles',a.roles,'--others',a.others,*(['--prod-ai',a.prod_ai] if a.prod_ai else []),*(['--opponent-dll',str(a.opponent_dll)] if a.opponent_dll else []),*(['--opponent-data',str(a.opponent_data)] if a.opponent_data else []),'--side',a.side,'--bonus','0','--speed',str(a.speed),'--minutes',str(a.minutes),
         '--shots',shots,'--width','1280','--height','720','--lean-render',
         '--ai-option','profile='+a.profile,'--ai-option','random_seed='+str(a.seed),
         '--extra-widget',str(playtest.HERE/'widgets/sea_watch.lua')]

@@ -2169,8 +2169,13 @@ bool CTerrainManager::CanNavalRoute(CCircuitDef* cdef, const AIFloat3& from, con
 	if (mt == nullptr) return false;
 	// Strict membership: GetCurrentMapArea deliberately snaps impossible spawns,
 	// which is inappropriate evidence for a new production berth.
-	const auto* a = mt->sector[GetSectorIndex(from)].area;
-	return a != nullptr && a == mt->sector[GetSectorIndex(to)].area;
+	// is_in_map admits the far map edge, whose sector index can lie past the
+	// table (Shore to Shore crashed here from SeaLayout::Search); bound both.
+	const int iFrom = GetSectorIndex(from), iTo = GetSectorIndex(to);
+	const int sectors = static_cast<int>(mt->sector.size());
+	if (iFrom < 0 || iFrom >= sectors || iTo < 0 || iTo >= sectors) return false;
+	const auto* a = mt->sector[iFrom].area;
+	return a != nullptr && a == mt->sector[iTo].area;
 }
 
 bool CTerrainManager::PlanNavalBerth(const std::string& key, CCircuitDef* cdef,
@@ -5681,10 +5686,16 @@ bool CTerrainManager::CanReachAt(CCircuitUnit* unit, const AIFloat3& destination
 		return true;
 	}
 	const int iS = GetSectorIndex(destination);
+	// KI-612: an off-map destination (SEA replacement-line candidates) has no
+	// sector; GetClosestSector indexed past the table and crashed the engine.
+	if (!terrainData->IsSectorValid(iS)) {
+		return false;
+	}
 	if (area->sector.find(iS) != area->sector.end()) {
 		return true;
 	}
-	return GetClosestSector(area, iS)->S->position.SqDistance2D(destination) < SQUARE(range);
+	const SAreaSector* closest = GetClosestSector(area, iS);
+	return closest != nullptr && closest->S->position.SqDistance2D(destination) < SQUARE(range);
 }
 
 bool CTerrainManager::CanReachAtSafe(CCircuitUnit* unit, const AIFloat3& destination, const float range, const float threat)
@@ -5709,10 +5720,16 @@ bool CTerrainManager::CanMobileReachAt(SArea* area, const AIFloat3& destination,
 		return true;
 	}
 	const int iS = GetSectorIndex(destination);
+	// KI-612: an off-map destination (SEA replacement-line candidates) has no
+	// sector; GetClosestSector indexed past the table and crashed the engine.
+	if (!terrainData->IsSectorValid(iS)) {
+		return false;
+	}
 	if (area->sector.find(iS) != area->sector.end()) {
 		return true;
 	}
-	return GetClosestSector(area, iS)->S->position.SqDistance2D(destination) < SQUARE(range);
+	const SAreaSector* closest = GetClosestSector(area, iS);
+	return closest != nullptr && closest->S->position.SqDistance2D(destination) < SQUARE(range);
 }
 
 bool CTerrainManager::CanMobileReachAtSafe(SArea* area, const AIFloat3& destination, const float range, const float threat)

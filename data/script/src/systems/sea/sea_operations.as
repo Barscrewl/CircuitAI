@@ -315,6 +315,29 @@ namespace SeaOperations {
         g.goal=points[points.length()-1]; g.ordered=ai.frame;
         return true;
     }
+    array<AIFloat3> coverPos; array<float> coverReach;
+    // KI-611: drone carriers (BAR carried_unit = legdrone). Definition IDs are
+    // resolved once; the per-contact test is O(list) over a handful of IDs.
+    array<int> carrierIds; bool carriersResolved=false;
+    bool DroneCarrier(int defId) {
+        if (!carriersResolved) {
+            carriersResolved=true;
+            for (uint k=0;k<Global::RoleSettings::Sea::DroneCarrierHulls.length();++k) {
+                CCircuitDef@ d=ai.GetCircuitDef(Global::RoleSettings::Sea::DroneCarrierHulls[k]);
+                if (d !is null) carrierIds.insertLast(d.id);
+            }
+        }
+        return carrierIds.find(defId)>=0;
+    }
+    // True when a gathered armed ground contact other than the target itself
+    // reaches p (the target's own reach already sets the station radius).
+    bool CoveredByGround(const AIFloat3 &in p,const AIFloat3 &in target) {
+        for (uint k=0;k<coverPos.length();++k) {
+            if (MapHelpers::SqDist(coverPos[k],target)<1.0f) continue;
+            if (MapHelpers::SqDist(coverPos[k],p)<coverReach[k]) return true;
+        }
+        return false;
+    }
     bool Coast(Cohort@ g, const CCircuitDef@ def, bool reserve) {
         // Known reachable coastal targets need not wait for whole-sea survey
         // completion. Water contacts and landing-site protection still preempt
@@ -326,6 +349,22 @@ namespace SeaOperations {
             float best=-1;
             CCircuitUnit@ lead=ai.GetTeamUnit(g.ids[0]);
             const float range=def.GetMaxRange(1)*.85f;
+            // Head-to-head play (s30): stations beside the target sat inside a
+            // neighbouring shore unit's reach (leginc, 725) and SurfThreat did
+            // not reject them. Gather every armed ground contact's reach once
+            // per search: O(contacts) here, O(8 x targets x armed) below,
+            // every 10 s per coast cohort; arrays reused per cohort search.
+            coverPos.resize(0); coverReach.resize(0);
+            const float gatherSq=(4000.0f+1200.0f)*(4000.0f+1200.0f);
+            for (int i=0;i<aiBattle.GetGroundContactCount();++i) {
+                CCircuitDef@ shooter=ai.GetCircuitDef(aiBattle.GetGroundContactDefId(i));
+                if (shooter is null || shooter.IsAbleToFly() || !shooter.HasSurfToLand()) continue;
+                const AIFloat3 q=aiBattle.GetGroundContactPos(i);
+                if (MapHelpers::SqDist(q,g.centre)>gatherSq) continue;
+                const float reach=AiMax(shooter.GetMaxRange(1),UnitHelpers::IsCommander(shooter) ? Global::RoleSettings::Sea::CoastCommanderReach : 0.0f)
+                    +Global::RoleSettings::Sea::CoastStandoffMargin;
+                coverPos.insertLast(q); coverReach.insertLast(reach*reach);
+            }
             for (int i=0;i<aiBattle.GetGroundContactCount();++i) {
                 const int id=aiBattle.GetGroundContactId(i);
                 if (Failed(g,id)) continue;
@@ -337,16 +376,21 @@ namespace SeaOperations {
                 // also gets its D-gun reach (CoastCommanderReach).
                 const float enemyReach=AiMax(enemy.GetMaxRange(1),UnitHelpers::IsCommander(enemy) ? Global::RoleSettings::Sea::CoastCommanderReach : 0.0f)
                     +Global::RoleSettings::Sea::CoastStandoffMargin;
-                if (enemyReach>=range) continue;
+                // Head-to-head play: discarding every target the 0.85 station
+                // could not outrange removed most shore kills. Stand just
+                // outside the target's reach when our own range allows it.
+                const float station=AiMax(range,enemyReach);
+                if (station>def.GetMaxRange(1)*.98f) continue;
                 const AIFloat3 target=aiBattle.GetGroundContactPos(i);
                 if (MapHelpers::SqDist(target,g.centre)>4000.0f*4000.0f) continue;
                 // Eight bounded shoreline candidates, movement-area checked.
                 // Full path search is deferred until the chosen intent changes.
                 for (int j=0;j<8;++j) {
                     const float angle=float(j)*.78539816f;
-                    const AIFloat3 p=Spam::_Clamp(AIFloat3(target.x+cos(angle)*range,0,target.z+sin(angle)*range));
+                    const AIFloat3 p=Spam::_Clamp(AIFloat3(target.x+cos(angle)*station,0,target.z+sin(angle)*station));
                     if (aiBattle.WaterBody(p,false)!=g.body || aiBattle.SurfThreat(p)>.1f
                         || !aiTerrainMgr.CanReachAt(lead,p,64)) continue;
+                    if (Global::RoleSettings::Sea::CoastAllCover && CoveredByGround(p,target)) continue;
                     const float score=(aiBattle.IsGroundContactEconomy(i) ? 3000.0f : 1800.0f)
                         /(1.0f+sqrt(MapHelpers::SqDist(g.centre,p))/1600.0f+aiBattle.SurfThreat(p));
                     if (score>best) { best=score; g.coastTarget=id; g.coastGoal=p; }
@@ -357,7 +401,8 @@ namespace SeaOperations {
         if (SeaMath::NewObjective(g.target,g.coastTarget,MapHelpers::SqDist(g.goal,g.coastGoal),ai.frame-g.ordered,30*SECOND)) {
             if (!Route(g,g.coastGoal,false,false,true)) { Fail(g,g.coastTarget); g.coastTarget=-1; return false; }
             g.target=g.coastTarget;
-            GenericHelpers::LogUtil("[SEA][CoastSupport] cohort="+g.serial+" target="+g.target,1);
+            GenericHelpers::LogUtil("[SEA][CoastSupport] cohort="+g.serial+" target="+g.target
+                +" x="+int(g.coastGoal.x)+" z="+int(g.coastGoal.z),1);
         }
         if (g.route !is null) g.route.SetNavalTarget(g.coastTarget);
         return true;
@@ -508,6 +553,10 @@ namespace SeaOperations {
             int target=-1; bool targetSub=false, targetUrgent=false;
             AIFloat3 goal=g.centre, targetPosition=g.centre;
             const float radius=Global::RoleSettings::Sea::FleetScreenRadius;
+            const bool hoverBlind=Global::RoleSettings::Sea::HoverBlindHulls.find(def.GetName())>=0;
+            // KI-611: hulls that cannot out-trade a hover step away from one;
+            // gun hulls that outrange it kite instead (HoverKite below).
+            const bool hoverEvade=Global::RoleSettings::Sea::HoverEvade && !scout && !submarine;
             for (int i=0;i<contacts;++i) {
                 if (aiBattle.GetSeaForceBody(i)!=g.body) continue;
                 const int flags=aiBattle.GetSeaForceFlags(i);
@@ -536,9 +585,20 @@ namespace SeaOperations {
                         if (dist<safeRange*safeRange) scoutExposed=true;
                     }
                 }
+                if (hoverEvade && (flags&(1|8|512))==512) {
+                    const int hoverDefId=aiBattle.GetSeaForceDefId(i);
+                    const CCircuitDef@ hover=hoverDefId>=0 ? ai.GetCircuitDef(hoverDefId) : null;
+                    if (hover !is null && hover.HasSurfToLand()) {
+                        const float hoverRange=hover.GetMaxRange(1);
+                        const bool outTrades=def.HasSurfToLand() && !hoverBlind && !siege
+                            && def.GetMaxRange(1)>hoverRange+2*Global::RoleSettings::Sea::HoverKiteMargin;
+                        const float reach=hoverRange+Global::RoleSettings::Sea::HoverEvadeMargin;
+                        if (!outTrades && dist<reach*reach) scoutExposed=true;
+                    }
+                }
                 if ((flags&2)!=0 && !subWeapon) continue;
                 // D-301: torpedoes cannot hit hovers; only surface guns engage them.
-                if ((flags&512)!=0 && !def.HasSurfToLand()) continue;
+                if ((flags&512)!=0 && (hoverBlind || !def.HasSurfToLand())) continue;
                 // A surfaced ship is still a torpedo target. LAND capability
                 // is not required for torpedo-only submarines in this water census.
                 if ((flags&2)==0 && !subWeapon && !def.HasSurfToLand() && !def.HasSubToLand()) continue;
@@ -575,6 +635,8 @@ namespace SeaOperations {
                     const bool armed=candidate.HasSurfToLand() || candidate.HasSubToLand() || candidate.HasSurfToWater() || candidate.HasSubToWater();
                     score=SeaMath::EngagedObjectiveScore(score,armed && dist<reach*reach,Global::RoleSettings::Sea::EngagedTargetMultiplier);
                 }
+                // Drones are 15-metal respawns; the carrier is the target.
+                if (contactDef>=0 && DroneCarrier(contactDef)) score*=Global::RoleSettings::Sea::DroneCarrierMultiplier;
                 if (targetRank>bestTargetRank || (targetRank==bestTargetRank
                     && (id==preferredFlagship || (target!=preferredFlagship && score>bestScore)))) {
                     bestTargetRank=targetRank;
@@ -736,7 +798,10 @@ namespace SeaOperations {
                 const float slack=fireline && engaged ? AiMin(distance,desired) : desired;
                 if (distance>1) goal=AIFloat3(goal.x+(g.centre.x-goal.x)*slack/distance,0,
                     goal.z+(g.centre.z-goal.z)*slack/distance);
-                const bool inBand=!remembered && distance<range*.98f && distance>range*.72f;
+                // KI-611: a hover closing inside its own reach is not a held band; kite it below.
+                const bool hoverClose=(targetFlags&512)!=0 && targetDef !is null
+                    && distance<targetDef.GetMaxRange(1)+Global::RoleSettings::Sea::HoverKiteMargin;
+                const bool inBand=!remembered && !hoverClose && distance<range*.98f && distance>range*.72f;
                 if (inBand && g.target==target && g.route !is null && !g.route.IsDead()
                     && (!submarine || SeaSubmarines::OutsideStaticTorpedoes(g.centre))) {
                     g.route.SetNavalTarget((targetFlags&128)!=0 ? -1 : target); continue;
@@ -744,7 +809,13 @@ namespace SeaOperations {
                 // D-301: kiting generalised from the Riptide to the Ellysaw and
                 // Syracusia; it only applies against shorter-ranged targets.
                 const string hullName=def.GetName();
-                if (Global::RoleSettings::Sea::CoordinatedFleet && (hullName=="corpship" || hullName=="armpship" || hullName=="legnavydestro")
+                // KI-611: every gun hull that outranges a hover kites it. A
+                // T1 assault hover (corhal: 4,350 HP, 300 range) wins a close
+                // trade against any T1 hull, so stay outside its reach.
+                const float targetReach=targetDef is null ? 0 : targetDef.GetMaxRange(1);
+                const bool hoverKite=Global::RoleSettings::Sea::HoverKite && (targetFlags&512)!=0 && targetDef !is null
+                    && def.HasSurfToLand() && range>targetReach+2*Global::RoleSettings::Sea::HoverKiteMargin;
+                if (Global::RoleSettings::Sea::CoordinatedFleet && (hoverKite || hullName=="corpship" || hullName=="armpship" || hullName=="legnavydestro")
                     && !targetSub && !remembered) {
                     // Stable movement intent, independent responsive fire. The
                     // short commitment only applies to range corrections for
@@ -754,9 +825,11 @@ namespace SeaOperations {
                         && ai.frame-g.ordered<Global::RoleSettings::Sea::FrigateMovementCommitSeconds*SECOND) {
                         g.route.SetNavalTarget(target); continue;
                     }
-                    if (targetDef !is null && targetDef.GetMaxRange(1)<range
-                        && distance<range*Global::RoleSettings::Sea::FrigateKiteRangeFraction) {
-                        const float firingDistance=range*Global::RoleSettings::Sea::FrigateFiringRangeFraction;
+                    const float kiteAt=hoverKite ? AiMax(range*Global::RoleSettings::Sea::FrigateKiteRangeFraction,targetReach+Global::RoleSettings::Sea::HoverKiteMargin)
+                        : range*Global::RoleSettings::Sea::FrigateKiteRangeFraction;
+                    if (targetDef !is null && targetReach<range && distance<kiteAt) {
+                        const float firingDistance=hoverKite ? AiMin(range*.95f,AiMax(range*Global::RoleSettings::Sea::FrigateFiringRangeFraction,targetReach+2*Global::RoleSettings::Sea::HoverKiteMargin))
+                            : range*Global::RoleSettings::Sea::FrigateFiringRangeFraction;
                         goal=Spam::_Clamp(AIFloat3(targetPosition.x+(g.centre.x-targetPosition.x)*firingDistance/AiMax(1.0f,distance),0,
                             targetPosition.z+(g.centre.z-targetPosition.z)*firingDistance/AiMax(1.0f,distance)));
                     }

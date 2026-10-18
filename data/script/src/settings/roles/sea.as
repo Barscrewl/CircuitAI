@@ -58,6 +58,11 @@ namespace Sea {
             int MaxBattleships = 3;
             float SiegeShipFleetMetal = 5000.0f;
             int MaxSiegeShips = 4;
+            float TierOneSiegeFleetMetal = 3000.0f; // Legion Octeres at the T1 yard
+            int MaxTierOneSiegeShips = 2;
+            // Siege hulls (no anti-sub weapon) wait while at least this much
+            // known enemy submarine metal is on the home water.
+            float SiegeMaxEnemySubMetal = 400.0f;
             // D-301: T2 AA ships (and Legion's Iapetus) escort the fleet
             // instead of patrolling home; an armed warship within its engage
             // range of a cohort is scored x EngagedTargetMultiplier.
@@ -65,11 +70,39 @@ namespace Sea {
             // D-301: coast support only bombards targets the station outranges.
             float CoastStandoffMargin = 64.0f;
             float CoastCommanderReach = 450.0f;
+            // Coast stations also stay outside every other known armed ground
+            // contact's reach (+CoastStandoffMargin), not only the target's.
+            bool CoastAllCover = true;
             float EngagedTargetMultiplier = 3.0f;
             float EngagedTargetMargin = 300.0f;
             float FrigateFiringRangeFraction = 0.85f;
             float FrigateKiteRangeFraction = 0.65f;
             int FrigateMovementCommitSeconds = 4;
+            // KI-611: gun hulls that outrange a hover kite it, holding fire from
+            // outside its reach plus this margin (elmos).
+            bool HoverKite = true;
+            // KI-611: hulls that cannot out-trade an armed hover (no gun,
+            // hover-blind, siege, or a gun that does not outrange it) step
+            // home when one is within its reach plus this margin (elmos).
+            bool HoverEvade = true;
+            // KI-611: Legion drone carriers (legdrone). Their objective score
+            // is multiplied so the fleet kills the carrier, not the drones.
+            array<string> DroneCarrierHulls={"legnavydestro","leganavyantinukecarrier","legfhive","legspcarrier"};
+            float DroneCarrierMultiplier = 2.0f;
+            float HoverEvadeMargin = 200.0f;
+            // TechYard re-staffs an abandoned first advanced-yard frame. Off:
+            // in 25-minute head-to-head play, finishing T2 every game cost more
+            // fleet than it returned (s28 against s25).
+            bool TechRestaffFrame = false;
+            // KI-611: hulls whose only weapons cannot target hovers (BAR
+            // NOTHOVER torpedoes: the Legion Argonaut). They never take a
+            // hover objective; when enemy hovers hold HoverResponseMetal on
+            // the home water, HoverResponseShare of that hull's composition
+            // share moves to the gun hull (the heavy slot).
+            array<string> HoverBlindHulls={"legnavyfrigate"};
+            float HoverResponseMetal = 1200.0f;
+            float HoverResponseShare = 0.75f;
+            float HoverKiteMargin = 60.0f;
             float SubmarineRetreatRadius = 2000.0f;
             // Lost-water recovery only; ordinary naval economy/combat is unchanged.
             bool CoastalFallback = true;
@@ -213,6 +246,8 @@ namespace Sea {
             // most TechSaveMaxSeconds so the bank can fund the package.
             bool TechSave = true;
             float TechSaveMaxSeconds = 240.0f;
+            float TechSaveContestRatio = 0.6f; // no save while enemy ships in our water exceed this share of ours
+            int TechSaveTrickle = 3;           // every 3rd held factory ask still builds a T1 hull
             float CapitalAssistRadius = 900.0f;
             int CapitalAssistWorkers = 3;
             float HarborSearchRadius = 1200.0f;

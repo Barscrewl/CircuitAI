@@ -280,7 +280,7 @@ namespace RoleSea {
                 if (counter !is null) return SeaFactories::Recruit(u,counter,Task::RecruitType::FIREPOWER,false,true);
             }
             // D-300: bank for the first advanced yard; counters above still run.
-            if (isT1Shipyard && workers>=2 && SeaEconomy::TechSaving())
+            if (isT1Shipyard && workers>=2 && SeaEconomy::TechHold())
                 return aiFactoryMgr.Enqueue(TaskS::Wait(false,3*SECOND));
             if (workers>=2) {
                 IUnitTask@ workforce=SeaFactories::Workforce(u);
