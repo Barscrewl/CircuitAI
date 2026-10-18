@@ -42,6 +42,7 @@ def main():
     p.add_argument('--capacity-observer',action='store_true',help='Read-only commander, worker and factory capacity diagnostics')
     p.add_argument('--checks',help='Explicit categorized gameplay assertions; default is the existing SEA smoke suite')
     p.add_argument('--fixture',choices=['harbor','conversion'])
+    p.add_argument('--modoption',action='append',default=[],help='key=value passed to playtest stage, e.g. date_month=10 to pin the BAR holiday calendar')
     a=p.parse_args()
     if a.fixture=='harbor' and (a.map!='glacial' or a.side!='armada' or a.legacy):
         p.error('The supplied harbor fixture currently requires migrated Armada on Glacial Gap')
@@ -83,6 +84,7 @@ def main():
     if a.fixture=='conversion':
         cmd += ['--extra-widget',str(playtest.HERE/'widgets/sea_conversion_fixture.lua'),
                 '--extra-widget',str(playtest.HERE/'widgets/sea_conversion_watch.lua'),'--modoption','deathmode=neverend']
+    for kv in a.modoption: cmd += ['--modoption',kv]
     subprocess.run(cmd,check=True)
     if a.base_observer:
         from air_arena import lua
