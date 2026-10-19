@@ -5,6 +5,7 @@
 #include "sea_patrol.as"
 #include "sea_protection.as"
 #include "sea_composition.as"
+#include "sea_control.as"
 namespace SeaCombat {
     class Hull {
         CCircuitDef@ def;
@@ -93,6 +94,7 @@ namespace SeaCombat {
         SeaOperations::Leave();
         SeaComposition::Prune();
         SeaPatrol::Leave();
+        SeaControl::Reset();
         SeaProtection::Leave();
         for (uint i=0;i<owned.length();++i) {
             CCircuitUnit@ u=ai.GetTeamUnit(owned[i]);
@@ -156,6 +158,7 @@ namespace SeaCombat {
         air=SeaMath::RememberThreat(air,nextAir,ai.frame-airSeen,memory);
         shore=aiBattle.GetNavalThreatCost(3);
         SeaPatrol::Tick();
+        SeaControl::Tick();
         SeaProtection::Tick();
         // Avoid the legacy map-wide army/per-player comparison. The native
         // reachable-group gate and damage-triggered response remain active.
@@ -170,10 +173,10 @@ namespace SeaCombat {
         if (kind==1) return d.HasSurfToWater() || d.HasSubToWater() ? h.underwater : 0;
         return d.HasSurfToLand() ? h.surface : 0;
     }
-    CCircuitDef@ Select(CCircuitUnit@ yard,bool urgentOnly=false) {
+    CCircuitDef@ T1Priority(CCircuitUnit@ yard) {
         if (!Active()) return null;
         Tick();
-        if (!urgentOnly && UnitHelpers::IsT1Shipyard(yard.circuitDef.GetName())) {
+        if (UnitHelpers::IsT1Shipyard(yard.circuitDef.GetName())) {
             const string side=UnitHelpers::GetSideForUnitName(yard.circuitDef.GetName());
             CCircuitDef@ scout=ai.GetCircuitDef(side=="armada" ? "armpt" : side=="cortex" ? "corpt" : "legnavyscout");
             const int desired=fleet<1000 ? 1 : Global::RoleSettings::Sea::FleetScouts;
@@ -185,7 +188,8 @@ namespace SeaCombat {
             // The T2 yard supplies advanced surface/AA hulls. Keep the T1 yard
             // useful as a submarine screen/raiding stream. This is after the
             // caller's workforce, recovery and urgent air/sub counter checks.
-            if (!Global::RoleSettings::Sea::BalancedFleetComposition && Global::RoleSettings::Sea::T1SubmarinesAfterT2 && SeaFactories::T2Finished(side)) {
+            if (Global::RoleSettings::Sea::T1SubmarinesAfterT2 && SeaFactories::T2Finished(side)
+                && SeaControl::NeedSubs(aiBattle.WaterBody(yard.GetPos(ai.frame),false))) {
                 CCircuitDef@ sub=ai.GetCircuitDef(side=="armada" ? "armsub" : side=="cortex" ? "corsub" : "legnavysub");
                 if (sub !is null && sub.IsAvailable(ai.frame) && yard.circuitDef.CanBuild(sub)) {
                     GenericHelpers::LogUtil("[SEA][SubStream] recruit="+sub.GetName(),1);
@@ -193,6 +197,12 @@ namespace SeaCombat {
                 }
             }
         }
+        return null;
+    }
+    CCircuitDef@ Select(CCircuitUnit@ yard,bool urgentOnly=false) {
+        if (!Active()) return null;
+        Tick();
+        if (!urgentOnly) { CCircuitDef@ priority=T1Priority(yard); if (priority !is null) return priority; }
         array<float> have(3,0.0f);
         dictionary localCounts;
         const int body=aiBattle.WaterBody(yard.GetPos(ai.frame),false);

@@ -291,7 +291,23 @@ IUnitTask* CCommanderControl::RadarWork(CCircuitUnit* unit,State& s,CCircuitDef*
     if((!holding && ai->GetThreatMap()->GetThreatAt(unit,pos)>options.frontThreat)
         || ai->GetEconomyManager()->GetMetalCur()<buildDef->GetCostM()*.5f) return nullptr;
     auto* task=builder->Enqueue(TaskB::Common(BT::RADAR,IBuilderTask::Priority::NORMAL,buildDef,pos,96.f,true,30*FRAMES_PER_SEC));
-    if(task) s.radarFrame=-10000; // the new frame covers us on the next check
+    if(task) {
+        s.radarFrame=-10000; // the new frame covers us on the next check
+        // INV-220 (D-304): no new commander radar where an existing friendly
+        // radar at least as strong already covers. Independent of the
+        // snapshot: one engine area query per radar enqueue (rare). Restored
+        // after the 0bcf08e4 merge dropped it.
+        auto* clb=ai->GetCallback();
+        for(int id:clb->GetFriendlyUnitIdsIn(pos,range,false)) {
+            const int defId=clb->Unit_GetDefId(id);
+            CCircuitDef* def=defId>0?ai->GetCircuitDefSafe(defId):nullptr;
+            if(def && !def->IsRoleComm() && !def->IsMobile() && DefinitionFor(def).radar*options.radarCoverage>=range) {
+                ai->LOG("[INVARIANT] INV-220 commander radar inside existing coverage unit=%i radar=%i x=%.0f z=%.0f",
+                    unit->GetId(),id,pos.x,pos.z);
+                break;
+            }
+        }
+    }
     return task;
 }
 

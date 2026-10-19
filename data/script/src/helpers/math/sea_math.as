@@ -1,5 +1,30 @@
 // Deterministic SEA admission and handover decisions, independent of engine state.
 namespace SeaMath {
+    // 0 unknown, 1 contested, 2 favorable, 3 provisionally controlled.
+    int ControlState(float enemy,float friendly,int quiet,int requiredQuiet,
+        int surveyed,int shores,float fraction,float minimumFleet) {
+        if (enemy>0) return friendly>=enemy*1.5f ? 2 : 1;
+        if (friendly<minimumFleet || quiet<requiredQuiet || shores<=0
+            || float(surveyed)<float(shores)*fraction) return 0;
+        return 3;
+    }
+    float TechConversionRedirect(float bank,float reserve,float queued,float income,float usage,float cost,float horizon,float capacity) {
+        if (horizon<=0 || capacity<=0) return 0;
+        const float need=usage-income+(cost+reserve+queued-bank)/horizon;
+        return need<=0 ? 0 : need<capacity ? need : capacity;
+    }
+    int WorkerGroup(int expansion,int energy,int conversion) {
+        if (expansion<=energy && expansion<=conversion) return 0;
+        return energy<=conversion ? 1 : 2;
+    }
+    int TechSupportCount(float buildTime,float seconds,float workerPower,float turretPower,int minimum) {
+        if (seconds<=0 || turretPower<=0) return minimum;
+        const float missing=buildTime/seconds-workerPower;
+        int needed=missing>0 ? int(missing/turretPower) : 0;
+        if (missing>float(needed)*turretPower) ++needed;
+        return needed>minimum ? needed : minimum;
+    }
+
     bool ReplacementReady(int count,float readyMetal,float enemyMetal,int minimum,float ratio) {
         return count>=minimum && readyMetal>=enemyMetal*ratio;
     }
@@ -254,6 +279,12 @@ namespace SeaMath {
     }
     bool ReleaseFleet(int count, int ageFrames, int desired, int waitFrames) {
         return count>Zero && (count>=desired || ageFrames>=waitFrames);
+    }
+    // D-341: a cohort that can shoot hovers stands against them when its local
+    // surface power is at least `ratio` times the local enemy (hovers included).
+    // No armed hover present means no hover decision to make.
+    bool HoverSuperior(bool canHitHovers, float ownPower, float enemyPower, float hoverPower, float ratio) {
+        return canHitHovers && hoverPower>Zero && ratio>Zero && ownPower>=enemyPower*ratio;
     }
     bool NeedsScreen(float enemySubmarineMetal, float readyCover, float ratio) {
         return enemySubmarineMetal>Zero && readyCover<enemySubmarineMetal*ratio;

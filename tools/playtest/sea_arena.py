@@ -83,20 +83,35 @@ def frozen_actor_condition(manager, support_turrets):
     return ('(SeaEconomy::ConstructorDef(u.circuitDef) || UnitHelpers::IsCommander(u.circuitDef))'
             if manager=='builder' else 'SeaEconomy::SupportedFactory(u.circuitDef)')
 
+def apply_start_boxes(script, boxes):
+    for team, box in enumerate(boxes):
+        left, top, right, bottom = box
+        if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1): raise ValueError('Invalid normalized start box')
+        replacement=f'[ALLYTEAM{team}] {{ NumAllies=0; StartRectLeft={left}; StartRectTop={top}; StartRectRight={right}; StartRectBottom={bottom}; }}'
+        script,n=re.subn(r'\[ALLYTEAM'+str(team)+r'\]\s*\{[^}]*\}',lambda _: replacement,script,count=1)
+        if n != 1: raise ValueError(f'Missing ally-team section for start box {team}')
+    return script
+
+
 def prepare(a):
     case=json.loads(storage.resolve_definition(a.case,'cases').read_text())
+    if getattr(a,'mode','fast')!='visual': case['follow_shots']=[]
     label=scenario_label(case.get('name',Path(a.case).stem),a.control)
     d=storage.allocate('sea','combat',label,case.get('map_key','glacial'),'supplied',seed=a.seed)
     starts=d/'starts.as'; starts.write_text(''.join(f'StartSpot(AIFloat3({x},0,{z}), AiRole::SEA, false),\n' for x,z in case.get('starts',[[2300,4400],[4600,4400]])))
     call=[sys.executable,str(HERE/'playtest.py')]
     subprocess.run(call+['stage','--dir',str(d),'--dll',str(a.dll),'--data',str(a.data),'--map',case.get('map','Glacial Gap v1.1'),'--map-file',str(starts),
         *(['--game',a.game] if getattr(a,'game',None) else []),'--engine','recoil_2026.07.04','--role','SEA','--roles','all','--ally-spots','1','--side',a.side,
-        '--speed',str(a.speed),'--minutes',str(a.minutes),'--shots',case.get('shots','0.4@2400@3400:4450,0.7@2400@3400:4450,3@3200@3400:4450,7@4000@3400:4450'),
+        '--speed',str(a.speed),'--minutes',str(a.minutes),'--mode',getattr(a,'mode','fast'),
+        '--shots',case.get('shots','0.4@2400@3400:4450,0.7@2400@3400:4450,3@3200@3400:4450,7@4000@3400:4450') if getattr(a,'mode','fast')=='visual' else '',
         '--width','1280','--height','720','--lean-render','--bonus','0','--ai-option','profile='+a.profile,'--ai-option','random_seed='+str(a.seed),
         '--modoption','deathmode=neverend','--modoption','startenergy=1000000','--modoption','startenergystorage=1000000',
         '--extra-widget',str(HERE/'widgets/sea_arena.lua'),
-        '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua')],check=True)
-    script=d/'script.txt'; s=script.read_text();s=s.replace('[GAME]\n{','[GAME]\n{\n FixedRNGSeed='+str(a.seed)+';',1);script.write_text(s)
+        '--extra-widget',str(HERE/'widgets/workforce_perf_watch.lua'),
+        *[x for w in (getattr(a,'extra_widget',None) or []) for x in ('--extra-widget',w)]],check=True)
+    script=d/'script.txt'; s=script.read_text();s=s.replace('[GAME]\n{','[GAME]\n{\n FixedRNGSeed='+str(a.seed)+';',1)
+    s=apply_start_boxes(s,case.get('start_boxes', []))
+    script.write_text(s)
     staged=d/'AI/Skirmish/BARbTest/test/script'; g=role_settings_path(staged/'src', 'Sea');s=g.read_text();before,sea=s.split('namespace Sea {',1)
     sea,n=re.subn(r'bool ExperimentalBuild = (true|false);','bool ExperimentalBuild = '+('false' if a.legacy_layout else 'true')+';',sea,count=1);assert n==1
     if a.control: sea=sea.replace('bool AdaptiveFleet = true;','bool AdaptiveFleet = false;')
@@ -241,6 +256,9 @@ namespace SeaRetreatProbe {
     case.update(seed=a.seed,side=a.side,minutes=a.minutes,speed=a.speed,control=a.control,order_slack=a.order_slack)
     if a.cost:
         from run_full_match_performance import wrap
+        wrap(staged/'src/systems/sea/sea_combat.as','Tick','void','','','sea.total')
+        if (staged/'src/systems/sea/sea_control.as').exists():
+            wrap(staged/'src/systems/sea/sea_control.as','Tick','void','','','sea.control')
         wrap(staged/'src/systems/sea/sea_operations.as','Tick','void','','','sea.operations')
         wrap(staged/'src/systems/sea/sea_operations.as','Census','void','','','sea.cohort-census')
         case['cost_profiling']=True
@@ -266,19 +284,21 @@ namespace SeaRetreatProbe {
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--case',default='surface-line');p.add_argument('--dll',required=True,type=Path)
-    p.add_argument('--data',type=Path,default=ROOT/'data');p.add_argument('--side',default='armada');p.add_argument('--profile',default='experimental_hard')
+    p.add_argument('--extra-widget',action='append',help='Stage another widget under test, e.g. tools/widgets/gui_barb_team_link.lua');p.add_argument('--data',type=Path,default=ROOT/'data');p.add_argument('--side',default='armada');p.add_argument('--profile',default='experimental_hard')
     p.add_argument('--game',default=None)
     p.add_argument('--control',action='store_true');p.add_argument('--seed',type=int,default=1891);p.add_argument('--minutes',type=int,default=8);p.add_argument('--speed',type=int,default=10)
     p.add_argument('--legacy-layout',action='store_true',help='Verify adaptive combat independently of experimental building')
     p.add_argument('--cost',action='store_true',help='Record native phases and inclusive SEA policy CPU; run comparisons serially')
     p.add_argument('--order-slack',type=float,help='Isolate optional native naval order changes; zero uses native defaults')
+    p.add_argument('--mode',choices=['fast','visual','performance'],default='fast')
+    p.add_argument('--headless',action='store_true')
     a=p.parse_args();d,call,checks=prepare(a)
-    subprocess.run(call+['launch','--dir',str(d),'--engine','recoil_2026.07.04'],check=True,
+    subprocess.run(call+['launch','--dir',str(d),'--engine','recoil_2026.07.04']+(['--headless'] if a.headless else []),check=True,
         env={**os.environ,**({'CIRCUIT_PERF_PHASES':'1'} if a.cost else {})})
     code=subprocess.run(call+['watch','--dir',str(d),'--role','SEA','--checks',checks,'--minutes',str(a.minutes),'--wall-minutes','15']).returncode
     case=json.loads((d/'sea-arena.json').read_text())
     acceptance=case.get('acceptance')
-    if acceptance or case.get('native_transit') or case.get('progression_audit') or case.get('retreat_observer'):
+    if acceptance or case.get('native_transit') or case.get('progression_audit') or case.get('retreat_observer') or case.get('production_audit') or case.get('handoff_audit'):
         archive=max((d/'runs').glob('*'),key=lambda p:p.name)
         text=(archive/'infolog.txt').read_text(errors='replace')
         measurements={}
@@ -287,9 +307,29 @@ def main():
         elif case.get('progression_audit'):
             failures,measurements=audit_progression(text,case)
         else:
-            failures=audit_transit(text,case) if case.get('native_transit') else audit(summarize(text),acceptance)
+            failures=audit_transit(text,case) if case.get('native_transit') else audit(summarize(text),acceptance or {})
         for pattern in case.get('required_log_patterns', []):
             if not re.search(pattern, text): failures.append('Required policy evidence missing: '+pattern)
+        if case.get('handoff_audit'):
+            from sea_station_audit import audit_handoff
+            handoff_failures, measurements['handoff'] = audit_handoff(text, case['handoff_audit'])
+            failures.extend(handoff_failures)
+        if case.get('station_audit'):
+            from sea_station_audit import audit as audit_stations
+            station_failures, measurements['stations'] = audit_stations(text, case['station_audit'])
+            failures.extend(station_failures)
+        if case.get('production_audit'):
+            from sea_station_audit import audit_production
+            production_failures, measurements['production'] = audit_production(text, case['production_audit'])
+            failures.extend(production_failures)
+        if case.get('visibility_audit'):
+            from sea_station_audit import audit_visibility
+            visibility_failures, measurements['visibility'] = audit_visibility(text, case['visibility_audit'])
+            failures.extend(visibility_failures)
+        if case.get('coast_audit'):
+            from sea_station_audit import audit_coast
+            coast_failures, measurements['coast'] = audit_coast(text, case['coast_audit'])
+            failures.extend(coast_failures)
         # Never replace the runner's report/result. A smoke PASS may still be
         # a tactical failure; publish the explicit physical judgment beside it.
         with (archive/'sea-tempo-acceptance.json').open('x',encoding='utf-8') as f:

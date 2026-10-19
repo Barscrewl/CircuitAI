@@ -35,6 +35,7 @@ def main():
     p.add_argument('--opponent-dll',type=Path,help="head-to-head: 'prod' teams play this pinned build")
     p.add_argument('--opponent-data',type=Path,help='data/ for --opponent-dll')
     p.add_argument('--headless',action='store_true')
+    p.add_argument('--mode',choices=['fast','visual'],default='fast')
     p.add_argument('--stage-only',action='store_true')
     p.add_argument('--keep-going',action='store_true',help='Preserve failed checks but continue to the requested horizon')
     p.add_argument('--base-observer',action='store_true',help='Observe completed later-yard facing and economy separation')
@@ -56,10 +57,11 @@ def main():
     if a.map=='supreme' and not a.headless: shots='5@3800@6200:11000,10@4200@6200:11000,20@4800@6200:11000,29@4800@6200:11000'
     if a.fixture and not a.headless: shots='5@3500@2200:4200,10@3500@2200:4200,19@4000@2200:4200'
     if a.fixture=='conversion' and not a.headless: shots='5@3000@1400:4300,10@2200@1300:4000,19@2000@1400:3950'
+    if a.mode!='visual': shots=''
     cmd=call+['stage','--dir',str(d),'--dll',str(a.dll),'--data',str(a.data),'--map',MAPS[a.map],
         *(['--game',a.game] if a.game else []),'--engine','recoil_2026.07.04','--role','SEA',
         '--roles',a.roles,'--others',a.others,*(['--prod-ai',a.prod_ai] if a.prod_ai else []),*(['--opponent-dll',str(a.opponent_dll)] if a.opponent_dll else []),*(['--opponent-data',str(a.opponent_data)] if a.opponent_data else []),'--side',a.side,'--bonus','0','--speed',str(a.speed),'--minutes',str(a.minutes),
-        '--shots',shots,'--width','1280','--height','720','--lean-render',
+        '--mode',a.mode,'--shots',shots,'--width','1280','--height','720','--lean-render',
         '--ai-option','profile='+a.profile,'--ai-option','random_seed='+str(a.seed),
         '--extra-widget',str(playtest.HERE/'widgets/sea_watch.lua')]
     if a.headless: cmd.append('--headless')
@@ -78,7 +80,7 @@ def main():
         cmd += ['--extra-widget',str(playtest.HERE/'widgets/sea_capacity_watch.lua')]
     if a.expansion_observer:
         cmd += ['--extra-widget',str(playtest.HERE/'widgets/sea_expansion_watch.lua')]
-        if a.map=='glacial': cmd[cmd.index('--shots')+1]='5@5000@2800:4800,10@5500@4000:4800,14@7000@6500:4800'
+        if a.map=='glacial' and a.mode=='visual' and not a.headless: cmd[cmd.index('--shots')+1]='5@5000@2800:4800,10@5500@4000:4800,14@7000@6500:4800'
     if a.fixture=='harbor':
         cmd += ['--extra-widget',str(playtest.HERE/'widgets/sea_harbor_fixture.lua'),'--modoption','deathmode=neverend']
     if a.fixture=='conversion':
@@ -122,7 +124,7 @@ def main():
     (d/'sea-fixture.json').write_text(json.dumps({'enabled':not a.legacy,'supplied_assets':bool(a.fixture),
         'map':MAPS[a.map],'game':a.game,'seed':a.seed,'engine_seed':a.seed,'minutes':a.minutes,'profile':a.profile,'side':a.side,
         'dll_sha256':hashlib.sha256(a.dll.read_bytes()).hexdigest()},indent=2))
-    subprocess.run([sys.executable,str(playtest.REPO/'tools/knowledge/check_script_api.py'),'--dll',str(a.dll),'--scripts',str(globals_file.parent.parent)],check=True)
+    subprocess.run([sys.executable,str(playtest.REPO/'tools/knowledge/check_script_api.py'),'--dll',str(a.dll),'--scripts',str(scripts)],check=True)
     if a.stage_only: return 0
     subprocess.run(call+['launch','--dir',str(d),'--engine','recoil_2026.07.04']+(['--headless'] if a.headless else []),check=True)
     return subprocess.run(call+['watch','--dir',str(d),'--role','SEA','--checks',a.checks or ('harbor-lifecycle' if a.fixture=='harbor' else 'sea/economy/conversion-supplied.json' if a.fixture=='conversion' else 'sea/economy/capacity-natural.json' if a.capacity_observer else 'sea_compile'),'--minutes',str(a.minutes),'--wall-minutes','30']+(['--keep-going'] if a.keep_going else [])).returncode

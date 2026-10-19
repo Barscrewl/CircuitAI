@@ -520,6 +520,7 @@ def launch(args):
     eng = engine_dir(args.engine)
     exe = eng / ("spring-headless.exe" if getattr(args, "headless", False) else "spring.exe")
     storage.capture_inputs(d, exe)
+    storage.capture_system(d, exe)  # host specs: results from different devices are not one cohort
     # a fresh infolog per run; the previous one is kept with its run
     info = d / "infolog.txt"
     if info.exists():

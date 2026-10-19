@@ -14,6 +14,7 @@ namespace SeaOperations {
         bool holdingFireline=false;
         int replacementReleased=-1;
         bool perimeterAdvancing=false;
+        bool perimeterAligned=false;
         int avoidUntil=0;
         AIFloat3 avoidCentre;
         int capacity=0;
@@ -158,7 +159,9 @@ namespace SeaOperations {
                 if (!cells.get(cell,@bucket) || bucket is null) { @bucket=array<int>(); cells.set(cell,@bucket); }
                 bucket.insertLast(index);
             }
-            Cohort@ g=groups[index]; if (joining) ++g.capacity; g.ids.insertLast(u.id); nextMembers.set(member,g.key);
+            Cohort@ g=groups[index];
+            if (joining) { ++g.capacity; g.perimeterAligned=false; }
+            g.ids.insertLast(u.id); nextMembers.set(member,g.key);
             g.centre.x+=p.x; g.centre.z+=p.z; g.health+=u.GetHealthPercent();
         }
         for (int i=int(groups.length())-1;i>=0;--i)
@@ -297,16 +300,25 @@ namespace SeaOperations {
         // SEA movement owns pursuit. HOLD permits weapons to fire but forbids
         // engine auto-chase; priority fire is separate from the MOVE queue.
         g.route.SetHoldPosition(true);
-        // Engine goal-radius/steering can change even on a collinear path.
-        // Keep every combat approach, withdrawal and firing adjustment exact;
-        // only untargeted search/transit may compact validated ship offsets.
-        // Idle perimeter HOLD is an arrival policy, not a combat transition.
-        // Compact its validated per-hull offsets too; otherwise long survey
-        // routes retain hundreds of collinear waypoints. Combat is unchanged.
-        g.route.SetMoveCompaction(Global::RoleSettings::Sea::CompactMoveRoutes && transit && !withdrawing && (!hold || !cautious));
+        // Engine goal-radius/steering can change even on a collinear path, so
+        // a close targeted approach (transit=false with a target: cautious is
+        // false only there) keeps every waypoint for firing adjustments.
+        // D-340: every other route is untargeted (withdrawal, hold, screen,
+        // escort, assembly, coast, perimeter). Native compaction only merges
+        // collinear per-hull legs whose footprint corridor is clear, so these
+        // keep their geometry; the 2026-10-19 Supreme replay showed 66-75% of
+        // their 64-elmo waypoints were collinear (KI-583). Cost: one native
+        // O(waypoints x footprint) clearance pass per dispatch, which replaces
+        // as many engine MOVE commands. CompactUntargetedRoutes=false restores
+        // the D-243 transit-only gate.
+        const bool closeApproach=!transit && !cautious;
+        g.route.SetMoveCompaction(Global::RoleSettings::Sea::CompactMoveRoutes
+            && (Global::RoleSettings::Sea::CompactUntargetedRoutes ? !closeApproach
+                : transit && !withdrawing && (!hold || !cautious)));
         RepairPolicy(g);
         g.route.SetTraversal(true,64,false);
         g.route.SetRoute(points);
+        g.perimeterAligned=false; // SetRoute clears the per-member shoreline overrides.
         for (uint i=0;i<g.ids.length();++i) {
             CCircuitUnit@ u=ai.GetTeamUnit(g.ids[i]); if (!Eligible(u) || u.task is g.route) continue;
             if (!aiMilitaryMgr.TransferUnit(u,g.route))
@@ -550,6 +562,11 @@ namespace SeaOperations {
             float nearest=1e30f, enemySubs=0, cover=0, bestScore=-1, enemyCost=0, localEnemy=0, localAlly=0;
             CCircuitDef@ targetDef=null; int targetFlags=0;
             bool scoutExposed=false;
+            // D-341: armed enemy hovers in the screen radius, and whether one is
+            // inside this hull's evade reach. Decided after the pass, against
+            // the cohort's local strength, so one hover cannot move a fleet.
+            float hoverPower=0; bool hoverExposed=false;
+            bool combatContact=false;
             int target=-1; bool targetSub=false, targetUrgent=false;
             AIFloat3 goal=g.centre, targetPosition=g.centre;
             const float radius=Global::RoleSettings::Sea::FleetScreenRadius;
@@ -585,15 +602,18 @@ namespace SeaOperations {
                         if (dist<safeRange*safeRange) scoutExposed=true;
                     }
                 }
-                if (hoverEvade && (flags&(1|8|512))==512) {
+                if ((flags&(1|8|512))==512) {
                     const int hoverDefId=aiBattle.GetSeaForceDefId(i);
                     const CCircuitDef@ hover=hoverDefId>=0 ? ai.GetCircuitDef(hoverDefId) : null;
                     if (hover !is null && hover.HasSurfToLand()) {
-                        const float hoverRange=hover.GetMaxRange(1);
-                        const bool outTrades=def.HasSurfToLand() && !hoverBlind && !siege
-                            && def.GetMaxRange(1)>hoverRange+2*Global::RoleSettings::Sea::HoverKiteMargin;
-                        const float reach=hoverRange+Global::RoleSettings::Sea::HoverEvadeMargin;
-                        if (!outTrades && dist<reach*reach) scoutExposed=true;
+                        if (dist<radius*radius) hoverPower+=aiBattle.GetSeaForceCost(i);
+                        if (hoverEvade) {
+                            const float hoverRange=hover.GetMaxRange(1);
+                            const bool outTrades=def.HasSurfToLand() && !hoverBlind && !siege
+                                && def.GetMaxRange(1)>hoverRange+2*Global::RoleSettings::Sea::HoverKiteMargin;
+                            const float reach=hoverRange+Global::RoleSettings::Sea::HoverEvadeMargin;
+                            if (!outTrades && dist<reach*reach) hoverExposed=true;
+                        }
                     }
                 }
                 if ((flags&2)!=0 && !subWeapon) continue;
@@ -615,6 +635,11 @@ namespace SeaOperations {
                 const int targetRank=intercept ? SeaMath::SubmarineFlagshipTarget+1 : submarine ? SeaSubmarines::TargetRank(candidate,flags,def) : 0;
                 if (submarine && targetRank==0) continue;
                 if (submarine && (flags&8)!=0 && aiBattle.Height(p)>=0) continue;
+                // Current attackable contacts keep combat ahead of territorial
+                // duty even while a losing pursuit is in its safety cooldown.
+                // Reuse the existing legal-contact pass; no extra enemy scan.
+                if (submarine && (flags&128)==0 && ((flags&8)==0
+                    || (candidate !is null && (candidate.HasSurfToWater() || candidate.HasSubToWater())))) combatContact=true;
                 const bool mobile=candidate !is null && candidate.IsMobile();
                 if (mobile && candidate.GetBuildSpeed()<=0 && candidate.HasSurfToLand()
                     && (flags&(2|128))==0 && dist<radius*radius) localEnemy+=aiBattle.GetSeaForceCost(i);
@@ -646,6 +671,18 @@ namespace SeaOperations {
                 }
             }
             const bool danger=SeaMath::NeedsScreen(enemySubs,cover,Global::RoleSettings::Sea::FleetScreenRatio);
+            // D-341: a gun cohort that clearly outclasses the local enemy
+            // (hovers included) stands against hovers: no evade, no kite-back,
+            // no escape from an uncatchable hover. Spam must not herd a fleet.
+            // Hulls that cannot hit hovers keep stepping away. O(1) here; the
+            // sums come from the existing contact pass.
+            const bool hoverSuperior=SeaMath::HoverSuperior(def.HasSurfToLand() && !hoverBlind && !submarine,
+                AiMax(localAlly,def.costM*float(g.ids.length())),AiMax(localEnemy,hoverPower),hoverPower,
+                Global::RoleSettings::Sea::HoverHoldAdvantage);
+            if (hoverExposed && !hoverSuperior) scoutExposed=true;
+            if (hoverExposed && hoverSuperior && scoutExposed && !scout)
+                Invariants::Violation("INV-230",g.key,"SEA gun cohort withdrew from hovers while holding the local advantage");
+            if (submarine && (target>=0 || combatContact)) SeaSubmarines::ReleaseGuard(g);
             if (submarine && bestTargetRank==SeaMath::SubmarineFlagshipTarget && target>=0)
                 SeaSubmarines::Publish(g,target);
             if (submarine && target!=g.reportedSubmarineTarget) {
@@ -722,12 +759,12 @@ namespace SeaOperations {
                 }
                 continue;
             }
-            if (ai.frame<g.retry && !targetUrgent && (!submarine || target<0)) continue;
+            if (ai.frame<g.retry && !targetUrgent && (!submarine || (target<0 && !combatContact))) continue;
             const float contactRange=targetDef is null ? def.GetMaxRange(2) : AiMax(def.GetMaxRange(2),targetDef.GetMaxRange(2));
             const bool engaged=fireline && target>=0 && (targetFlags&128)==0
                 && (nearest<(contactRange+128)*(contactRange+128) || g.sampleHealth-g.health>.01f);
             if (!engaged) g.holdingFireline=false;
-            if (fireline && !engaged && SeaSubmarines::Replacement(g)) continue;
+            if (fireline && !engaged && target<0 && !combatContact && SeaSubmarines::Replacement(g)) continue;
             if (!g.released) {
                 // Assembly is not permission to sit under fire. A local
                 // weapon-range contact or damage releases this cohort now;
@@ -774,6 +811,17 @@ namespace SeaOperations {
                     SeaSubmarines::HoldFireline(g,target);
                     continue;
                 }
+                if (bait && hoverSuperior && (targetFlags&512)!=0) {
+                    // D-341: an uncatchable hover is not a lost fight. Stop the
+                    // chase at the engagement anchor without excluding the hover
+                    // or avoiding its area, so it is shot when it closes again.
+                    if (Route(g,g.anchor,false,false,true)) {
+                        g.target=-10; // D-341 superior hover hold if (g.route !is null) g.route.SetNavalTarget(-1);
+                    }
+                    g.pursuitStart=0; g.retry=ai.frame+2*SECOND;
+                    GenericHelpers::LogUtil("[SEA][Pursuit] hold cohort="+g.serial+" target="+target+" superior hover chase",1);
+                    continue;
+                }
                 if (bait) {
                     Fail(g,target);
                     // A short legal withdrawal cancels the chase immediately;
@@ -813,7 +861,9 @@ namespace SeaOperations {
                 // T1 assault hover (corhal: 4,350 HP, 300 range) wins a close
                 // trade against any T1 hull, so stay outside its reach.
                 const float targetReach=targetDef is null ? 0 : targetDef.GetMaxRange(1);
-                const bool hoverKite=Global::RoleSettings::Sea::HoverKite && (targetFlags&512)!=0 && targetDef !is null
+                // D-341: kiting trades ground for range against an equal or
+                // stronger hover force; a superior cohort stands and fires.
+                const bool hoverKite=Global::RoleSettings::Sea::HoverKite && !hoverSuperior && (targetFlags&512)!=0 && targetDef !is null
                     && def.HasSurfToLand() && range>targetReach+2*Global::RoleSettings::Sea::HoverKiteMargin;
                 if (Global::RoleSettings::Sea::CoordinatedFleet && (hoverKite || hullName=="corpship" || hullName=="armpship" || hullName=="legnavydestro")
                     && !targetSub && !remembered) {
@@ -835,6 +885,15 @@ namespace SeaOperations {
                     }
                 }
             } else {
+                if (submarine && combatContact) {
+                    // Do not resume a shore route during a rejected-fight
+                    // cooldown. Hold under combat ownership until re-evaluation;
+                    // existing retreat/target selection still governs safety.
+                    if (g.target!=-9 || g.route is null || g.route.IsDead()) {
+                        if (Route(g,g.centre,true,true,true)) { g.target=-9; g.route.SetNavalTarget(-1); }
+                    }
+                    continue;
+                }
                 // Only untargeted submarines secure shores. Observed ships,
                 // then naval factories, preempt the perimeter on the next tick.
                 if (submarine && SeaSubmarines::Perimeter(g,def)) continue;

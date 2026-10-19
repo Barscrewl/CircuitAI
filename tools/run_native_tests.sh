@@ -50,6 +50,7 @@ done
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/team_share_math.as" "$REPO/tests/team_share_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/systems/team/commander_energy.as" "$REPO/tests/commander_energy_tests.as" --strings || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/sea_math.as" "$REPO/tests/sea_math_tests.as" || rc=1
+"$OUT/production_math_test.exe" "$REPO/data/script/src/systems/team/sea_tech.as" "$REPO/tests/sea_tech_tests.as" --strings || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/recovery_math.as" "$REPO/tests/recovery_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/sea_coast_math.as" "$REPO/tests/sea_coast_math_tests.as" || rc=1
 "$OUT/production_math_test.exe" "$REPO/data/script/src/helpers/math/land_siege_math.as" "$REPO/tests/land_siege_math_tests.as" || rc=1

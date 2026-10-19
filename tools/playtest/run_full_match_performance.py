@@ -49,6 +49,9 @@ def main():
     p.add_argument('--command-detail',action='store_true',help='Read-only unit/command/origin counts; adds observer overhead, not gameplay orders')
     p.add_argument('--verify-indexes',action='store_true',help='Correctness only: duplicate live route/economy scans; timings are invalid')
     a=p.parse_args()
+    # KI-655: SEA subphase labels ([PerfLabel]) are emitted only with native
+    # phases on; without them --detail-sea silently recorded nothing.
+    if a.detail_sea:a.native_phases=True
     profiles=a.profiles.split(',') if a.profiles else None
     if profiles:
         if a.mode=='performance':p.error('Mixed-profile compatibility requires --mode fast or visual')

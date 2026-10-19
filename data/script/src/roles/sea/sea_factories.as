@@ -99,6 +99,11 @@ namespace SeaFactories {
         if (con is null || !yard.circuitDef.CanBuild(con)) return null;
         const int pending=aiFactoryMgr.GetPendingRecruitCount(con), have=con.count+pending;
         if (have<2) return Recruit(yard,con,Task::RecruitType::BUILDPOWER);
+        if (!advanced && have<3 && pending==0) {
+            CCircuitDef@ opening=ai.GetCircuitDef(UnitHelpers::GetTidalNameForSide(side));
+            if (opening !is null && aiEconomyMgr.energy.income>=Global::RoleSettings::Sea::BuildT1ConvertersMinimumEnergyIncome
+                && SeaEconomy::FundGrowth(yard,con,opening)) return Recruit(yard,con,Task::RecruitType::BUILDPOWER,true);
+        }
         const float energyGoal=advanced ? aiEconomyMgr.metal.income*Global::RoleSettings::Sea::EnergyPerMetal : SeaEconomy::HomeEnergyTarget();
         // Every extra worker must have growth work, not just an absent local
         // assistant. This prevents reclassifying factory guards from causing
@@ -135,6 +140,14 @@ namespace SeaFactories {
         }
         IUnitTask@ workforce=Workforce(yard); if (workforce !is null) { SeaComposition::Pending(yard,true); return workforce; }
         if (SeaCombat::Active()) {
+            // Single recruits keep scout replacement responsive and stop the
+            // stream when coverage is complete; do not hide it behind batches.
+            CCircuitDef@ priority=SeaCombat::T1Priority(yard);
+            if (priority !is null) {
+                SeaComposition::Pending(yard,true);
+                IUnitTask@ task=Recruit(yard,priority,Task::RecruitType::FIREPOWER);
+                if (task !is null) return task;
+            }
             // Shared by both economic implementations; counter emergencies
             // above retain precedence over discretionary utility hulls.
             IUnitTask@ utility=Utility(yard); if (utility !is null) return utility;

@@ -4,11 +4,35 @@
 namespace Global {
 namespace RoleSettings {
 namespace Sea {
+            bool CoordinateTech = true;
+            float TechYardTargetSeconds = 90.0f;
+            int TechMinimumTurrets = 2;
+            float TechHomeHarborRadius = 1200.0f;
+            // D-343: a teammate's finished naval yard within TechHomeHarborRadius
+            // counts as home for admitting a first T2 yard (crowded shared coast).
+            bool AlliedHarborIsHome = true;
+            bool TechReclaimT1 = true;
+            float RearEconomyDistance = 650.0f;
+            float ConversionGrowthStep = 150.0f;
+            // Provisional basin control never equates missing contacts with victory.
+            int SeaControlQuietSeconds = 90;
+            int SeaControlSurveySeconds = 180;
+            float SeaControlSurveyFraction = 0.60f;
+            float SeaControlMinimumFleet = 600.0f;
+            float ShoreAlliedAssetRadius = 640.0f;
+            float ShoreStationCoverageRadius = 640.0f;
+            float ExpansionRadarSpacing = 1400.0f;
+
             // D-268: shared shoreline intelligence and regional naval policy.
             bool CoordinatedFleet = true;
             int ShoreAccessCandidatesPerTick = 24;
             // Public 64-elmo terrain cells: exclude small rocks and narrow fragments.
             int ShoreMinimumLandCells = 64;
+            array<string> ShoreFactoryDefinitions = {"armlab", "corlab", "leglab"};
+            float ShoreFactoryClearance = 32.0f;
+            float ShoreFactoryHeightVariation = 12.0f;
+            float ShoreFactoryMaximumGrade = 0.25f;
+            float ShoreFactoryAccessRadius = 640.0f;
             int ShoreMinimumInteriorCells = 16;
             int SubmarinePerimeterGroupSize = 4;
             int ConstructorShoreRevisitSeconds = 90;
@@ -16,6 +40,17 @@ namespace Sea {
             int InteriorRevisitSeconds = 300;
             float ShoreTravelScoreScale = 12000.0f;
             float ShoreEnemyDistanceWeight = 2.0f;
+            // Scout sight must cover shallow offshore yard sites as well as
+            // the first water cell. This does not move submarine shore anchors.
+            float ScoutShoreProbeRadius = 640.0f;
+            // A due enemy beach outranks a first look at an ordinary shore.
+            // Fresh sectors still cool down, leaving time for general survey.
+            int EnemyShoreScoutPriority = 6;
+            int EnemyShoreEdgeBonus = 3; // Edge approaches outrank interior beach revisits.
+            int EnemyShoreRevisitSeconds = 45; // eligibility plus travel must fit an early-warning cycle
+            float ScoutShoreSeparation = 960.0f;
+            bool ScoutEdgeOverwatch = true;
+            float ShoreApproachGrade = 0.65f; // Ranking hint; native movement remains authoritative.
             float SubmarineFocusRadius = 2200.0f;
             float SubmarineAdvanceStep = 512.0f;
             float SubmarineLineSpacing = 96.0f;
@@ -103,6 +138,35 @@ namespace Sea {
             float HoverResponseMetal = 1200.0f;
             float HoverResponseShare = 0.75f;
             float HoverKiteMargin = 60.0f;
+            // D-341: a gun cohort whose local surface power is at least this many
+            // times the local enemy (armed hovers included) stands against hovers:
+            // no HoverEvade step-away, no HoverKite back-off, and an uncatchable
+            // hover chase ends at the engagement anchor instead of a withdrawal.
+            // Lower = bolder. 0 disables (always the cautious D-302 micro).
+            float HoverHoldAdvantage = 2.0f;
+            // D-342: seconds a tidal/converter/fusion may find no water-layout site
+            // (crowded allied coast) before SEA keeps the native placement for it.
+            // 0 keeps layout-only placement (the old behaviour).
+            int LayoutFallbackSeconds = 60;
+            // D-343: every SEA economy/turret reservation must leave the side's
+            // flagship a path from each yard's exit mouth LanePathDistance out to
+            // open water and RearPathDistance back behind the yard.
+            bool FlagshipPathCheck = true;
+            float LanePathDistance = 800.0f;
+            float RearPathDistance = 900.0f;
+            // D-343: finished yards (own and teammates') within this distance of a
+            // new SEA reservation are path-checked; farther yards cannot be affected.
+            float YardPathRadius = 2500.0f;
+            // D-343: when the planned turret block cannot fit behind the harbor,
+            // search rings around the shipyard and shrink the block (4x4 to 2x2).
+            bool DynamicTurrets = true;
+            // D-343: an economy zone that touches a teammate's reservation is
+            // shrunk clear of it instead of being refused whole (shared coasts).
+            bool ZoneAroundAllies = true;
+            // D-344: converter annexes a full economy block may grow (0 disables),
+            // and ring candidates tried per ask (one ask every two seconds at most).
+            int ConverterAnnexes = 4;
+            int AnnexCandidates = 6;
             float SubmarineRetreatRadius = 2000.0f;
             // Lost-water recovery only; ordinary naval economy/combat is unchanged.
             bool CoastalFallback = true;
@@ -143,8 +207,12 @@ namespace Sea {
             float SubmarineReplacementRadius = 384.0f;
             int SubmarineReplacementSeconds = 90;
             array<string> FirelineSubmarineDefinitions = { "armsub", "corsub", "legnavysub" };
-            // Untargeted SEA transit only; combat/withdrawal waypoints stay exact.
+            // Master switch for SEA per-hull MOVE compaction (D-243).
             bool CompactMoveRoutes = true;
+            // D-340: also compact every untargeted route (withdrawal, hold, screen,
+            // escort, assembly, coast). Only a close targeted approach stays exact.
+            // false restores D-243's transit-only gate.
+            bool CompactUntargetedRoutes = true;
             bool VerifyPowerIndex = false; // correctness games only; duplicates the legacy scan
             // D-231: SEA-only mission, grouping and economic growth controls.
             float RecoveryOpportunityMultiple = 3.0f;
@@ -167,8 +235,8 @@ namespace Sea {
             int FleetReleaseSeconds = 60;
             int FleetSearchSeconds = 45;
             array<string> CombatSubmarineDefinitions = { "armsub", "corsub", "legnavysub", "armserp", "corssub", "armsubk", "corshark", "leganavyheavysub", "leganavybattlesub" };
-            float SubmarineShoreMinimumDistance = 700.0f;
-            float SubmarineShoreRangeFraction = 0.90f;
+            float SubmarineShoreMinimumDistance = 0.0f;
+            float SubmarineShoreRangeFraction = 0.95f;
             float SubmarineShoreSafetyMargin = 96.0f;
             float SubmarinePerimeterMaximumThreat = 0.1f;
             int SubmarinePerimeterSeconds = 90;
@@ -210,7 +278,7 @@ namespace Sea {
             float ScoutRouteSampleSpacing = 80.0f;
             float ScoutRouteMinimumDepth = 12.0f;
             int ScoutFailedSectorSeconds = 30;
-            bool ScoutSurfaceRaids = true;
+            bool ScoutSurfaceRaids = false; // Keep dedicated scouts on separate shore surveys.
             int ScoutRaidMinimumShips = 3;
             int ScoutRaidSurveyReserve = 1; // continue discovering other yards during a raid
             float ScoutRaidRecruitRadius = 2400.0f;
