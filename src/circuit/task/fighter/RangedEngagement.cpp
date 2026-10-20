@@ -75,11 +75,14 @@ void CRangedEngagement::SelectTarget(CCircuitUnit* unit,int selected,int weapon,
     }
     // Owner 2026-10-19: a live priority target is kept for target_min_seconds;
     // each swap costs CANCEL+SET. The held target must have passed this tick's
-    // candidate filters (heldScoreFrame), and a pick scoring 1.5x its score
-    // (closing threats and pressed towers included) still switches at once.
-    const float hold=unit->GetCircuitDef()->GetRangedPolicy().targetMinSeconds;
+    // candidate filters (heldScoreFrame), and a pick scoring target_switch_ratio
+    // times its score (closing threats and pressed towers included) still
+    // switches at once.
+    const auto& holdPolicy=unit->GetCircuitDef()->GetRangedPolicy();
+    const float hold=holdPolicy.targetMinSeconds;
+    const float switchRatio=holdPolicy.targetSwitchRatio;
     if(target>=0 && selected>=0 && selected!=target && hold>0.f && frame-targetFrame<int(hold*FRAMES_PER_SEC)
-        && heldScoreFrame==frame && score>=0.f && score<heldScore*1.5f
+        && heldScoreFrame==frame && score>=0.f && score<heldScore*switchRatio
         && ai->GetEnemyManager()->GetEnemyUnit(target)!=nullptr
         && int(unit->GetUnit()->GetRulesParamFloat("unitTargetID",-1.f))==target) return;
     const int avoid=unit->GetCircuitDef()->GetRangedPolicy().avoidCategory;
