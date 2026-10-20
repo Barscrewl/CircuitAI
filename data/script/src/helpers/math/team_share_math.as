@@ -17,4 +17,12 @@ namespace TeamShareMath {
         const float amount = freeStorage < budget ? freeStorage : budget;
         return amount > ZeroValue && amount >= minimum ? amount : ZeroValue;
     }
+
+    // What a teammate can take before its bank reaches ceiling (a share of storage).
+    float RoomBelow(float current, float storage, float ceiling)
+    {
+        if (storage <= ZeroValue) return ZeroValue;
+        const float room = ceiling * storage - current;
+        return room > ZeroValue ? room : ZeroValue;
+    }
 }

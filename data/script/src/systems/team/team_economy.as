@@ -94,6 +94,25 @@ namespace TeamEconomy {
         return firstFactoryStood;
     }
 
+    // Owner 2026-10-20: late game every teammate floated at 95-99%, and each
+    // donation filled another's last few percent, lifting it over
+    // TeamShareMetalAbove so it gave the metal straight on (Moonshine Run: up to
+    // 229 sends a minute between full banks). A receiver ceiling under the
+    // threshold ends the loop; 0 keeps the old fill-to-free-storage rule.
+    float ReceiverCeiling()
+    {
+        const float below = Global::RoleSettings::Tech::TeamShareReceiverFillBelow;
+        if (below <= 0.0f) return 0.0f;
+        return AiMin(below, Global::RoleSettings::Tech::TeamShareMetalAbove - 0.05f);
+    }
+    // what a teammate may take: its free storage, or its room under the ceiling
+    float ReceiverRoom(int teamId, float ceiling)
+    {
+        const float freeRoom = Metal(teamId, FREE);
+        if (ceiling <= 0.0f) return freeRoom;
+        return AiMin(freeRoom, TeamShareMath::RoomBelow(Metal(teamId, CURRENT), Metal(teamId, STORAGE), ceiling));
+    }
+
     void VerifyShare()
     {
         if (verifyFrame < 0 || ai.frame < verifyFrame) return;
@@ -118,11 +137,12 @@ namespace TeamEconomy {
         if (ai.frame - teamShareFrame < int(Global::RoleSettings::Tech::TeamShareCheckSeconds * SECOND)) return;
         teamShareFrame = ai.frame;
         const int n = TeamEconomy::UpdateAll();
+        const float ceiling = ReceiverCeiling();
         array<int> ids;
         array<float> fills;
         for (int i = 0; i < n; ++i) {
             const int tid = TeamEconomy::TeamAt(i);
-            if (tid < 0 || !TeamEconomy::Alive(tid) || TeamEconomy::Metal(tid, TeamEconomy::FREE) < Global::RoleSettings::Tech::TeamShareMinAmount) continue;
+            if (tid < 0 || !TeamEconomy::Alive(tid) || ReceiverRoom(tid, ceiling) < Global::RoleSettings::Tech::TeamShareMinAmount) continue;
             // insertion by fill, lowest first
             const float f = TeamEconomy::MetalFill(tid);
             uint at = 0;
@@ -132,7 +152,7 @@ namespace TeamEconomy {
         }
         string sent = "";
         for (uint i = 0; i < ids.length() && budget >= Global::RoleSettings::Tech::TeamShareMinAmount; ++i) {
-            const float give = TeamShareMath::Amount(TeamEconomy::Metal(ids[i], TeamEconomy::FREE), budget,
+            const float give = TeamShareMath::Amount(ReceiverRoom(ids[i], ceiling), budget,
                 Global::RoleSettings::Tech::TeamShareMinAmount);
             if (give <= 0.0f) continue;
             if (!TeamEconomy::SendMetal(ids[i], give)) continue;
